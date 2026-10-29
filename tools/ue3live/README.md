@@ -50,7 +50,7 @@ Measured on Mass Effect Legendary Edition, one process each, no injection:
 | `ue3_check_chain.py` | Re-derives the whole player chain from an offsets file and asserts each link, printing PASS/FAIL. Machine-checks a documented table instead of trusting it. |
 | `ue3_level_pawns.py` | Inventories the actors of the level the player is in, naming pawns by their controller and behaviour. |
 | `ue3_conversation.py` | Read-only conversation/scene detector: reports `bPlayersOnly`, the controller's cinematic bit(s), conversation counts, the active conversation object and the pawn's `Physics`, then a conservative verdict (`playing` / `scene` / `conflicting` / `incomplete`). An unreadable field is never treated as "no scene". `--watch` samples over time. |
-| `ue3_command_suite.py` | The command catalogue and the ordered test area. 156 command **mechanisms** in 20 categories, presence measured per game, plus `probe` (resolve every command in a running game, read-only), `plan` (turn a probe into ordered bridge requests) and `phases` (the 23-phase test area). See [COMMAND-SUITE.md](../../games/mass-effect-legendary-edition/COMMAND-SUITE.md). |
+| `ue3_command_suite.py` | The command catalogue and the ordered test area. 156 command **mechanisms** in 20 categories, presence measured per game, plus `probe` (resolve every command in a running game, read-only), `plan` (turn a probe into ordered bridge requests) and `phases` (the 23-phase test area). See [COMMAND-SUITE.md](../../docs/COMMAND-SUITE.md). |
 | `ue3_run_plan.py` | The **runner**: executes a plan through the in-game bridge on the game's main thread. Probe-only mode validates every role, function and parms block without calling anything. Refuses a malformed plan in preflight, gates destructive phases behind `--yes-destructive`, and records a refusal as a result rather than losing the run. Also executes field phases (`writes`) with a mandatory read-back. |
 | `ue3_fields.py` | The **write allow-list**. A caller names a *field*, never an address, so an arbitrary write cannot be expressed. Four writable fields, each with a measured per-game offset and its provenance; a field with no measured offset for that build refuses rather than borrowing another build's. Enums are checked by member, not width. |
 | `commands.json` | The generated catalogue. Do not hand-edit: `verify` recomputes presence from `local/MELE/maps/*.json` and reports drift, and `catalogue` refuses to write when the taxonomy disagrees with the data. |
@@ -114,7 +114,7 @@ python -I tools/ue3live/ue3_check_chain.py     --pid <pid> --exe MassEffect1.exe
 ```
 
 Working notes and the offsets these produced for each game:
-[games/mass-effect-legendary-edition](../../games/mass-effect-legendary-edition/README.md).
+[docs/](../../docs/INDEX.md).
 
 ## Tests
 

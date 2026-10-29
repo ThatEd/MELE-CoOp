@@ -24,7 +24,7 @@ The original opened one pipe per game copy: `\\.\pipe\nvcoop-<instance>`, with i
 | `state` | `state` | The original returned a snapshot built by its own module, optionally to a file. |
 | `lock.acquire`, `lock.renew`, `lock.release`, `lock.info` | not included | A lease that let several test lanes share one game copy. Add it as custom methods if you need it; keep codes -32010 and -32011 for it. |
 | `plugins`, `quit` | not included | Register them as custom methods if you want them. |
-| `coop.status`, `coop.owner`, `ui.status`, `bot.menu`, `bot.menu.press`, `bot.fire`, `ref.info`, `world.query`, ... | custom methods | Registered by the mod and its bot module, not by the bridge. [tools/inspect/examples/fnv](../../../inspect/examples/fnv/README.md) lists the ones the inspector reads. |
+| `coop.status`, `coop.owner`, `ui.status`, `bot.menu`, `bot.menu.press`, `bot.fire`, `ref.info`, `world.query`, ... | custom methods | Registered by the mod and its bot module, not by the bridge. The mod's own bot module lists the ones the inspector reads; that inspector is not included here. |
 
 ## Console quirks the adapter handles
 

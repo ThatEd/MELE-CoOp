@@ -16,15 +16,15 @@ the code is specific to one game. Everything game specific lives in one JSON fil
 | **Crash evidence** (`crashlog`) | Copies the game's logs, picks out crash marker lines and adds the Windows application crash record. |
 | **Measure** (`measure`) | Samples RAM and CPU of the pooled copies, so you can compare profiles with numbers. |
 
-The slot lock is a separate tool, [`tools/gameslot`](../gameslot/README.md). Every launch here takes a slot first.
+Every launch here takes a slot first, so two tests cannot fight over the same copy.
 For the techniques behind it (hard links, single-instance games, minimized launches) read
-[playbook/multi-instance-testing.md](../../playbook/multi-instance-testing.md).
+The Mass Effect Legendary Edition configs in `examples/` are a worked example.
 
 Python standard library only (3.8 or newer; tested on 3.11). Windows only.
 
 ## Quick start
 
-1. Copy [examples/fnv.json](examples/fnv.json) to `local/mygame.json` (git ignores `local/`) and edit it:
+1. Copy `examples/masseffect-le-me1.json` to `local/mygame.json` (git ignores `local/`) and edit it:
    set `game_dir` to the install folder, `process_name` to the image name of the game process, `launch.exe`
    to what starts it, and the `link` section to the files your game writes. The tools refuse to run while
    `game_dir` still contains a `<placeholder>`.
@@ -186,7 +186,8 @@ One JSON file per game. `_notes` and other keys starting with `_` are ignored. P
 A `file` readiness probe is deleted before each launch, so a restarted copy is not taken for ready because of
 the previous run's file. A `log_line` probe reads a log that your game must start fresh on every launch.
 
-[examples/fnv.json](examples/fnv.json) holds the values the Fallout: New Vegas co-op project used, with
+[examples/masseffect-le-me1.json](examples/masseffect-le-me1.json) holds validated Mass Effect Legendary
+Edition values, with
 `<game dir>` placeholders. It is a good model for a Gamebryo-style game with INI files.
 
 ### Low-cost rows
@@ -289,7 +290,7 @@ not touch the screen), and hard links across two volumes (the disk check is exer
 
 `gamepool.py` (command line), `gplib/` (`config`, `instances`, `inifile`, `lowcost`, `launcher`, `jobqueue`,
 `adapter`, `pairs`, `poolcore`, `backend`, `fakes`, `daemon`, `client`, `poolcli`, `smoke`, `crashlog`, `measure`,
-`winproc`), `examples/fnv.json`, `tests/fake_game.py`, `run_tests.py`.
+`winproc`), `examples/masseffect-le-*.json`, `tests/fake_game.py`, `run_tests.py`.
 
 ## Ported from fnv-coop commit f57aa78
 
@@ -298,7 +299,8 @@ Ported from `tools/pool/`, `tools/runner/` (`instances`, `winproc`, `launchprobe
 What changed:
 
 - Fallout: New Vegas paths, exe names, INI keys and the pipe bridge client are gone from the code. Settings,
-  low-cost rows, log names and readiness are now config. The New Vegas values are in `examples/fnv.json`.
+  low-cost rows, log names and readiness are now config. The Mass Effect values are in
+`examples/masseffect-le-{me1,me2,me3}.json`.
 - The bridge calls became the adapter interface and the `ready` probes.
 - Instances are numbered by game slot, and state is kept per owner so two agents never share a state file.
 - The loader lookup uses the process tree instead of "a new process with that name".

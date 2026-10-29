@@ -3,8 +3,9 @@
 Campaign co-op for **Mass Effect Legendary Edition** — the host keeps Shepard, the client takes a
 squadmate. Scope order is **LE3 first, then LE2, then LE1**.
 
-This folder is self-contained and meant to be published. Everything outside `local/` is shared;
-`local/` is git-ignored and holds nothing that belongs in a repository.
+Self-contained and published: clone it and run the tests, no game required. `local/` is git-ignored
+and holds nothing that belongs in a repository ? the identifier tables and per-build offsets are
+generated from your own copy of the game (see [Getting the data](#getting-the-data)).
 
 ## Where it stands
 
@@ -35,7 +36,7 @@ camera** — never involving a second `LocalPlayer`.
 ## Layout
 
 ```
-MELE Co-Op Mod/
+MELE Co-Op Mod/                 (this repository)
   README.md                     this file
   docs/                         every write-up, one page per topic
   tools/
@@ -139,30 +140,51 @@ per-game configs.
 
 `docs/NOTES.md` has all 31 rules, each with the incident that produced it.
 
-## Publishing this folder
+## Getting the data
 
-`local/` is git-ignored and holds: the decompressed identifier tables, the offsets files, raw probe
-dumps, upstream source copies and the test-install config. **None of it is committed** — the tables
-are regenerable from the game and the offsets are per-build artefacts.
+The repository ships code and findings, not game data. Two kinds of data are needed for the
+game-specific tools, and both are generated from **your own copy of the game**:
 
-To get a working data set after cloning:
+| Data | Needed by | Why not committed |
+|---|---|---|
+| Identifier tables (`local/MELE/maps/*.json`) | `ue3_command_suite.py verify`, the drift tests | derived from the game's decompressed packages |
+| Offsets (`local/MELE/offsets/offsets_LE*.json`) | `probe`, the runner, the field allow-list | per-build and **per-launch** artefacts for one exe hash |
+
+Everything that does not need them works from a clean clone — the tooling, the runner, the write
+allow-list, the container reader and all 97 tests.
 
 ```bash
-# identifier tables (needs a game install for Oodle + the packages)
-python -I tools/melepkg/mele_script_map.py --package "<game>/ME1/BioGame/CookedPCConsole/SFXGame.pcc" \
+# 1. Identifier tables. Needs an install (for the packages and Oodle), not a running game.
+#    The install is found via $MELE_GAME_DIR, then the Steam registry, then a drive probe.
+python -I tools/melepkg/mele_script_map.py \
+    --package "<game dir>/Game/ME1/BioGame/CookedPCConsole/SFXGame.pcc" \
     --out local/MELE/maps/ME1.json
 
-# offsets (needs a RUNNING game)
+# 2. Verify the container model against your build before trusting anything derived from it.
+python -I tools/melepkg/test_container_format.py
+
+# 3. Offsets. Needs a RUNNING game; this only reads.
 python -I tools/ue3live/ue3_discover_external.py --pid <pid> --exe MassEffect1.exe \
     --out local/MELE/offsets/offsets_LE1.json
 python -I tools/ue3live/ue3_verify_offsets.py --pid <pid> --exe MassEffect1.exe \
     --offsets local/MELE/offsets/offsets_LE1.json
 ```
 
-Or point at an existing data set with `MELE_DATA_DIR=/path/to/local/MELE`.
+Already have a data set elsewhere? Point at it:
 
-Nothing here contains game files, assets, or save data. Decompiled findings are described, not
+```bash
+MELE_DATA_DIR=/path/to/local/MELE python -I run_all_tests.py      # sh
+$env:MELE_DATA_DIR = "D:\mele-data"                               # PowerShell
+```
+
+Skipped test cases tell you which file is missing and which command regenerates it, so a clean clone
+is green-with-visible-gaps rather than red for a reason unrelated to the code.
+
+Nothing here contains game files, assets, saves or decompiled binaries. Findings are described, not
 shipped. Build on and patch existing decompilations freely; follow their licences.
+
+Maintainers preparing a release: [PUBLISHING.md](PUBLISHING.md) is the checklist.
+
 
 ## Credit and licence
 

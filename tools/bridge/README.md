@@ -13,8 +13,8 @@ drive two or more real game copies. Nothing in it is specific to one game: every
 | [`fake_game.py`](fake_game.py) | A pretend game with the same server behaviour, for tests and demos. It can inject faults (late replies, a wrong id, garbage, a dropped connection). |
 | [`cpp/test_server.cpp`](cpp/test_server.cpp) | A tiny pretend game that embeds the C++ server. The tests drive it with the Python client. It is also the shortest example of an embedding. |
 
-The pattern and the pitfalls are in [playbook/in-game-bridge.md](../../playbook/in-game-bridge.md). The live table that reads a bridge is
-[tools/inspect](../inspect/README.md).
+The adapter contract the Mass Effect command suite expects of a game embedding this server is in
+[COMMAND-SUITE-ADAPTER.md](../../docs/COMMAND-SUITE-ADAPTER.md).
 
 Python 3.8 or newer for the client. The server needs a C++17 compiler (built with Visual Studio 2022 and CMake).
 
