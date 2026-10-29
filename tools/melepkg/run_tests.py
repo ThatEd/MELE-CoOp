@@ -17,7 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = [
     # The container invariants and the single-block decode. Skips without an install.
     "test_container_format.py",
-    # The import table: per-game layouts, and the shape check that rejects a mis-based parse.
+    # The import and export tables: the coordinate space, the four closures, and the
+    # ownership answers the co-op work depends on.
     "test_mele_tables.py",
 ]
 

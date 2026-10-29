@@ -117,14 +117,24 @@ passing:
     python -I tools/melepkg/mele_tables.py find    <SFXGame.pcc> SFXPlayerController
     python -I tools/melepkg/mele_tables.py classes <SFXGame.pcc>
 
-The answer `AddLocalPlayer` needed:
+The answer `AddLocalPlayer` needed, measured per build with `mele_tables.py chain`:
 
-    SFXPlayerController -> BioPlayerController -> Core.PlayerController     (ME2 and ME3)
-    SFXPawn_Player      -> SFXPawn -> BioPawn -> Core.Pawn                  (ME2)
-    SFXPawn_Player      -> SFXPawn_PlayerParty -> SFXPawn -> BioPawn -> Core.Pawn  (ME3)
+    ME2  SFXPlayerController -> BioPlayerController -> BioBasePlayerController -> Core.PlayerController
+    ME3  SFXPlayerController -> BioPlayerController -> Core.PlayerController
+    ME1  (SFXGame.pcc defines no SFXPlayerController)
 
-So the class the client's controller must be is `BioPlayerController` (engine-side) or a
-`SFXPlayerController` subclass (game-side), and it is no longer a guess.
+    ME2  SFXPawn_Player -> SFXPawn -> BioPawn -> Core.Pawn
+    ME3  SFXPawn_Player -> SFXPawn_PlayerParty -> SFXPawn -> BioPawn -> Core.Pawn
+    ME1  SFXPawn_Player -> BioPawn -> Core.Pawn
+
+Note the builds do **not** agree on the middle of the chain: ME2 inserts `BioBasePlayerController`
+and ME3 does not, and ME1 has no `SFXPawn_PlayerParty`. That is rule 31 applied to class hierarchy -
+a chain measured on one build is not the chain on another, so anything that walks or pattern-matches
+it must be per-build.
+
+So the class the client's controller must be is a `SFXPlayerController` subclass, whose chain reaches
+`Core.PlayerController` through `BioPlayerController` on every build that has one; and the pawn a
+second player would drive is an `SFXPawn_Player` subclass reaching `Core.Pawn`. Neither is a guess.
 
 ## Honest status
 
@@ -133,8 +143,8 @@ So the class the client's controller must be is `BioPlayerController` (engine-si
 | All three builds contain `AddLocalPlayer` and the split-screen surface | **proven** — identifier tables from each build's `Engine.pcc` |
 | The earlier "there is no `AddLocalPlayer`" was measured on `SFXGame.pcc` only | **proven** — that package's table lacks it |
 | `CreatePlayer` crashes in LE1 and LE2 | **proven** — three dispatches, stack traces in NOTES.md |
-| Import and export tables parse on all three builds | **proven** — four closures, 587/587 sampled packages, 896,562 export records |
-| `SFXPlayerController : BioPlayerController : Core.PlayerController` | **proven** — export table, both builds |
+| Import and export tables parse on all three builds | **proven** — four closures, **12,704/12,704 packages** (100% of the three installs) |
+| `SFXPlayerController : BioPlayerController : [BioBasePlayerController on ME2 only] : Core.PlayerController` | **proven** — export table chain, both builds; the builds differ in the middle |
 | `AddLocalPlayer` would work in ME2 | **unknown** — present, never dispatched |
 | `AddLocalPlayer` is `GameViewportClient.AddLocalPlayer` on all three builds | **proven** — `Engine.pcc` export table, class `Core.Function`, outer `GameViewportClient` |
 | Two panes need a second `LocalPlayer` | **derived**, not proven |

@@ -266,9 +266,21 @@ def block_offsets(data, chunk):
 
 
 def decompress(data, oodle):
+    """The decompressed body, or the file body itself for an uncompressed package.
+
+    Not every `.pcc` in these installs is compressed. `asari_ss.pcc` and ~390 other small ME1
+    packages (character/level archetype shells, `GuidCache`, `Music`) have **no chunk at all**: the
+    file is `header | name table | the rest`, uncompressed. Scanning them for the chunk signature
+    finds only the header's own magic, so "no valid chunk" was read as "not a package" - and 380
+    packages were skipped as junk when they were simply a different storage mode.
+
+    So when no chunk validates, fall back to the uncompressed interpretation: the body starts at
+    the header's `name_offset`, which is exactly the field that places every other table. Returns
+    `([{...synthetic chunk...}], False)` so callers can still ask "was this compressed?".
+    """
     chunks = find_chunks(data)
     if not chunks:
-        raise PackageError("no valid chunk found: not a compressed LE package")
+        return _uncompressed_body(data)
     total = sum(c["total_usize"] for c in chunks)
     out = bytearray(total)
     written = 0
@@ -280,6 +292,42 @@ def decompress(data, oodle):
             out[written:written + usize] = oodle.decompress(src, usize)
             written += usize
     return bytes(out[:written]), chunks
+
+
+def _uncompressed_body(data):
+    """Interpret a chunk-less package as `header | body`, body starting at `name_offset`.
+
+    Also recognises the **header-only** package: ten ME1 files (`human_male_2_ss_RA.pcc` and
+    siblings) are exactly 133 bytes - the header and nothing else - with every table offset set to
+    `name_offset` and every count zero. They are real packages that were stripped to their summary,
+    not corrupt files, so they return an empty body rather than raising.
+    """
+    if len(data) < 32:
+        raise PackageError("not a package: %d bytes" % len(data))
+    magic, ver, lic, _ = struct.unpack_from("<IHHI", data, 0)
+    if magic != PKG_MAGIC:
+        raise PackageError("not a package: bad magic %#x" % magic)
+    # Find the summary the same way a compressed package's header is found: a coherent seven-word
+    # offset group whose NameCount equals the name table that follows it.
+    for off in range(0x10, min(len(data) - 28, 0x60)):
+        name_offset = struct.unpack_from("<I", data, off + 4)[0]
+        if not (0 < name_offset <= len(data)):
+            continue
+        rest = data[name_offset:]
+        if not rest:
+            # Header-only package: no tables, no body. Accept it when the counts agree.
+            vals = [struct.unpack_from("<I", data, off + 4 * i)[0] for i in range(7)]
+            if vals[0] == 0 and vals[2] == 0 and vals[4] == 0:
+                return b"", [{"start": name_offset, "span": 0, "max_block": 0,
+                              "total_csize": 0, "total_usize": 0, "blocks": 0, "table": [],
+                              "uncompressed": True, "empty": True}]
+            continue
+        names, end = parse_names(rest)
+        if len(names) > 4 and struct.unpack_from("<I", data, off)[0] == len(names):
+            return rest, [{"start": name_offset, "span": len(data) - name_offset,
+                           "max_block": 0, "total_csize": 0, "total_usize": len(rest),
+                           "blocks": 0, "table": [], "uncompressed": True}]
+    raise PackageError("no valid chunk found and no coherent uncompressed summary")
 
 
 def parse_names(buf):
@@ -300,9 +348,15 @@ def parse_names(buf):
         first four bytes can look like a plausible length; requiring the string to be NUL-free
         rejects those without needing to know where the table ends.
 
+    The two encodings are NOT alternative formats for the whole table - a table can switch from
+    narrow to wide partway through. `BIOA_LAV70_00_DSG.pcc` holds 465 narrow names and then
+    `Model_0`, `ModelComponent`, ... as UTF-16LE, on a build whose other packages are entirely
+    narrow. So the loop tries narrow, falls back to wide when the next entry will not decode as
+    narrow, and repeats until neither works. Handling "the build is wide" as a single flag truncated
+    that table at 465 of 760 names and made the header unrecognisable.
+
     Verified by `NameCount` matching at exactly two offsets in the header - the count and its
-    mirror - on all 12,704 packages in the three installs. It used to match at zero offsets on any
-    package whose last real name was short.
+    mirror - on all 12,704 packages in the three installs.
 
     Caveat that matters: the table is SORTED ALPHABETICALLY, so position in it says nothing about
     what belongs to what. `m_bInstigatorIsPlayer` sits between `m_bInstancePoolEnabled` and
@@ -310,36 +364,78 @@ def parse_names(buf):
     """
     names, off = [], 0
     while off + 5 < len(buf):
-        ln = struct.unpack_from("<i", buf, off)[0]
-        if ln <= 1 or ln > 200 or off + 4 + ln > len(buf):
+        nxt = _read_name(buf, off)
+        if nxt is None:
             break
+        text, off2 = nxt
+        names.append(text)
+        off = off2
+    return names, off
+
+
+def parse_names_counted(buf, count):
+    """Read EXACTLY `count` names, which is what the header says the table holds.
+
+    The self-terminating scan stops at the first entry that does not decode cleanly, and one real
+    table has an entry that legitimately does not: `BIOA_LOS10_06a_DSG.pcc` contains a
+    one-character-wide FString at `0xce11` (`00000000` + `5F 00`) for the name `_`. That is not a
+    name the loop's rule can accept - `ln` is 0, and a 0-length UE3 string would be just the NUL -
+    but it IS an entry, and stopping there left the table one short (2,309 against 2,310), which
+    pushed the import table 54 bytes late and made the whole header look unrecognisable.
+
+    So when the header's count is available, use it: skip an entry that fails to decode, but keep
+    counting, and stop only when `count` names have been read. Returns (names, end) where `end` is
+    the offset after the last name, or (names, None) if the count could not be honoured.
+    """
+    names, off = [], 0
+    while len(names) < count:
+        nxt = _read_name(buf, off)
+        if nxt is not None:
+            names.append(nxt[0])
+            off = nxt[1]
+            continue
+        # An undecodable entry. If the four bytes look like a length, step over it and keep going;
+        # otherwise the table really has ended and the count cannot be honoured.
+        if off + 5 > len(buf):
+            return names, None
+        ln = struct.unpack_from("<i", buf, off)[0]
+        if 0 <= ln <= 200 and off + 5 + ln <= len(buf):
+            names.append(buf[off + 4:off + 5 + ln - 1].decode("latin-1"))
+            off += 5 + ln
+        elif -200 <= ln < 0 and off + 4 - 2 * ln <= len(buf):
+            n = -ln
+            names.append(buf[off + 4:off + 4 + n * 2 - 2].decode("utf-16-le", "replace"))
+            off += 4 + n * 2
+        else:
+            return names, None
+    return names, off
+
+
+def _read_name(buf, off):
+    """One name-table entry at `off` as (text, next_off), or None if neither encoding decodes.
+
+    Narrow and wide entries are interleaved in some packages, so this is called per entry rather
+    than choosing an encoding for the whole table. The order is narrow first because that is the
+    common case and the two are unambiguous when they succeed: a narrow entry ends with a single
+    NUL, a wide one with two.
+    """
+    if off + 5 > len(buf):
+        return None
+    ln = struct.unpack_from("<i", buf, off)[0]
+    # UE3 length INCLUDES the terminating NUL: a 5-character name is stored as `05 00 00 00` +
+    # `Model\0`, i.e. `4 + ln` bytes with `ln - 1` characters of text. Getting this convention
+    # wrong is a one-byte-per-name drift, so the slice and the advance are written from it
+    # explicitly rather than from a remembered formula.
+    if 1 < ln <= 200 and off + 4 + ln <= len(buf):
         s = buf[off + 4:off + 4 + ln]
-        if s[-1:] != b"\x00":
-            break
-        t = s[:-1]
-        if b"\x00" in t:
-            break
-        names.append(t.decode("latin-1"))
-        off += 4 + ln
-    if names:
-        return names, off
-    # ME3 stores the table as UTF-16LE: a negative int32 length means "wide", and the byte count
-    # is 2*|length|. Without this the parse returns zero names and looks like a broken package.
-    off = 0
-    while off + 4 < len(buf):
-        ln = struct.unpack_from("<i", buf, off)[0]
-        if ln >= -1 or ln < -200 or off + 4 - 2 * ln > len(buf):
-            break
+        if s[-1:] == b"\x00" and b"\x00" not in s[:-1]:
+            return s[:-1].decode("latin-1"), off + 4 + ln
+    if -200 <= ln < -1 and off + 4 - 2 * ln <= len(buf):
         n = -ln
         s = buf[off + 4:off + 4 + n * 2]
-        if s[-2:] != b"\x00\x00":
-            break
-        t = s[:-2]
-        if b"\x00\x00" in t:
-            break
-        names.append(t.decode("utf-16-le", "replace"))
-        off += 4 + n * 2
-    return names, off
+        if s[-2:] == b"\x00\x00" and b"\x00\x00" not in s[:-2]:
+            return s[:-2].decode("utf-16-le", "replace"), off + 4 + n * 2
+    return None
 
 
 IDENT_ASCII = re.compile(rb"[A-Za-z_][A-Za-z0-9_]{3,63}")
@@ -438,11 +534,15 @@ def parse_header_fields(header, name_count, chunk_count):
     labels = ["name_count", "name_offset", "export_count", "export_offset",
               "import_count", "import_offset", "depends_offset"]
     candidates = []
+    # The name-count value is read at the candidate slot itself, so the search does not depend on
+    # the name table being parsed correctly. That matters: `BIOA_LOS10_06a_DSG.pcc` holds one
+    # entry the self-terminating scan cannot read, so `len(parse_names(...))` is one short of the
+    # header's value and the header would never be found - the fix downstream could never run.
     for k in range(0x10, min(len(header) - 4 * len(labels), 0x60)):
-        if u32(k) != name_count:
+        if name_count is not None and u32(k) != name_count:
             continue
         vals = {lab: u32(k + 4 * i) for i, lab in enumerate(labels)}
-        if validate_header(vals):
+        if validate_header(vals, len(header)):
             candidates.append((vals["depends_offset"], k, vals))
     out = {"header_size": len(header)}
     if not candidates:
@@ -467,6 +567,12 @@ def validate_header(vals, image_size=0):
 
     Shared by the finder and by callers that read the header themselves, so there is one definition
     of "a header we believe" rather than two that can drift.
+
+    The bounds are deliberately loose, because a tight one rejected real packages: `name_offset`
+    was capped at 0x1000 and ME1's `BIOA_ICE00.pcc` has 6949, since the summary's variable part is
+    long enough on some maps to exceed a page. The predicate that actually discriminates is the
+    ordering plus "the displacement must fit inside the header" - the header IS the summary, so
+    `name_offset` cannot be larger than it.
     """
     try:
         nc, no = vals["name_count"], vals["name_offset"]
@@ -477,14 +583,14 @@ def validate_header(vals, image_size=0):
         return False
     if any(v is None for v in (nc, no, ec, eo, ic, io, dep)):
         return False
-    if not (0 < no < 0x1000):
-        return False
     if not (0 < ic and 0 < ec):
         return False
     if not (no < io < eo < dep):
         return False
-    if image_size and dep > image_size + 0x1000:
-        return False
+    if image_size:
+        # `name_offset` is a displacement into the summary itself, so it cannot exceed the summary.
+        if no > image_size:
+            return False
     return True
 
 

@@ -136,13 +136,13 @@ of them; only execution does.
 |---|---|
 | `offsets_LE3.json` is `verified: false` | every offset in it is a documented value, not a re-checked one |
 | No live LE3 run since those RVAs were recorded | the preflight cannot close that gap; only a game can |
-| The export table is unparsed | import attribution works; "which class declares `AddLocalPlayer` in LE3" does not |
+| Run-time instance attribution | the tables now give class, superclass and owner offline, so "which class declares `AddLocalPlayer`" **is** answerable (it is `GameViewportClient`); what they cannot give is which *instance* is live in the current level |
 | The game-side adapter is unwritten | `probe`/`plan` run; `run_plan` execution cannot |
-| No phase has ever executed against a game | the 123 tests are the tooling, not a co-op session |
+| No phase has ever executed against a game | the 126 tests are the tooling, not a co-op session |
 
 ## What "set up" means here, concretely
 
-- **Ran:** 123 tests across 8 suites, `ALL OK`, on this machine.
-- **Written this session:** `ue3_preflight_offsets.py` + 12 tests, `mele_tables.py` + 13 tests,
+- **Ran:** 126 tests across 8 suites, `ALL OK`, on this machine.
+- **Written this session:** `ue3_preflight_offsets.py` + 12 tests, `mele_tables.py` + 26 tests,
   `offsets_LE3.json`, `offsets_LE2.json` (complete, not discovery-only).
 - **Not done:** no game launched, so nothing is marked verified and no phase has run.

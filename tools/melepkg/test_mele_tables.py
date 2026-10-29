@@ -529,6 +529,112 @@ def t_viewport_owns_split_screen():
     return "ok", "all %d are GameViewportClient methods" % len(want)
 
 
+@case("the controller and pawn chains match each build, and the builds differ")
+def t_class_chains():
+    """Pinned exactly, because the first draft of the note got two of three builds wrong - the
+    chains are NOT the same shape across builds (rule 31 applied to class hierarchy)."""
+    want = {
+        ("ME1", "SFXPawn_Player"): ["SFXPawn_Player", "BioPawn", "Core.Pawn"],
+        ("ME2", "SFXPawn_Player"): ["SFXPawn_Player", "SFXPawn", "BioPawn", "Core.Pawn"],
+        ("ME3", "SFXPawn_Player"): ["SFXPawn_Player", "SFXPawn_PlayerParty", "SFXPawn",
+                                    "BioPawn", "Core.Pawn"],
+        ("ME2", "SFXPlayerController"): ["SFXPlayerController", "BioPlayerController",
+                                         "BioBasePlayerController", "Core.PlayerController"],
+        ("ME3", "SFXPlayerController"): ["SFXPlayerController", "BioPlayerController",
+                                         "Core.PlayerController"],
+    }
+    got, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game)
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        for cls in ("SFXPawn_Player", "SFXPlayerController"):
+            chain = mele_tables.class_chain(t, cls)
+            got[(game, cls)] = [c[1] for c in chain] + ([chain[-1][2]] if chain else [])
+    if not got:
+        return "skip", "no build available (%s)" % ", ".join(skipped)
+    bad = {k: v for k, v in want.items() if k in got and got[k] != v}
+    if bad:
+        return "fail", "%s" % bad
+    # The builds must NOT agree: if they do, this test stopped discriminating.
+    shapes = {tuple(v) for k, v in got.items() if k[1] == "SFXPlayerController" and v}
+    if len(shapes) < 2:
+        return "ok but surprising", ("all builds share one controller chain shape; rule 31 says "
+                                     "check that is real")
+    return "ok", "%d chains pinned, %d distinct non-empty controller shapes" % (
+        len(got), len(shapes))
+
+
+@case("ME1's SFXGame defines no SFXPlayerController")
+def t_me1_no_controller():
+    """Worth pinning because the absence is load-bearing: LE1 is the third target and it does not
+    have the class the first two do."""
+    p = package("ME1")
+    if not p:
+        return "skip", "no ME1 SFXGame.pcc"
+    t = mele_tables.build(p)
+    if [e for e in t["exports"] if e["object_name"] == "SFXPlayerController"]:
+        return "fail", "ME1 has an SFXPlayerController after all"
+    if not [e for e in t["exports"] if e["object_name"] == "SFXPawn_Player"]:
+        return "fail", "ME1 has neither class; the package is probably wrong"
+    return "ok", "absent, while SFXPawn_Player is present"
+
+
+@case("an uncompressed package parses the same way as a compressed one")
+def t_uncompressed_package():
+    """380 ME1 packages have no chunk at all - the file is `header | body`, uncompressed.
+
+    Scanning only for the chunk signature read those as "not a package", so they were skipped as
+    junk. They are ordinary packages in a different storage mode, and `decompress()` now falls back
+    to the uncompressed interpretation rather than raising.
+    """
+    p = package("ME1", "asari_ss")
+    if not p:
+        return "skip", "no ME1 asari_ss.pcc"
+    t = mele_tables.build(p)
+    c = t["container"]
+    if c.get("compressed"):
+        return "fail", "asari_ss.pcc parsed as compressed; it has no chunk"
+    if c.get("usize", 0) <= 0:
+        return "fail", "uncompressed package reports %r uncompressed bytes" % (c.get("usize"),)
+    bad = [n for n, ok, _ in t["checks"] if not ok]
+    if bad:
+        return "fail", "failed %s" % bad
+    # It must actually have content - an empty result would also satisfy the checks above.
+    if not t["exports"] or not t["imports"]:
+        return "fail", "%d exports / %d imports; the package has both" % (
+            len(t["exports"]), len(t["imports"]))
+    return "ok", "%d names, %d imports, %d exports, %d bytes, all checks pass" % (
+        t["names"], len(t["imports"]), len(t["exports"]), c["usize"])
+
+
+@case("a package whose serial data overshoots still parses, and says so")
+def t_serial_overshoot():
+    """ME1 maps exist whose export list points past the end of the decompressed stream.
+
+    `BIOA_NOR10_07wake_DSG.pcc` has 4,777 exports, zero contiguity gaps, and a last
+    `serial_offset + serial_size` of 50,771,444 against an 8,125,004-byte image. The WALK is right -
+    contiguity proves it - so the sizes are the anomaly, not the parse. Requiring the end to equal
+    the image length rejected correct parses on those maps. Contiguity is mandatory; the exact end
+    is reported in the check's detail rather than enforced.
+    """
+    p = package("ME1", "BIOA_NOR10_07wake_DSG")
+    if not p:
+        return "skip", "no ME1 BIOA_NOR10_07wake_DSG.pcc"
+    t = mele_tables.build(p)
+    detail = dict((n, d) for n, _, d in t["checks"])["serial_contiguity"]
+    if "gap(s) [];" not in detail:
+        return "fail", "expected zero gaps, got %r" % detail
+    if "end differs" not in detail:
+        return "ok but surprising", ("this map's serial data now closes exactly; the fixture "
+                                     "stops exercising the overshoot case")
+    if not detail.startswith("0 gap"):
+        return "fail", detail
+    return "ok", detail[:80]
+
+
 def main():
     failures = 0
     skips = 0

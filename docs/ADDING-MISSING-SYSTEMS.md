@@ -137,16 +137,27 @@ Worth being concrete, because "add networking" hides a lot:
   `PackageMap` problems. A "both start together from the same save" model sidesteps it and is
   the sane first target.
 
-## What cannot be reverse-engineered offline right now
+## What could not be reverse-engineered offline — and now can
 
-Script-level analysis needs the `.pcc` container parsed, and it is not: the payload is
-definitively compressed (entropy 7.996), uses a block list at `0x1B5`, and **every** codec
-tested failed on it - LZO1X, zlib, raw deflate, gzip, bz2, lzma and Oodle 8 through the
-shipped DLL. Details and the next step are in [NOTES.md](./NOTES.md#container-findings-2026-10-29-all-measured-none-guessed).
+*(This section said "the container is not parsed; every codec failed". That was the state before
+2026-10-29. The codec is **Oodle 8 from the game's own `oo2core_8_win64.dll`**, the container is
+solved, and the import and export tables parse. See
+[CONTAINER-FORMAT.md](./CONTAINER-FORMAT.md).)*
 
-Consequence for planning: **every step above can be built and tested without the container**,
-by reading the live process. The container would make it faster and safer, not possible.
-So the container is a parallel task, not a prerequisite.
+What offline analysis gives now, with no process to attach to:
+
+| Question | Tool |
+|---|---|
+| Does this build contain X? | identifier table (`melepkg names --grep X`) |
+| What kind of object is X, and which package is it from? | import table (`mele_tables imports`) |
+| Which class declares X, and what is its superclass and owner? | export table (`mele_tables find` / `objects`) |
+| What is the full inheritance chain of a class? | export table + `super_index` |
+
+What still needs a running game: which *instance* of a class is live in the current level, and
+whether a call actually did anything. Those are `probe`'s job.
+
+Consequence for planning: the container is no longer a parallel task, it is done. The remaining
+risk is dispatch, not reading.
 
 ## Honest risk list
 

@@ -168,6 +168,19 @@ list**; if a section disagrees, this wins.
     The hole was exactly where the code was broken. A refusal to parse is a FAILURE; only an
     absent file may skip.
 
+36. **A sample is not a population, and "N of N" must name its N.** "587 of 587 sampled packages"
+    reads as a survey of the install and was a random sample of 587. Sweeping all 12,704 found
+    414 failures the sample missed entirely, because they cluster in a minority shape
+    (uncompressed ME1 packages) that uniform random sampling under-weights. If a check is cheap
+    enough to run over everything, run it over everything; if not, say "sampled" and give the
+    sampling rule.
+
+37. **When a count field and a self-terminating scan disagree, the count field wins - but only if
+    the result closes.** One ME1 map holds a one-character FString no scan rule accepts, so the
+    header's `NameCount` is the only correct answer. Trusting it blindly would let a wrong header
+    produce a table running past its own end, so the retry is gated on it landing exactly on
+    `import_offset`. Every retry added here is conditional on closure.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -2619,6 +2632,11 @@ about a control gate.
 
 ### The header is still not parsed, and that is a real limitation
 
+*(Partially superseded 2026-10-29: the header's **fields** are now parsed, and the mapping from
+output offset to package offset is `image = buffer + name_offset`. What is still unparsed is the
+compressed stretch below `0x1D5`, and the name table's own UTF-16 length field. See the
+export-table section at the end of this file.)*
+
 The bytes before the first chunk are not a stock UE3 header, and part of them is compressed:
 entropy over `0x1D5..0x1000` is 7.926 and over `0x1000..0x10000` is 7.995, against 5.538 for
 `0x00..0x1B5` (the name table). So what this reader recovers is the **decompressed chunk stream**,
@@ -3468,12 +3486,19 @@ landing end-to-end on 65,619,603 bytes exactly cannot be a coincidence of a shif
 
 Real inheritance chains, offline, no game launch:
 
-    SFXPawn_Player     -> SFXPawn_PlayerParty -> SFXPawn -> BioPawn -> Core.Pawn        (ME3)
-    SFXPawn_Player     -> SFXPawn -> BioPawn -> Core.Pawn                              (ME1)
-    SFXPlayerController-> BioPlayerController -> Core.PlayerController                 (ME2, ME3)
+    ME3  SFXPawn_Player -> SFXPawn_PlayerParty -> SFXPawn -> BioPawn -> Core.Pawn
+    ME2  SFXPawn_Player -> SFXPawn -> BioPawn -> Core.Pawn
+    ME1  SFXPawn_Player -> BioPawn -> Core.Pawn
 
-`SFXPlayerController : BioPlayerController` is exactly the class a client-side second player needs,
-and it is now an assertion in the suite rather than a hope.
+    ME2  SFXPlayerController -> BioPlayerController -> BioBasePlayerController -> Core.PlayerController
+    ME3  SFXPlayerController -> BioPlayerController -> Core.PlayerController
+    ME1  (no SFXPlayerController in SFXGame.pcc)
+
+The chains **differ per build** - ME1 has no `SFXPawn_PlayerParty`, ME2 inserts
+`BioBasePlayerController` and ME3 does not. That is rule 31 applied to class hierarchy: anything
+that walks or pattern-matches a chain must be per-build. This was found by writing the first draft
+of this note from a hand-rolled walk, then building `mele_tables.py chain` and discovering the
+documented chain was wrong for two of the three builds.
 
 ### Scale check
 
@@ -3481,6 +3506,10 @@ and it is now an assertion in the suite rather than a hope.
 are not packages at all) parse with all four closures passing: **896,562 export records**. Three
 headers that previously matched a false `NameCount` (one produced `name_offset` = 2,189,950,989)
 are now rejected by `validate_header()`.
+
+*(Superseded by the full-install sweep below: 587 was a SAMPLE, and the population is
+**12,704 / 12,704**. The sample had missed 414 failures concentrated in a minority shape. See
+rule 36.)*
 
 ### Rule 34
 
@@ -3497,3 +3526,87 @@ residuals were exactly `4 * sum(NetObjectCount)` on the packages that had one.
 displacement made every package refuse to build, and the suite still reported 22/24 OK - because
 `_build_or_skip()` dressed each `SystemExit` up as "no build available". The suite had a hole
 exactly where the code was broken. A refusal is a failure; only an *absent file* is a skip.
+
+## 2026-10-29 (full-install sweep): four more parser bugs, and a correction to "587 of 587"
+
+The claim "587 of 587 randomly sampled packages" was a **sample**, not the install. Sweeping all
+**12,704** packages in the three builds found 414 failures and three real bugs plus one
+overstatement. That is the same lesson as rule 25 in a different shape: a sample large enough to be
+convincing is not the population.
+
+### 1. 380 ME1 packages are UNCOMPRESSED, and were being skipped as junk
+
+`asari_ss.pcc`, `ashley_ss.pcc`, `GuidCache.pcc`, `Music.pcc` and ~380 others have **no chunk at
+all**. The file is `header | name table | the rest`, stored uncompressed. Scanning for the chunk
+signature finds only the header's own magic, and the reader raised "no valid chunk found: not a
+compressed LE package".
+
+That message was read as "not a package", so these were counted as junk for the whole project. They
+are ordinary packages in a different storage mode. `decompress()` now falls back to the
+uncompressed interpretation, which needs no new field: the body starts at `name_offset`, the same
+field that places every other table.
+
+### 2. Ten ME1 files are header-only packages, not corrupt ones
+
+`human_male_2_ss_RA.pcc` and siblings are exactly **133 bytes** - the summary and nothing else, with
+every table offset equal to `name_offset` and every count zero. They are stripped packages. They now
+return an empty result with all four checks trivially true, instead of an exception that got them
+counted as failures.
+
+### 3. Name tables can MIX narrow and wide entries
+
+`BIOA_LAV70_00_DSG.pcc` holds 465 narrow names and then `Model_0`, `ModelComponent`, ... as
+UTF-16LE - on a build whose other packages are entirely narrow. Treating "the build is wide" as one
+flag truncated that table at 465 of 760 names and made the header unrecognisable. The parse now
+decides encoding **per entry**.
+
+### 4. One table has an entry the scan cannot accept, and only the count can resolve it
+
+`BIOA_LOS10_06a_DSG.pcc` contains a one-character-wide FString at `0xce11` (`00000000` + `5F 00`)
+for the name `_`. A self-terminating scan has no rule that accepts it, so the table came out 2,309
+against the header's 2,310, the import table landed 54 bytes late, and the header was never found.
+
+The fix is that the header's `NameCount` is authoritative: `parse_names_counted()` reads exactly
+that many entries, stepping over one that will not decode. `build()` retries with it when the
+self-terminating end does not match `import_offset`, and the header search retries without a name
+count when the count is the thing that is wrong. Both retries are conditional on the result
+*closing*, so neither can paper over a genuinely wrong base.
+
+### The overstatement
+
+`serial_contiguity` required the last `serial_offset + serial_size` to equal the image length
+exactly. Two ME1 maps break that: `BIOA_NOR10_07wake_DSG.pcc` ends at 50,771,444 against an
+8,125,004-byte image, and `BIOA_UNC21_00_LAY.pcc` at 199,103,759 against 198,316,317. Contiguity
+holds with **0 gaps** in both, so the entry WALK is right and the sizes are the anomaly - most
+likely packages truncated during packaging. The equality is now reported, not enforced; contiguity
+is still mandatory.
+
+Weakening it is a real trade: the end-equality was the strongest single check against a wrong base.
+It is kept as a reported detail, and the other three closures still fire on a wrong base - the
+fail-test confirms it.
+
+### Result
+
+| | packages | pass | fail |
+|---|---|---|---|
+| ME1 | 4,946 | 4,946 | 0 |
+| ME2 | 3,708 | 3,708 | 0 |
+| ME3 | 4,050 | 4,050 | 0 |
+| **total** | **12,704** | **12,704** | **0** |
+
+### Rule 36
+
+**A sample is not a population, and "N of N" must name its N.** "587 of 587 sampled packages" reads
+as a survey of the install and was a random sample of 587. The full sweep found 414 failures the
+sample had missed entirely, because the failures cluster in a minority shape (uncompressed ME1
+packages) that uniform random sampling under-weights. When a check is cheap enough to run over
+everything, run it over everything - and when it is not, say "sampled" and give the sampling rule.
+
+### Rule 37
+
+**When a count field and a self-terminating scan disagree, the count field wins - but only if the
+result closes.** `BIOA_LOS10_06a_DSG.pcc` has an entry no scan rule accepts; the header's
+`NameCount` knows the table's true length. Trusting the count blindly would let a wrong header
+produce a table that runs past its own end, so the retry is gated on `import_offset` matching the
+end exactly. Both retries added here are conditional on closure, which is what keeps them from
+becoming a way to explain away a wrong base.

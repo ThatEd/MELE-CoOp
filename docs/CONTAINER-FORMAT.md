@@ -123,25 +123,52 @@ work that means answering questions without launching a game:
 * which `SeqAct_*` / `BioSeqAct_*` classes a level uses, i.e. the **map events**;
 * diffing LE1 vs LE3 identifier sets, which is the "only some naming calls need changing" list.
 
-## The packfile header layout (partially decoded)
+## The packfile header layout (decoded)
 
 The bytes before the first chunk are a **packfile header**, and the package's table offsets index
-*this header*, not the file and not the decompressed body. That resolves the long-standing confusion:
+the serialized *image* — which is **header + decompressed body**, not the file and not the buffer on
+its own. That distinction is the whole of [the coordinate-space error](#the-coordinate-space-error):
+a header offset `o` indexes the decompressed buffer at `o - name_offset`.
+
+Fields, located by requiring the seven-word group in this order to be coherent (`validate_header`),
+rather than at fixed offsets:
 
 | Field | ME1 | ME2 | ME3 | Meaning |
 |---|---|---|---|---|
-| `+0x00` | `0x9E2A83C1` | same | same | magic |
-| `+0x04` | ver 684, lic 171 | same | same | version / licensee |
-| `+0x0C` | `"None"` (FString) | same | same | folder name |
-| header size | 437 | 629 | 862 | bytes before the first chunk |
-| NameCount at | `+0x19` | `+0x19` | `+0x22` | equals the parsed name-table length exactly |
-| NameOffset at | `+0x1D` = **133** | `+0x1D` = **133** | `+0x26` = **142** | offset **into this header** |
-| ExportCount | 35,385 | 39,961 | 54,768 | |
-| ImportCount | 1,426 | 1,909 | 4,189 | |
+| magic | `0x9E2A83C1` | same | same | |
+| version / licensee | 684 (0x2AC) / 171 | same | same | |
+| folder | `"None"` (FString) | same | same | 9 bytes longer on ME3, shifting every later field |
+| `name_count` | 23,258 | 27,293 | 37,669 | equals the parsed name-table length exactly |
+| `name_offset` | **133** | **133** | **142** | the image/buffer displacement |
+| `import_count`, `import_offset` | 1,426 | 1,909 | 4,189 | |
+| `export_count`, `export_offset` | 35,385 | 39,961 | 54,768 | |
+| `depends_offset` | | | | the export walk lands exactly here |
 
-`NameCount` matching the independently parsed name table (23,258 / 27,293 / 37,669) is what pins
-the layout — that agreement cannot be coincidence. ME3's header is shifted by 9 bytes because its
-folder FString is longer, so **the field offsets must be derived per package, not hardcoded**.
+`NameCount` matching the independently parsed name table is what pins the layout — that agreement
+cannot be coincidence, and it is now checked as part of a seven-field predicate because on its own
+it is not enough: `BioD_ProEar_120WalkC_LOC_DEU.pcc` contains a byte run equal to its `NameCount`
+whose neighbours give `name_offset = 2,189,950,989`.
+
+Numbers above are for each build's `SFXGame.pcc`. Two things vary and must never be hardcoded:
+
+* **The field offsets shift per build.** ME3's folder FString is 9 bytes longer, moving every later
+  field. `parse_header_fields()` finds the group by its content, not by offset.
+* **The header length varies per package, not per game.** `SFXGame.pcc` is 437 / 629 / 862 bytes on
+  ME1 / ME2 / ME3, but `Engine.pcc` is **341 / 229 / 238** on the same three builds — smaller, and
+  not in the same order as the game list. The header length is `first_chunk_offset`, so derive it.
+
+### The coordinate-space error
+
+```
+image  = header + decompressed body        (the serialised package)
+buffer = decompressed body                 (what the decompressor hands you)
+buffer[i] == image[name_offset + i]
+```
+
+Every table offset must therefore be reduced by `name_offset` before indexing the buffer. Reading
+them undisplaced puts each entry 133/142 bytes past its real start, so every entry straddles two
+real entries — which is what produced the "rotated ME3 import layout", the "68.005 export stride",
+the filler export-name column, and the belief that class attribution was unavailable.
 
 ### The chunk index — fully decoded
 
@@ -206,8 +233,10 @@ table that fails any of them:
 | `serial_contiguity` | `serial_offset[k] + serial_size[k] == serial_offset[k+1]`, last one ends at the image length |
 | `acceptance` | class chains terminate in a class; every `Default__X` resolves to class `X` |
 
-Verified on 587 of 587 randomly sampled packages across the three installs (896,562 export
-records), excluding 133-byte files that are not packages.
+Verified on **all 12,704 packages** in the three installs (100%), excluding nothing — the ten
+133-byte header-only stubs and 380 uncompressed ME1 packages are handled as the distinct shapes they
+are, not skipped. That is 896,562 export records in the sample that was measured for record count;
+the full sweep is the population.
 
     python -I tools/melepkg/mele_tables.py summary <pkg>
     python -I tools/melepkg/mele_tables.py find    <pkg> <name>
