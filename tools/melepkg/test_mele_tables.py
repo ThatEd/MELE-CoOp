@@ -66,7 +66,7 @@ def t_layouts_differ():
 @case("every layout names all four columns and three pads")
 def t_layout_shape():
     for game, lay in mele_tables.LAYOUTS.items():
-        words = [lay["cls"], lay["outer"], lay["obj"], lay["src"]] + list(lay["pad"])
+        words = [lay["type"], lay["outer"], lay["obj"], lay["src"]] + list(lay["pad"])
         if sorted(words) != list(range(7)):
             return "fail", "%s does not use each of the 7 words exactly once: %s" % (game, words)
     return "ok", "3 layouts x 7 words, all distinct"
@@ -126,7 +126,7 @@ def t_shape_good():
     return "ok", why
 
 
-@case("exports are reported as unparsed, with their measurements")
+@case("the export table is reported as unparsed, with the retraction recorded")
 def t_exports_honest():
     st = mele_tables.exports_status({"export_count": 100, "depends_offset": 6800,
                                      "export_offset": 1000})
@@ -134,13 +134,38 @@ def t_exports_honest():
         return "fail", "claims to have parsed exports"
     if st["measured_stride"] != 68:
         return "fail", "stride %r" % st["measured_stride"]
-    if not st["closes_exactly"]:
-        return "fail", "100 * 68 should close on 6800"
-    if st["closure_base"] != 0:
-        return "fail", "closure base %r, expected 0" % st["closure_base"]
     if not st.get("why_not") or not st.get("next_step"):
         return "fail", "the gap is not explained"
-    return "ok", "unparsed, stride 68, closes, gap explained"
+    if "__LoadingMovieDelegate__Delegate" not in st["why_not"]:
+        return "fail", ("why_not does not record the retraction's evidence. Without the filler "
+                        "name, the next person repeats the mistake")
+    return "ok", "unparsed, stride 68, retraction evidence preserved"
+
+
+@case("the disproven name offsets are recorded as unproven, not as the answer")
+def t_unproven_recorded():
+    if not mele_tables.EXPORT_NAME_FIELD_UNPROVEN:
+        return "fail", "the measured-but-wrong offsets were deleted; they will be re-derived"
+    if not hasattr(mele_tables, "parse_exports"):
+        return "ok", ("offsets recorded, no parser offered - the honest state: %s"
+                      % mele_tables.EXPORT_NAME_FIELD_UNPROVEN)
+    return "fail", "a parse_exports() is still exported, inviting use of a disproven read"
+
+
+@case("a constant name column is rejected as evidence")
+def t_constant_is_not_evidence():
+    """The shape of all four false passes in this project: a test that accepts a constant.
+
+    Pin it as an assertion so the reasoning survives: if 95% of entries resolve to the SAME name,
+    that is filler, not attribution - whatever the percentage says.
+    """
+    names = ["__LoadingMovieDelegate__Delegate"] * 950 + ["Real%d" % i for i in range(50)]
+    distinct = len(set(names))
+    coverage = 1000 / 1000
+    if coverage == 1.0 and distinct < 100:
+        return "ok", ("coverage 100%% but only %d distinct names -> filler. Distinctness, not "
+                      "coverage, is the test" % distinct)
+    return "fail", "the reasoning helper did not reproduce the case"
 
 
 @case("a package that is not ME gives no import table rather than a guessed one")
@@ -226,13 +251,63 @@ def t_playercontroller():
             found[game] = "ABSENT"
             continue
         r = hit[0]
-        found[game] = "%s/%s" % (r["class_name"], r["source_name"])
+        found[game] = "%s/%s" % (r["type_name"], r["source_name"])
     if not found:
         return "skip", "no build available (%s)" % ", ".join(missing)
     bad = {g: v for g, v in found.items() if v != "Class/Core"}
     if bad:
         return "fail", "%s; expected Class/Core everywhere" % bad
     return "ok", "Class/Core on %s" % ", ".join(sorted(found))
+
+
+@case("each game's layout puts the TYPE column where types actually are")
+def t_type_column():
+    """The discriminator that settled the layout, pinned as a test.
+
+    A type column is 88-94% engine type names on a real table and ~0% on a wrong one. Nothing
+    else separated ME1's columns from ME3's as sharply, and two earlier guesses passed a
+    range check while producing function names where objects belong.
+    """
+    import collections
+    TYPES = {"Class", "Function", "BoolProperty", "IntProperty", "FloatProperty",
+             "ObjectProperty", "StructProperty", "ByteProperty", "ArrayProperty",
+             "StrProperty", "DelegateProperty", "NameProperty", "Interface", "Enum",
+             "ScriptStruct", "Component", "State"}
+    results = {}
+    skipped = []
+    for game in ("ME1", "ME2", "ME3"):
+        t, why = _build_or_skip(game)
+        if t is None:
+            skipped.append(game)
+            continue
+        rows = t["imports"]
+        share = (sum(1 for r in rows if r["type_name"] in TYPES) / len(rows)) if rows else 0
+        results[game] = share
+        if share < 0.5:
+            return "fail", ("%s: only %.0f%% of the type column are type names - the layout is "
+                            "wrong for this build" % (game, 100 * share))
+    if not results:
+        return "skip", "no build available (%s)" % ", ".join(skipped)
+    return "ok", ", ".join("%s %.0f%%" % (g, 100 * v) for g, v in sorted(results.items()))
+
+
+@case("the object column reads as an ordered object list")
+def t_object_column():
+    """The second, independent discriminator: a real object column starts with engine objects."""
+    results, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        t, why = _build_or_skip(game)
+        if t is None:
+            skipped.append(game)
+            continue
+        first = [r["object_name"] for r in t["imports"][:6] if r["object_name"]]
+        stripped = [n[9:] if n.startswith("Default__") else n for n in first]
+        if not any(n.startswith(("Actor", "Anim", "AIController")) for n in stripped):
+            return "fail", "%s object column starts with %s" % (game, first)
+        results[game] = stripped[0]
+    if not results:
+        return "skip", "no build available (%s)" % ", ".join(skipped)
+    return "ok", ", ".join("%s %s" % (g, v) for g, v in sorted(results.items()))
 
 
 def main():

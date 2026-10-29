@@ -146,6 +146,14 @@ list**; if a section disagrees, this wins.
     from one game. Name the artefact a finding came from, because the next reader will assume it
     is the whole build.
 
+33. **Coverage is not correctness; distinctness is.** An export-table read resolved 87-99.5% of
+    entries to a name index and looked like success. The names were 18,914 copies of
+    `__LoadingMovieDelegate__Delegate` and 7 strings containing `Controller` out of 52,204. Before
+    believing any table read, print the value distribution and ask whether it could plausibly be
+    the thing it claims to be - and require it to contain something already known to be there.
+    This is the fifth variant of the same mistake in this project; the other four are rules 25 and
+    27.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -3318,3 +3326,77 @@ install-dependent cases when the game is absent.
 error as concluding it from one game. `SFXGame.pcc` holds BioWare's script layer; `Engine.pcc` holds
 the engine. Check which artefact the question is about before trusting an answer, and record the
 artefact alongside the finding.
+
+
+## 2026-10-29 (export table): a fifth false pass, caught and retracted
+
+Attempted the export table, the explicitly-flagged next step. **It is not parsed, and the attempt
+is recorded rather than shipped.**
+
+### What looked like success
+
+A fixed-stride read (68 bytes/entry) of a per-game offset resolved name indices for 87-99.5% of
+entries:
+
+| | entries | "resolved" | offset |
+|---|---|---|---|
+| ME1 `SFXGame` | 35,385 | 87.0% | +15 |
+| ME2 `SFXGame` | 39,961 | 99.5% | +35 |
+| ME3 `SFXGame` | 54,768 | 95.3% | +26 |
+| ME3 `GFxUI` | 613 | 98.9% | +26 |
+
+The GFxUI sample looked convincing: `AttachMovie`, `bDisabled`, `GFxAction_SetVariable`,
+`bWriteable`, `GFxUIController`. I nearly shipped it.
+
+### Why it was wrong
+
+The full distribution gives it away. On ME3's SFXGame the 52,204 "resolved" names are dominated by
+ONE value:
+
+    __LoadingMovieDelegate__Delegate   18,914
+    __OnActivated__Delegate            15,898
+    __OnAnimStarted__Delegate             966
+
+and of 52,204 names, only **7** contain `Controller` and 12 contain `Player`. A real export table
+holds every class the package defines. This is filler read out of a fixed position that happens to
+land on a name index.
+
+### The pattern, fifth time
+
+1. Range-checked name indices → pass on garbage (index 0 is a valid name).
+2. "Names are not filler" → ME1's filler is literally `***Deleted***`.
+3. "Two distinct sources" → 1,425 right entries + 1 coincidence.
+4. A single-value source column → needed >= 2 real sources.
+5. **"Most entries resolve to a name index" → 18,914 copies of one delegate signature.**
+
+Every one is the same mistake: a check that a constant satisfies. The discriminator is not
+coverage, it is **distinctness and plausibility** - and the only way to find out is to print the
+values and read them, which is what caught this one.
+
+### What is kept
+
+`EXPORT_NAME_FIELD_UNPROVEN = {ME1: 15, ME2: 35, ME3: 26}` stays in the module with the reasoning,
+so the offset is not re-derived from scratch by the next person. `docs`-facing output says the
+export table is unparsed, `exports_status()` carries the retraction evidence, and a test asserts
+the filler name is still recorded. There is deliberately **no** `parse_exports()` for a caller to
+misuse.
+
+### The next step, made specific
+
+Parse sequentially with a variable-length rule, not at a fixed stride, and require all three:
+
+1. exactly `export_count` entries consumed;
+2. the cursor lands on `depends_offset`;
+3. the name column **contains the class names known to exist** - `SFXGameInfoSP`,
+   `SFXPlayerController`, the `Default__*` archetypes.
+
+A parse that cannot produce those is wrong however plausible its percentages look. Criterion 3 is
+the one that would have caught this attempt, and it is now written into the code rather than
+discovered again.
+
+### Rule 33
+
+**Coverage is not correctness; distinctness is.** A parse that resolves 95% of entries to the same
+value has resolved nothing. Before believing any table read, print the value distribution and ask
+whether it could plausibly be the thing it claims to be - and require the result to contain
+something you already know is there.

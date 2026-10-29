@@ -72,22 +72,35 @@ the inner body did not.
 ## What the import table added
 
 `tools/melepkg/mele_tables.py` parses the import table, which says **which package an object comes
-from and what kind of object it is** — the thing an identifier list cannot say. Verified per game:
+from and what kind of object it is** — the thing an identifier list cannot say. Verified per game,
+with the column order measured rather than assumed:
 
-| | imports | layout | dominant source |
-|---|---|---|---|
-| ME1 `SFXGame.pcc` | 1,426 | `(cls 1, outer 3, obj 4, src 6)` | `Core` 1,292 |
-| ME2 `SFXGame.pcc` | 1,909 | same as ME1 | `Core` 1,764 |
-| ME3 `SFXGame.pcc` | 4,189 | **rotated**: `(cls 5, outer 0, obj 1, src 3)` | `Core` 4,021 |
+| | imports | layout (`type`/`obj`/`outer`/`src`) | type-column share | dominant source |
+|---|---|---|---|---|
+| ME1 `SFXGame.pcc` | 1,426 | `1 / 4 / 3 / 6` | 88% | `Core` 1,292 |
+| ME2 `SFXGame.pcc` | 1,909 | `1 / 4 / 3 / 6` | 91% | `Core` 1,764 |
+| ME3 `SFXGame.pcc` | 4,189 | **`5 / 1 / 0 / 3`** | 94% | `Core` 4,021 |
 
-ME3 stores the class and object columns the other way round. Reading ME3 with ME1's order produces
-`object=PlayerController, class=Class`, which is backwards and internally consistent enough to look
-correct — so the layout is declared per game and the acceptance test checks shape, not ranges.
+**Three of the four columns move between ME1/ME2 and ME3**, so ME3 is not "ME1 with two columns
+swapped". Two earlier guesses passed a range check and produced function names where objects
+belong; what separated them was the fraction of the type column resolving to engine types (88-94%
+correct, 0% wrong) plus the object column reading as an alphabetical object list.
 
-**The export table is still not parsed.** Entries are 68 bytes and the region closes exactly on the
-header's `depends_offset`, but the field order inside an entry is unestablished. That is the next
-piece of work and it is what would let this page name *which class declares* `AddLocalPlayer` in
-each build, rather than just that the name exists.
+That gives a directly useful answer for all three builds — the kind of thing, and where from:
+
+| object | type | source | ME1 | ME2 | ME3 |
+|---|---|---|---|---|---|
+| `PlayerController` | `Class` | `Core` | yes | yes | yes |
+| `PlayerInput` | `Class` | `Core` | yes | yes | yes |
+| `LocalPlayer` | `Class` | `Core` | yes | yes | yes |
+| `Pawn` | `Class` | `Core` | yes | yes | yes |
+| `LocalPlayerControllers` | `Function` | `Core` | — | yes | yes |
+| `SpawnPlayerController` | `Function` | `Core` | — | — | yes |
+
+**The export table is still not parsed**, and that limits this page: it can say `AddLocalPlayer` is
+a `Function`, but not *which class declares it*. Offline class attribution needs the export table,
+and an attempt at it is documented as retracted in NOTES.md (rule 33) — a fixed-stride read
+resolved 95% of entries to 18,914 copies of one delegate name.
 
 ## Honest status
 
