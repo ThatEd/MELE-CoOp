@@ -154,6 +154,20 @@ list**; if a section disagrees, this wins.
     This is the fifth variant of the same mistake in this project; the other four are rules 25 and
     27.
 
+34. **A boundary you did not derive is a measurement of your own base error.** When a computed
+    structure closes "almost": a stride of 68.005, 99.5% resolved, off by 24 bytes - the error is
+    in the assumption, not the data. Every packfile header offset indexes the serialized *image*,
+    and the decompressed buffer starts at `image[name_offset]`; missing that displaced every table
+    read by 142 bytes (ME3) / 133 (ME1, ME2) and produced five confident findings that were all
+    artefacts. **68.005 is not a stride** - a non-integer where an integer must be is a
+    contradiction with the model, not an "entries vary" exception to patch over.
+
+35. **A test that turns a refusal into a skip is not a test.** While fail-testing the new table
+    parser, reverting the displacement made every package refuse to build - and the suite still
+    reported 22/24 OK, because the helper dressed each `SystemExit` up as "no build available".
+    The hole was exactly where the code was broken. A refusal to parse is a FAILURE; only an
+    absent file may skip.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -2758,8 +2772,8 @@ levels contain no events** - which is exactly the wrong conclusion, and it is th
 that would have sent a port in the wrong direction.
 
 Practical consequence: to know what fires in a level, read the script package for the vocabulary
-and the level package for the handles. Neither gives class->instance attribution yet, because the
-export table is not parsed.
+and the level package for the handles. Class attribution came later (see the export-table section
+at the end of this file); at the time this was written the export table was not parsed.
 
 The zero is not an error: `BioA_Cat002.pcc` is a 652 KB leaf level with 1,375 identifiers; its
 Kismet lives in the intro/shuttle sub-levels (`BioA_Cat002_050Shuttle.pcc` has 20 event names).
@@ -3298,10 +3312,11 @@ real start on ME3.
 What works is SHAPE: one source dominating, many object kinds, at least two sources. That is the
 third time this project has had to replace a check that could not fail.
 
-**The export table is still not parsed.** 68-byte entries close exactly on `depends_offset`, but the
-field order inside an entry is unestablished. `exports_status()` returns the measurements and the
-gap rather than a fabricated export, because a wrong class attribution sends a co-op hook to the
-wrong object silently.
+**The export table is still not parsed** *(superseded at the end of this file: it parses, and
+`_shape_ok` shrank to a single dominance bound as a result)*. 68-byte entries close exactly on
+`depends_offset`, but the field order inside an entry is unestablished. `exports_status()` returns
+the measurements and the gap rather than a fabricated export, because a wrong class attribution
+sends a co-op hook to the wrong object silently.
 
 ### The ME3 test suite
 
@@ -3400,3 +3415,85 @@ discovered again.
 value has resolved nothing. Before believing any table read, print the value distribution and ask
 whether it could plausibly be the thing it claims to be - and require the result to contain
 something you already know is there.
+
+
+## 2026-10-29 (export table SOLVED): the base error behind five false findings
+
+The export table parses. So does the import table, correctly, on **every** build - and the reason
+it did not before is one mistake that produced five separate "findings", all wrong.
+
+### The mistake
+
+Every packfile header offset (`name_offset`, `import_offset`, `export_offset`, `depends_offset`) is
+an offset into the serialized **image**, which includes the package summary. The decompressed
+buffer is only the part *after* the summary:
+
+    buffer[i] == image[name_offset + i]
+
+So a header offset indexes the buffer at `offset - name_offset`. `name_offset` is 142 on every ME3
+package measured and 133 on ME1/ME2 - it is the length of the summary's variable part (the folder
+FString), so it is a field, never a constant.
+
+Reading the tables at the undisplaced offset lands 142 / 133 bytes *past* each entry's real start.
+Every entry then straddles two real entries. That single shift is the whole story of:
+
+| recorded as | actually |
+|---|---|
+| "the import layout is rotated on ME3; three columns move" | one layout, standard UE3 `FObjectImport`, all three builds |
+| "export stride is 68.005 on SFXGame" | 68 bytes everywhere, plus a `4 * NetObjectCount` TArray tail |
+| "the export name field is at +15 / +35 / +26" | the ObjectName FName is at +12 on every build |
+| "class attribution is unavailable offline" | it was always available; class is +0 via package indices |
+| "the export region closes on `depends_offset` at 68.000" | it closes at `68 * n + 4 * sum(NetObjectCount)` |
+
+The tell was in the data the whole time: **a stride of 68.005 is not a stride.** It was written
+down as "entries differ in length in an unparsed way" instead of being treated as a contradiction
+with the model being used.
+
+### The four closures that prove it
+
+Deriving the base from the header is not enough on its own; `build()` now refuses unless all four
+hold. Each is independent, and each fails on the old base:
+
+| check | what it pins |
+|---|---|
+| `table_adjacency` | `import_offset + 28 * import_count == export_offset`, to the byte |
+| `export_walk` | walking `export_count` records lands exactly on `depends_offset` |
+| `serial_contiguity` | `serial_offset[k] + serial_size[k] == serial_offset[k+1]`, and the last one ends exactly at the image length |
+| `acceptance` | every class chain terminates in a class; every `Default__X` resolves its class to `X` |
+
+The third is the strongest: UE3 packs serial data with no gaps, so 54,768 exports on ME3 SFXGame
+landing end-to-end on 65,619,603 bytes exactly cannot be a coincidence of a shifted read.
+
+### What it now gives the co-op work
+
+Real inheritance chains, offline, no game launch:
+
+    SFXPawn_Player     -> SFXPawn_PlayerParty -> SFXPawn -> BioPawn -> Core.Pawn        (ME3)
+    SFXPawn_Player     -> SFXPawn -> BioPawn -> Core.Pawn                              (ME1)
+    SFXPlayerController-> BioPlayerController -> Core.PlayerController                 (ME2, ME3)
+
+`SFXPlayerController : BioPlayerController` is exactly the class a client-side second player needs,
+and it is now an assertion in the suite rather than a hope.
+
+### Scale check
+
+587 of 587 randomly sampled packages across the three installs (excluding 133-byte stub files that
+are not packages at all) parse with all four closures passing: **896,562 export records**. Three
+headers that previously matched a false `NameCount` (one produced `name_offset` = 2,189,950,989)
+are now rejected by `validate_header()`.
+
+### Rule 34
+
+**A boundary you did not derive is a measurement of your own base error.** When a computed
+structure closes "almost exactly" - 68.005, 99.5%, off by 24 bytes - the error is in the
+assumption, not in the data, and the correct response is to find the assumption rather than to
+patch the closure with an exception. Here the exception ("some entries are 4 bytes longer") was
+*real* but was not the *cause*: it was the `NetObjectCount` tail, and the 24-byte and 288-byte
+residuals were exactly `4 * sum(NetObjectCount)` on the packages that had one.
+
+### Rule 35
+
+**A test that turns a refusal into a skip is not a test.** While fail-testing this, reverting the
+displacement made every package refuse to build, and the suite still reported 22/24 OK - because
+`_build_or_skip()` dressed each `SystemExit` up as "no build available". The suite had a hole
+exactly where the code was broken. A refusal is a failure; only an *absent file* is a skip.

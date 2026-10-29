@@ -147,10 +147,14 @@ they answer different questions:
 * ME3-style level: "this level has a sequence called `Main_Sequence`" — a handle to the actual
   object, which is what a mod would read at run time.
 
-Neither gives class→instance attribution, because the export table is not parsed. But the practical
-consequence is clear: **to know what fires in a specific level, the script package tells you the
-vocabulary and the level package tells you the handles.** A tool that only reads script packages
-will conclude ME3 levels contain no events, which is wrong.
+Neither gives class→instance attribution on its own, but the export table does now that it parses
+(see CONTAINER-FORMAT.md): `objects` lists every export with its class and outer, so a level's
+`Main_Sequence` can be attributed to a class rather than only counted. The practical consequence
+stands: **to know what fires in a specific level, the script package tells you the vocabulary and
+the level package tells you the handles.** A tool that only reads script packages will conclude ME3
+levels contain no events, which is wrong.
+
+    python -I tools/melepkg/mele_tables.py objects <level.pcc> Sequence
 
 Zero event names in `BioA_Cat002.pcc` is not an error — that package is 652 KB and holds 1,375
 identifiers, i.e. it is a small leaf level whose Kismet lives in the intro/shuttle sub-levels.

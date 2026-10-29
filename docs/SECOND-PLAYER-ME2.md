@@ -97,10 +97,27 @@ That gives a directly useful answer for all three builds — the kind of thing, 
 | `LocalPlayerControllers` | `Function` | `Core` | — | yes | yes |
 | `SpawnPlayerController` | `Function` | `Core` | — | — | yes |
 
-**The export table is still not parsed**, and that limits this page: it can say `AddLocalPlayer` is
-a `Function`, but not *which class declares it*. Offline class attribution needs the export table,
-and an attempt at it is documented as retracted in NOTES.md (rule 33) — a fixed-stride read
-resolved 95% of entries to 18,914 copies of one delegate name.
+**The export table is now parsed**, so class attribution is available offline. Rule 33's retraction
+turned out to be one symptom of a coordinate-space error: header offsets index the serialized
+*image*, and the decompressed buffer starts at `image[name_offset]` (142 bytes on ME3, 133 on
+ME1/ME2). Reading the table 142 bytes late made every entry straddle two real entries, which is
+what produced the "rotated import layout", the "68.005 export stride" and the filler name column.
+See rule 34 in NOTES.md.
+
+`tools/melepkg/mele_tables.py` now resolves, on all three builds, with four independent closures
+passing:
+
+    python -I tools/melepkg/mele_tables.py find    <SFXGame.pcc> SFXPlayerController
+    python -I tools/melepkg/mele_tables.py classes <SFXGame.pcc>
+
+The answer `AddLocalPlayer` needed:
+
+    SFXPlayerController -> BioPlayerController -> Core.PlayerController     (ME2 and ME3)
+    SFXPawn_Player      -> SFXPawn -> BioPawn -> Core.Pawn                  (ME2)
+    SFXPawn_Player      -> SFXPawn_PlayerParty -> SFXPawn -> BioPawn -> Core.Pawn  (ME3)
+
+So the class the client's controller must be is `BioPlayerController` (engine-side) or a
+`SFXPlayerController` subclass (game-side), and it is no longer a guess.
 
 ## Honest status
 
@@ -109,6 +126,7 @@ resolved 95% of entries to 18,914 copies of one delegate name.
 | All three builds contain `AddLocalPlayer` and the split-screen surface | **proven** — identifier tables from each build's `Engine.pcc` |
 | The earlier "there is no `AddLocalPlayer`" was measured on `SFXGame.pcc` only | **proven** — that package's table lacks it |
 | `CreatePlayer` crashes in LE1 and LE2 | **proven** — three dispatches, stack traces in NOTES.md |
+| Import and export tables parse on all three builds | **proven** — four closures, 587/587 sampled packages, 896,562 export records |
+| `SFXPlayerController : BioPlayerController : Core.PlayerController` | **proven** — export table, both builds |
 | `AddLocalPlayer` would work in ME2 | **unknown** — present, never dispatched |
-| Which class declares it | **unknown** — needs the export table |
 | Two panes need a second `LocalPlayer` | **derived**, not proven |

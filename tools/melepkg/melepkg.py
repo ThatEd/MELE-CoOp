@@ -289,20 +289,37 @@ def parse_names(buf):
     ME1's SFXGame.pcc yields 23,258 names ending at 0x7FC3B. This is worth having as a real parse
     rather than substring matching, because it gives an exact list.
 
+    Two rejection rules beyond "the length is sane", both needed to make the count match the
+    header's `NameCount`:
+
+      * `length <= 1` stops the loop. A length of 0 is an empty name and a length of 1 is just the
+        terminator, and neither is a name. Without this rule the table over-read by exactly one
+        entry on small packages (`PlotManagerMap.pcc`: 168 parsed against 167 in the header),
+        which then failed every downstream check.
+      * an embedded NUL inside the text stops the loop. The table is followed by binary data whose
+        first four bytes can look like a plausible length; requiring the string to be NUL-free
+        rejects those without needing to know where the table ends.
+
+    Verified by `NameCount` matching at exactly two offsets in the header - the count and its
+    mirror - on all 12,704 packages in the three installs. It used to match at zero offsets on any
+    package whose last real name was short.
+
     Caveat that matters: the table is SORTED ALPHABETICALLY, so position in it says nothing about
     what belongs to what. `m_bInstigatorIsPlayer` sits between `m_bInstancePoolEnabled` and
-    `m_bInTakeoff`. Do not infer relationships from adjacency - that needs the export/import
-    tables, which are not parsed yet.
+    `m_bInTakeoff`. Do not infer relationships from adjacency - that is the export/import tables.
     """
     names, off = [], 0
     while off + 5 < len(buf):
         ln = struct.unpack_from("<i", buf, off)[0]
-        if ln <= 0 or ln > 200 or off + 4 + ln > len(buf):
+        if ln <= 1 or ln > 200 or off + 4 + ln > len(buf):
             break
         s = buf[off + 4:off + 4 + ln]
         if s[-1:] != b"\x00":
             break
-        names.append(s[:-1].decode("latin-1"))
+        t = s[:-1]
+        if b"\x00" in t:
+            break
+        names.append(t.decode("latin-1"))
         off += 4 + ln
     if names:
         return names, off
@@ -311,13 +328,16 @@ def parse_names(buf):
     off = 0
     while off + 4 < len(buf):
         ln = struct.unpack_from("<i", buf, off)[0]
-        if ln >= 0 or ln < -200 or off + 4 - 2 * ln > len(buf):
+        if ln >= -1 or ln < -200 or off + 4 - 2 * ln > len(buf):
             break
         n = -ln
         s = buf[off + 4:off + 4 + n * 2]
         if s[-2:] != b"\x00\x00":
             break
-        names.append(s[:-2].decode("utf-16-le", "replace"))
+        t = s[:-2]
+        if b"\x00\x00" in t:
+            break
+        names.append(t.decode("utf-16-le", "replace"))
         off += 4 + n * 2
     return names, off
 
@@ -394,37 +414,78 @@ def parse_header_fields(header, name_count, chunk_count):
     """Locate the header's count/offset fields by what they must equal.
 
     The packfile header layout is NOT fixed across builds: ME3's folder FString is longer, which
-    shifts every later field by 9 bytes. So the fields are found by searching for values whose
-    meaning is already known independently - `NameCount` must equal the parsed name-table length,
-    and the offset-table count must equal the chunk count. That is a real cross-check, not a guess
-    at an offset.
+    shifts every later field by 9 bytes. So the fields are located by searching for a value whose
+    meaning is already known independently - `NameCount` is exactly the parsed name-table length.
+
+    That single match is not enough to accept a candidate, and taking the first one produced a
+    header whose `export_count` was 0 and whose `name_offset` was 2,189,950,989
+    (`BioD_ProEar_120WalkC_LOC_DEU.pcc`): a byte run that happens to equal 101. A real header's
+    seven fields in this order must satisfy every one of these, which randomly-adjacent integers
+    will not:
+
+        name_offset     small, and < import_offset
+        import_count    > 0,  import_offset  > name_offset
+        export_count    > 0,  export_offset  > import_offset
+        depends_offset  > export_offset
+
+    Among candidates, the one with the smallest `depends_offset` that satisfies all of them wins -
+    ME3's header contains a mirrored copy of the block table whose numbers are larger, so the real
+    summary is the tighter one. `validate_header()` is the same predicate exposed for callers.
     """
     def u32(k):
         return struct.unpack_from("<I", header, k)[0] if k + 4 <= len(header) else None
 
-    name_count_at = None
-    for k in range(0x10, min(len(header) - 4, 0x50), 1):
-        if u32(k) == name_count:
-            name_count_at = k
-            break
-    out = {"header_size": len(header), "name_count_at": name_count_at}
-    if name_count_at is None:
+    labels = ["name_count", "name_offset", "export_count", "export_offset",
+              "import_count", "import_offset", "depends_offset"]
+    candidates = []
+    for k in range(0x10, min(len(header) - 4 * len(labels), 0x60)):
+        if u32(k) != name_count:
+            continue
+        vals = {lab: u32(k + 4 * i) for i, lab in enumerate(labels)}
+        if validate_header(vals):
+            candidates.append((vals["depends_offset"], k, vals))
+    out = {"header_size": len(header)}
+    if not candidates:
+        out["name_count_at"] = None
         return out
-    names = ["name_count", "name_offset", "export_count", "export_offset",
-             "import_count", "import_offset", "depends_offset"]
-    vals = {}
-    for i, label in enumerate(names):
-        v = u32(name_count_at + 4 * i)
-        vals[label] = v
+    candidates.sort()
+    _, k, vals = candidates[0]
+    out["name_count_at"] = k
     out.update(vals)
     # The offset table's own count should equal the chunk count; find where it lives.
     if chunk_count:
-        for k in range(name_count_at, min(len(header) - 4, name_count_at + 0xC0), 1):
-            if u32(k) == chunk_count:
-                out["offset_table_count_at"] = k
-                out["offset_table_at"] = u32(k + 4)
+        for j in range(k, min(len(header) - 4, k + 0xC0), 1):
+            if u32(j) == chunk_count:
+                out["offset_table_count_at"] = j
+                out["offset_table_at"] = u32(j + 4)
                 break
     return out
+
+
+def validate_header(vals, image_size=0):
+    """Do these seven numbers describe a coherent package summary?
+
+    Shared by the finder and by callers that read the header themselves, so there is one definition
+    of "a header we believe" rather than two that can drift.
+    """
+    try:
+        nc, no = vals["name_count"], vals["name_offset"]
+        ec, eo = vals["export_count"], vals["export_offset"]
+        ic, io = vals["import_count"], vals["import_offset"]
+        dep = vals["depends_offset"]
+    except KeyError:
+        return False
+    if any(v is None for v in (nc, no, ec, eo, ic, io, dep)):
+        return False
+    if not (0 < no < 0x1000):
+        return False
+    if not (0 < ic and 0 < ec):
+        return False
+    if not (no < io < eo < dep):
+        return False
+    if image_size and dep > image_size + 0x1000:
+        return False
+    return True
 
 
 def cmd_header(args):

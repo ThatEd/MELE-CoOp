@@ -167,10 +167,49 @@ Two things worth recording, because both are how this looked wrong for a while:
 
 | Unknown | Why it matters |
 |---|---|
-| The **import and export tables** are not parsed | `ExportOffset`/`ImportOffset` are known fields, but their entry format is not decoded. This is what would give class -> function -> property attribution, and enum members such as `EWhoTriggers` values |
 | Whether function **bytecode** survives in these packages | decides whether script *logic* can be read, not just names |
-| What `ExportCount` 35,385 / 39,961 / 54,768 actually enumerates | large enough to be every object; not confirmed |
-| The `depends_offset` section | unexamined |
+| Enum member values (e.g. `EWhoTriggers`) | the enum's *members* are not in the export table; they are in the class's default properties |
+| The `depends_offset` section | unexamined; the export walk lands exactly on it, so what follows is a separate structure |
 
 Resolved since this page was first written: the field offsets (they differ per game), the chunk
-index (4-tuples, 95/95 verified), and the name table (parseable, and UTF-16LE in ME3).
+index (4-tuples, 95/95 verified), the name table (parseable, and UTF-16LE in ME3), and **the import
+and export tables** (see below). The earlier entry in this table said "class -> function ->
+property attribution is unavailable"; that was wrong, and the reason it was wrong is worth keeping.
+
+## The import and export tables (solved 2026-10-29)
+
+The header's offsets index the serialized **image**, and the decompressed buffer begins at
+`image[name_offset]` because the name table is the first thing after the summary. Every offset must
+therefore be reduced by `name_offset` - 142 on ME3, 133 on ME1/ME2, and it is a header FIELD
+describing the summary's variable part, not a constant.
+
+Missing this displaced every table read by 142/133 bytes and produced four false conclusions that
+lived in this project for a session: a "rotated import layout" on ME3, an "export stride of
+68.005", export name fields at `+15`/`+35`/`+26`, and "no offline class attribution".
+
+Once displaced correctly:
+
+* **Imports** are the standard UE3 `FObjectImport`, 28 bytes, ONE layout on all three builds:
+  `ClassPackage FName (0,1) | ClassName FName (2,3) | OuterIndex (4) | ObjectName FName (5,6)`.
+* **Exports** are 68 bytes: `ClassIndex(0) SuperIndex(4) OuterIndex(8) ObjectName FName(12,16)
+  ArchetypeIndex(20) ObjectFlags(24, u64) SerialSize(32) SerialOffset(36) ExportFlags(40)
+  NetObjectCount(44)`, followed by a `4 * NetObjectCount` TArray tail.
+* **Package indices** resolve UE3-style: `0` null, `+n` is `export[n-1]`, `-n` is `import[-n-1]`.
+
+Four independent closures now pass on every package, and `build()` refuses rather than returning a
+table that fails any of them:
+
+| check | pins |
+|---|---|
+| `table_adjacency` | `import_offset + 28 * import_count == export_offset` |
+| `export_walk` | walking `export_count` records lands exactly on `depends_offset` |
+| `serial_contiguity` | `serial_offset[k] + serial_size[k] == serial_offset[k+1]`, last one ends at the image length |
+| `acceptance` | class chains terminate in a class; every `Default__X` resolves to class `X` |
+
+Verified on 587 of 587 randomly sampled packages across the three installs (896,562 export
+records), excluding 133-byte files that are not packages.
+
+    python -I tools/melepkg/mele_tables.py summary <pkg>
+    python -I tools/melepkg/mele_tables.py find    <pkg> <name>
+    python -I tools/melepkg/mele_tables.py classes <pkg>
+    python -I tools/melepkg/mele_tables.py objects <pkg> [name]

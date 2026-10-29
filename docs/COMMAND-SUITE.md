@@ -278,8 +278,10 @@ entire problem. LE1 and LE3 have it, LE2 does not.
 
 ## What this does not solve
 
-- **Attribution offline.** The export/import tables are still unparsed, so offline work gives
-  presence and not ownership. `probe` answers ownership, and needs a running game.
+- **Attribution at run time.** The export/import tables now parse (see
+  [CONTAINER-FORMAT.md](CONTAINER-FORMAT.md)), so offline work gives class, superclass and outer -
+  it just cannot say which *instance* is live in the current level. `probe` answers that, and needs
+  a running game.
 - **Enum members.** `EWhoTriggers` values are not recoverable from identifiers alone; the
   trigger-delay design in [TRIGGER-DELAY.md](TRIGGER-DELAY.md) names the property but not its
   values.

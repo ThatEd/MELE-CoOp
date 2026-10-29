@@ -77,7 +77,10 @@ Two supporting pages:
   trigger actors and their `Touch`/`UnTouch` detection, `EWhoTriggers` and `m_bInstigatorIsPlayer`,
   four insertion points ranked by risk, and the per-event policy a co-op mod actually needs.
 - [CONTAINER-FORMAT.md](./CONTAINER-FORMAT.md) - the **verified** `.pcc` container format, so the
-  script layer can be read offline instead of only from a running game.
+  script layer can be read offline instead of only from a running game. Now includes the **import
+  and export tables**: object name, class, superclass and outer for every object in a package, so
+  class attribution and inheritance chains are available with no game running. The four closures
+  that prove it, and the coordinate-space error that hid them for a session, are in there.
 - [COMMAND-SUITE.md](./COMMAND-SUITE.md) - the **test area**: 156 command mechanisms in 20
   categories with presence measured per game, arranged into 23 ordered phases, each stating what
   it proves and what would make it wrong. Also the per-game capability differences it measured

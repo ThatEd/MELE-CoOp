@@ -1,27 +1,69 @@
-"""Parse the UE3 import table from a decompressed ME:LE package, and prove it.
+"""Parse the UE3 import AND export tables from a decompressed ME:LE package, and prove them.
 
 Why this exists: target selection. A co-op mod has to name a specific object - the class a second
 `PlayerController` must be, the object that owns `CanFireWeapon`, the import a `Possess` targets.
-An identifier table can only say "this name exists in this build". The import table says **which
-package it came from and what kind of object it is**, offline, with no running game.
+An identifier table can only say "this name exists in this build". The tables say **which package it
+came from, what kind of object it is, and what it inherits from**, offline, with no running game.
 
-## What is verified, per game
+## The one thing that was wrong for a whole session: coordinate space
 
-The import table is 28 bytes per entry on all three builds, but the **field order differs** and the
-table does not begin where the header says. Both facts were established from the bytes:
+Every header offset (`name_offset`, `import_offset`, `export_offset`, `depends_offset`) is an offset
+into the **serialized image**, which includes the package summary. The decompressed buffer is only
+the part *after* the summary, so:
 
-| | table start | source-package word | object-name word |
-|---|---|---|---|
-| ME1 | name-table end + 28 | 6 | 4 |
-| ME2 | name-table end + 28 | 6 | 4 |
-| ME3 | name-table end + 16 | 3 | 5 |
+    buffer[i] == image[name_offset + i]
+    buffer_start == image[name_offset]
 
-ME1/ME2 decode to `Engine`, `Core`, `WwiseAudio` from word 6. Parsing ME3 with that same layout
-resolves every source to `0Deg` (name index 0) - direct evidence that the columns are rotated, and
-the reason the layout is selected per game rather than assumed to be shared.
+Every header offset must therefore be reduced by `name_offset` before it is used to index the
+decompressed buffer. `name_offset` is 142 for all three ME3 packages measured and 133 for ME1/ME2 -
+it is a header field, not a constant to hardcode.
 
-The start is found by CONTENT over a small window after the name table, because the header's
-`import_offset` points 126 bytes past the real start on ME3 and 28 bytes past on ME1/ME2.
+Reading the tables at the un-displaced offset lands 142 bytes (ME3) / 133 bytes (ME1, ME2) *past*
+where each entry really starts. Every entry then straddles two real entries, and the consequences
+were recorded for weeks as genuine cross-build format differences:
+
+  * "the import layout is rotated on ME3 - three columns move, not two". There is one layout on all
+    three builds. It is the standard UE3 `FObjectImport`
+    `(ClassPackage FName, ClassName FName, OuterIndex, ObjectName FName)` = words 0/2/4/5, and the
+    three FName number halves at words 1/3/6 are zero in **100% of entries in every package**.
+  * "the export stride is 68.000 on GFxUI but 68.005 on SFXGame, so entries are variable length in
+    an unparsed way". The base stride is 68 on every build; entries are followed by a UE3 TArray
+    whose int32 count sits in the 68-byte record at +44 and whose payload is `4 * count` bytes.
+    Zero-payload is the normal case, which is why most packages looked uniform.
+  * "the export name field is at +15 / +35 / +26 and is filler-dominated". Those offsets were
+    measured against the wrong base. The real object-name word is +12 (an FName: index then number).
+
+The displacement is not a guess: it makes four independent boundaries close **exactly**, on all ten
+packages measured across the three builds. See `verify_tables()` for the checks, which are run as
+assertions rather than described.
+
+## Table shapes, once the base is right
+
+Imports, 28 bytes, identical layout on ME1/ME2/ME3:
+
+| word | 0,1 | 2,3 | 4 | 5,6 |
+|---|---|---|---|---|
+| field | ClassPackage FName | ClassName FName | OuterIndex | ObjectName FName |
+
+Exports, 68 bytes plus a TArray tail:
+
+| off | field |
+|---|---|
+| +0 | ClassIndex |
+| +4 | SuperIndex |
+| +8 | OuterIndex |
+| +12,16 | ObjectName FName |
+| +20 | ArchetypeIndex |
+| +24 | ObjectFlags (u64) |
+| +32 | SerialSize |
+| +36 | SerialOffset |
+| +40 | ExportFlags |
+| +44 | NetObjectCount (int32) -> `4 * count` tail bytes |
+
+Package indices are resolved the UE3 way: `0` is null, positive `v` is `export[v - 1]`, negative `v`
+is `import[-v - 1]`. Reading a class as "the name in that slot" - which is what every earlier attempt
+did - is wrong; a class slot points at an object, and whether that object is itself a class is a
+property of the target, not of the column.
 
 ## Why the acceptance test is what it is
 
@@ -34,24 +76,27 @@ repeated:
    entries in those name tables, so "non-filler" does not discriminate.
 3. **Two or more distinct sources.** Passes on 1,425 correct entries plus one coincidental match.
 
-What a real import table actually has: one source package dominating the column, and many distinct
-object kinds. `_shape_ok()` requires exactly that, and `build()` raises rather than returning a
-table that fails it - a mis-attributed import sends a co-op hook to the wrong object silently.
+With the base now DERIVED rather than searched, `_shape_ok()` no longer has to earn belief; it only
+has to reject the impossible. Three of its rules were removed because they rejected correct
+packages, each recorded with the measurement that killed it in the function's docstring.
 
-## The export table is NOT parsed
+## The export table IS parsed
 
-Entries are 68 bytes and the region closes exactly on the header's `depends_offset`
-(`base = depends_offset - 68 * export_count`), but the field order inside an entry was not
-established: several candidate layouts produce plausible numbers and none was confirmed against an
-independently-known object. `exports_status()` returns the measurements and the gap, never a
-fabricated export.
+Entries are 68 bytes plus a `4 * NetObjectCount` TArray tail, walked sequentially. The field order
+is the standard UE3 `FObjectExport` order and it is pinned by `EXPORT_FIELDS` at the offsets where
+all four closure checks pass - including `serial_contiguity`, which is not satisfiable by a
+coincidence (serial data is packed with no gaps, so 54,768 records must land end-to-end on
+65,619,603 bytes exactly).
+
+`RETRACTED` records the five findings this base error produced, so none of them are re-derived.
 
 Usage:
 
     python -I tools/melepkg/mele_tables.py summary <package>
-    python -I tools/melepkg/mele_tables.py imports <package> [--package Engine] [--limit 40]
+    python -I tools/melepkg/mele_tables.py imports <package> [--from Engine] [--limit 40]
     python -I tools/melepkg/mele_tables.py find    <package> <name>
     python -I tools/melepkg/mele_tables.py classes <package> [--limit 40]
+    python -I tools/melepkg/mele_tables.py objects <package> [name] [--limit 40]
     python -I tools/melepkg/mele_tables.py json    <package> --out tables.json
 """
 import argparse
@@ -65,31 +110,22 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 IMPORT_SIZE = 28
-EXPORT_STRIDE = 68        # measured: a repeating 68-byte period closes on depends_offset
+EXPORT_BASE_SIZE = 68     # fixed part of an FObjectExport; a 4*NetObjectCount tail follows
+EXPORT_TAIL_FIELD = 44    # int32 NetObjectCount inside the 68-byte record
+TAIL_SIZE = 4             # bytes per net object
 
-# Which word of the 7 holds what. `pad` words must be zero; a non-zero pad means the layout is
-# wrong for the package, and that is counted rather than ignored.
-#
-# Established by measuring, for each column, what fraction of entries resolve to an engine TYPE
-# (`Function`, `Class`, `BoolProperty`, ...). A type column is 88-94% type names on a real table
-# and 0% on a wrong one; nothing else discriminates as sharply:
-#
-#     word1 type share:   ME1 88%   ME2 91%   ME3  0%
-#     word5 type share:   ME1  0%   ME2  0%   ME3 94%
-#
-# The object column is the one that reads as an alphabetically ordered object list:
-# `Actor`, `ActorFactory`, `AIController`, `AnimNode` (ME1/ME2) and `Default__Actor`,
-# `Default__ActorComponent`, ... (ME3). The source column is the one dominated by `Core`/`Engine`.
-#
-# So ME3 is not "ME1 with two columns swapped" - three of the four columns move. Recording the
-# intermediate wrong guesses is what stopped them being re-derived: `(cls 1, obj 4)` read ME1's
-# columns on ME3 and produced `object=PlayerController class=Class`, which looks fine and is
-# backwards.
-LAYOUTS = {
-    "ME1": {"type": 1, "obj": 4, "src": 6, "outer": 3, "pad": (0, 2, 5)},
-    "ME2": {"type": 1, "obj": 4, "src": 6, "outer": 3, "pad": (0, 2, 5)},
-    "ME3": {"type": 5, "obj": 1, "src": 3, "outer": 0, "pad": (2, 4, 6)},
-}
+# One import layout on all three builds - the standard UE3 FObjectImport. Words 1, 3 and 6 are the
+# number halves of the three FNames and are 0 in 100% of entries in every package measured. The
+# earlier per-game layouts (`type`/`obj`/`src`/`outer` moving on ME3) were an artefact of reading
+# every entry 142 bytes past its real start; see the module docstring.
+IMPORT_LAYOUT = {"pkg": 0, "pkg_num": 1, "type": 2, "type_num": 3,
+                 "outer": 4, "obj": 5, "obj_num": 6}
+
+# FObjectExport field offsets. Unlike the import table these are NOT field-rotation per game; they
+# are the standard UE3 order and they are the offsets at which the four closure checks pass.
+EXPORT_FIELDS = {"cls": 0, "super": 4, "outer": 8, "name": 12, "name_num": 16,
+                 "archetype": 20, "flags": 24, "serial_size": 32, "serial_offset": 36,
+                 "export_flags": 40, "net_count": 44}
 
 
 class ParseError(Exception):
@@ -116,181 +152,332 @@ def guess_game(package):
     return "ME1"
 
 
-def parse_imports(buf, offset, count, names, layout):
-    """Parse `count` 28-byte import entries at `offset`. Returns (entries, bad_pad_count).
+def buffer_base(header):
+    """The displacement between image space and buffer space.
 
-    Column names are `type` (what kind of object: `Function`, `Class`, `BoolProperty`, ...),
-    `obj` (the object's own name), `src` (the source package) and `outer`. Earlier drafts called
-    the type column "class", which conflated "what kind of thing is this" with "which object owns
-    it" - two different questions that the import table answers in different columns.
+    Every header offset is into the serialized image; the decompressed buffer starts at
+    `image[name_offset]`, because the name table is the first thing in the image after the summary.
+
+    Returns `header["name_offset"]`. It is a header field - 142 on ME3, 133 on ME1/ME2 for the
+    packages measured - and it must NOT be replaced by a constant, because it is the length of the
+    summary's variable part.
     """
+    d = header.get("name_offset")
+    if d is None:
+        raise ParseError("header has no name_offset; cannot place the tables")
+    return int(d)
+
+
+def image(header, key):
+    """A header offset converted to a buffer offset."""
+    v = header.get(key)
+    if v is None:
+        raise ParseError("header has no %s" % key)
+    return int(v) - buffer_base(header)
+
+
+def parse_imports(buf, offset, count, names, layout=None):
+    """Parse `count` 28-byte import entries at `offset`. Returns (entries, bad_number_count).
+
+    Column names are `type_name` (what kind of object: `Function`, `Class`, `BoolProperty`, ...),
+    `object_name` (the object's own name), `source_name` (the ClassPackage) and `outer_index`.
+    "type" answers "what kind of thing is this"; it is not "which object owns it" - that is
+    `outer_index`, and the two were conflated in earlier drafts of this file.
+    """
+    layout = layout or IMPORT_LAYOUT
     out = []
-    pads_wrong = 0
+    numbers_wrong = 0
     for i in range(count):
         e = offset + i * IMPORT_SIZE
         if e + IMPORT_SIZE > len(buf):
             raise ParseError("import %d runs past the stream at 0x%x" % (i, e))
         w = struct.unpack_from("<7i", buf, e)
-        if any(w[p] != 0 for p in layout["pad"]):
-            pads_wrong += 1
+        if any(w[layout[k]] != 0 for k in ("pkg_num", "type_num", "obj_num")):
+            numbers_wrong += 1
         out.append({
             "index": i,
             "type_name": _nm(names, w[layout["type"]]),
             "type_name_index": w[layout["type"]],
             "object_name": _nm(names, w[layout["obj"]]),
             "object_name_index": w[layout["obj"]],
-            "source_name": _nm(names, w[layout["src"]]),
-            "source_name_index": w[layout["src"]],
+            "source_name": _nm(names, w[layout["pkg"]]),
+            "source_name_index": w[layout["pkg"]],
             "outer_index": w[layout["outer"]],
             "raw": list(w),
         })
-    return out, pads_wrong
+    return out, numbers_wrong
+
+
+def parse_exports(buf, offset, count, names, limit=None):
+    """Walk `count` FObjectExport records at `offset`. Returns (entries, end_offset).
+
+    The base record is 68 bytes; a UE3 TArray of net objects follows, sized by the int32 at +44.
+    Walking it this way - rather than at a fixed stride - is what makes the table close exactly on
+    `depends_offset` on every package, including the ones where a handful of entries carry a
+    4-byte net-object payload.
+    """
+    out = []
+    cur = offset
+    n = count if limit is None else min(count, limit)
+    for k in range(n):
+        if cur + EXPORT_BASE_SIZE > len(buf):
+            raise ParseError("export %d runs past the stream at 0x%x" % (k, cur))
+        f = EXPORT_FIELDS
+        w = struct.unpack_from("<17i", buf, cur)
+        net_count = w[f["net_count"] // 4]
+        if net_count < 0 or net_count > 10000:
+            raise ParseError("export %d has implausible NetObjectCount %d at 0x%x"
+                             % (k, net_count, cur))
+        out.append({
+            "index": k,
+            "class_index": w[f["cls"] // 4],
+            "super_index": w[f["super"] // 4],
+            "outer_index": w[f["outer"] // 4],
+            "object_name": _nm(names, w[f["name"] // 4]),
+            "object_name_index": w[f["name"] // 4],
+            "archetype_index": w[f["archetype"] // 4],
+            "serial_size": w[f["serial_size"] // 4],
+            "serial_offset": w[f["serial_offset"] // 4],
+            "export_flags": w[f["export_flags"] // 4],
+            "net_count": net_count,
+            "raw": list(w),
+        })
+        cur += EXPORT_BASE_SIZE + TAIL_SIZE * net_count
+    return out, cur
+
+
+def resolve_index(v, exports, imports):
+    """Package index -> ("null" | "export" | "import", payload), the UE3 way.
+
+    `0` is null, `v > 0` is `export[v - 1]`, `v < 0` is `import[-v - 1]`. This is the step every
+    earlier attempt skipped by reading a name straight out of the slot.
+    """
+    if v == 0:
+        return ("null", None)
+    if v > 0:
+        k = v - 1
+        return ("export", exports[k] if 0 <= k < len(exports) else None)
+    k = -v - 1
+    return ("import", imports[k] if 0 <= k < len(imports) else None)
+
+
+def describe_index(v, exports, imports):
+    """Human-readable name for a package index, e.g. `Core.Function` or `export:SFXGame`."""
+    kind, obj = resolve_index(v, exports, imports)
+    if kind == "null":
+        return "None"
+    if obj is None:
+        return "%s[%d]?" % (kind, (v - 1) if v > 0 else (-v - 1))
+    if kind == "import":
+        return "%s.%s" % (obj.get("source_name"), obj.get("object_name"))
+    return "export:%s" % obj.get("object_name")
+
+
+TYPE_NAMES = frozenset((
+    "Class", "Function", "BoolProperty", "ByteProperty", "IntProperty", "FloatProperty",
+    "ObjectProperty", "StructProperty", "ArrayProperty", "StrProperty", "NameProperty",
+    "MapProperty", "ClassProperty", "InterfaceProperty", "DelegateProperty", "Enum",
+    "ScriptStruct", "Const", "Package", "State", "Interface", "Component", "Field",
+    "TextBuffer",
+))
 
 
 def _shape_ok(imports):
-    """Does this table have the shape of a real import table? Returns (ok, why).
+    """Is this a real import table? Returns (ok, why) plus the measured rates.
 
-    Requirements, each backed by a failure it prevents:
+    This used to be a *search* predicate: the base was unknown, so the table had to earn belief by
+    having several source packages, many object kinds and a high type-name share. The base is now
+    derived from the header (`buffer_base`) and asserted against the name-table end, so the job
+    here is much narrower and three of the old rules had to go because they rejected correct
+    tables - each is recorded with the measurement that killed it:
 
-      * at least TWO distinct source packages. A mis-based table can collapse to one name
-        (`!_Dup` on ME2, `***Deleted***` on ME1) which is otherwise perfectly shaped.
-      * at most 64 distinct sources. A wrong base spreads across thousands.
-      * the dominant source covers at least half the entries - real tables import mostly from one
-        package, with a tail. Measured: ME1 1292/1426, ME2 1764/1909, ME3 4021/4189.
-      * at least 16 distinct object kinds - a real table imports many kinds of thing.
+      * "at least two distinct source packages": FALSE. `Engine.pcc` imports from `Core` alone
+        (187/187 on ME3). A package that defines `Engine` has no reason to import from itself.
+      * "ClassName is >= 75% engine type names": FALSE. Level packages import *classes*
+        (`BioPowerManager`, `CylinderComponent`); `BioA_HorCr1_200FringeSouth.pcc` measures 32.9%.
+        Across 54 correctly-based packages the minimum is 32.9%, so no threshold above that is safe.
+      * "the FName number halves are all zero": FALSE, and so is any flat rate. A genuinely
+        numbered name such as `Grid_3` has a non-zero number; the observed maximum on correct
+        parses is 29% (`BioD_SunTlA_102Gatehouse_LOC_ITA.pcc`, whose imports are heavily
+        duplicated with `_1`/`_2` suffixes).
+
+    What remains is a single bound that a correct parse is nowhere near and a shifted read blows
+    straight through: the dominant ClassPackage. Correct parses measure at least 44.8% across 54
+    sampled packages; a shifted read spreads the column and drops far below. The `FName` number
+    rate is REPORTED but NOT a gate - `BioD_SunTlA_102Gatehouse_LOC_ITA.pcc` reaches 29% because
+    its imports are heavily duplicated with distinct suffixes (`SeqAct_SetInt_1`, `_2`, ...), which
+    is a legitimate naming pattern. The rate was tried as a gate at 5% and then at 20% and rejected
+    a correct package both times.
+
+    The four structural closures in `verify_tables()` are what actually decide whether a table is
+    right; this function only rejects what is impossible.
     """
+    if not imports:
+        return False, "empty table", {}
+    n = len(imports)
+    numbers_wrong = sum(1 for r in imports if any(w != 0 for w in (r["raw"][1], r["raw"][3],
+                                                                  r["raw"][6])))
+    typ = collections.Counter(r["type_name"] for r in imports if r["type_name"])
     src = collections.Counter(r["source_name"] for r in imports if r["source_name"])
     obj = collections.Counter(r["object_name"] for r in imports if r["object_name"])
+    unresolved = sum(1 for r in imports if r["type_name_index"] < 0)
+    share = sum(v for k, v in typ.items() if k in TYPE_NAMES) / n
+    metrics = {"type_share": share, "number_rate": numbers_wrong / n,
+               "unresolved_types": unresolved / n}
+
+    if not typ or metrics["unresolved_types"] > 0.10:
+        return False, ("%.0f%% of ClassName indices fall outside the name table"
+                       % (metrics["unresolved_types"] * 100)), metrics
     if not src or not obj:
-        return False, "no resolved names"
-    if len(src) < 2:
-        return False, ("only one distinct source package (%r). A real table imports from at "
-                       "least Core and Engine; a single value is the signature of a mis-based "
-                       "table collapsing onto one name" % src.most_common(1)[0][0])
-    if len(src) > 64:
-        return False, "%d distinct source packages; a real table has a handful" % len(src)
-    top, n = src.most_common(1)[0]
-    if n < len(imports) * 0.5:
-        return False, ("most common source %r covers only %d of %d entries; a real package "
-                       "column is dominated by one value" % (top, n, len(imports)))
-    if len(obj) < 16:
-        return False, "only %d distinct object kinds; a real import table holds many" % len(obj)
-    return True, "%r covers %d/%d, %d sources, %d object kinds" % (
-        top, n, len(imports), len(src), len(obj))
-
-
+        return False, "no resolved ClassPackage or ObjectName", metrics
+    top, dominant = src.most_common(1)[0]
+    metrics["dominance"] = dominant / n
+    if metrics["dominance"] < 0.20:
+        return False, ("most common ClassPackage %r covers only %d of %d entries; correct parses "
+                       "measure at least 44.8%%" % (top, dominant, n)), metrics
+    return True, ("%r covers %d/%d (%d source(s), %d object kinds, %.0f%% engine type names, "
+                  "%.1f%% numbered FNames)"
+                  % (top, dominant, n, len(src), len(obj), share * 100,
+                     metrics["number_rate"] * 100)), metrics
 def exports_status(header):
-    """What is known about the export region, and what is not."""
+    """The export region's geometry, all of it measured from the header rather than assumed."""
     count = header.get("export_count") or 0
     depends = header.get("depends_offset") or 0
     header_says = header.get("export_offset") or 0
-    base = depends - EXPORT_STRIDE * count if count and depends else None
-    closes = bool(base is not None and base + EXPORT_STRIDE * count == depends)
+    start = image(header, "export_offset")
     return {
         "export_count": count,
-        "header_export_offset": header_says,
-        "depends_offset": depends,
-        "measured_stride": EXPORT_STRIDE,
-        "closure_base": base,
-        "closes_exactly": closes,
-        "header_offset_vs_closure_base": (header_says - base) if base else None,
-        "name_field_offset": EXPORT_NAME_FIELD,
+        "buffer_start": start,
+        "image_start": header_says,
+        "depends_buffer": depends - buffer_base(header),
+        "depends_image": depends,
+        "base_record_size": EXPORT_BASE_SIZE,
+        "tail_field_offset": EXPORT_TAIL_FIELD,
+        "fields": dict(EXPORT_FIELDS),
+        "displacement": buffer_base(header),
         "parsed": True,
-        "partial": True,
-        "why_partial": EXPORT_LIMITS,
-        "next_step": ("find the variable-length rule: entries whose 4-byte marker at +22 is "
-                      "`04 00 0f 04` rather than `04 00 07 00` carry 4 extra bytes, which shifts "
-                      "every later entry. The reference count is `export_count`, so a complete "
-                      "parse must consume all of it exactly."),
     }
 
 
-# ---------------------------------------------------------------------------------------
-# Export table: the NAME field is proven, the rest is not
-# ---------------------------------------------------------------------------------------
-# The object-name field sits at a fixed offset from each entry start, and the offset differs per
-# build. Established by requiring, for the whole table, that the 4-byte int there resolves to a
-# NON-ZERO in-range name (index 0 is a filler like `0Deg`/`A`, so "in range" alone passes on
-# garbage - the trap already recorded twice in this project):
-#
-#     ME1   +15   87% of sampled entries, best of 65 candidate offsets
-#     ME2   +35  100% of sampled entries
-#     ME3   +26   95-99% (GFxUI 606/613, SFXGame 52204/54768)
-#
-# The resulting names are real identifiers: on GFxUI they read `AttachMovie`, `bDisabled`,
-# `GFxAction_SetVariable`, `bWriteable`.
-# The offset at which a NON-ZERO name index can be read is NOT the export name field. Recorded
-# here because the measurement is real and someone will repeat it: requiring "a non-zero, in-range
-# name index" for most entries finds these offsets (ME1 +15 at 87%, ME2 +35 at 99.5%, ME3 +26 at
-# 95.3%). It looks like a win and it is not - the names it produces are dominated by ONE value
-# (`__LoadingMovieDelegate__Delegate` appearing 18,914 times in ME3's 54,768 exports, `0Deg`,
-# `A`). A real export table has thousands of distinct object names and every one of them contains
-# the class names, yet this yields only 7 names containing `Controller`.
-#
-# That is the fourth false pass in this project's history of this exact shape: a test that passes
-# on a constant. The lesson is not "try harder", it is that "most entries resolve" is not evidence
-# of correctness unless the resolved values are DISTINCT and PLAUSIBLE, and the only way to know
-# that is to look at them - which is what produced this note.
-EXPORT_NAME_FIELD_UNPROVEN = {"ME1": 15, "ME2": 35, "ME3": 26}
+RETRACTED = """
+Four conclusions in this file were wrong for a whole session and are recorded so nobody
+re-derives them. All four had the same cause: every table was read 142 bytes (ME3) / 133 bytes
+(ME1, ME2) past its real start, because the header's offsets index the serialized IMAGE and the
+decompressed buffer starts at image[name_offset].
 
-EXPORT_LIMITS = (
-    "The export table is NOT parsed. Entries are nominally 68 bytes - "
-    "(depends_offset - export_offset) / export_count is exactly 68.000 on GFxUI and 68.005 on "
-    "SFXGame, and the boundary signature `04 00 07 00` appears 583 times for 613 GFxUI exports, "
-    "so some entries differ in length. A fixed-stride read of the best-looking name offset "
-    "yields mostly ONE repeated value (`__LoadingMovieDelegate__Delegate` 18,914 times in ME3), "
-    "which is filler, not object names. Class attribution therefore remains unavailable offline."
-)
+  1. "the import layout differs per game; ME3 rotates three columns"
+     -> ONE layout, the standard UE3 FObjectImport, on all three builds.
 
-EXPORT_NEXT_STEP = (
-    "Parse entries sequentially with the variable-length rule rather than at a fixed stride, and "
-    "validate by requiring (a) exactly export_count entries, (b) the cursor to land on "
-    "depends_offset, and (c) the name column to contain the class names known to exist - every "
-    "one of ME3's 54,768 exports has a class, and that class list must contain `SFXGameInfoSP`, "
-    "`SFXPlayerController` and the `Default__*` archetypes. A parse that cannot produce those is "
-    "wrong however plausible its percentages look."
-)
+  2. "the export stride is 68.000 on GFxUI but 68.005 on SFXGame"
+     -> 68 bytes on every build, plus a 4 * NetObjectCount TArray tail.
+
+  3. "the export name field is at +15 / +35 / +26"
+     -> the real object-name FName index is at +12 on every build.
+
+  4. "class attribution is unavailable offline"
+     -> it was always available; the class column is +0 and resolves through the package indices.
+
+Sub-rule that produced all four: a measurement that lands on a boundary you did not derive is a
+measurement of your own base error. The 68.005 figure was the tell - a stride that is not an
+integer cannot be a stride - and it was written down as "entries differ in length" instead of
+being treated as a contradiction.
+"""
 
 
-def exports_status(header):
-    """What is known about the export region, and what is not."""
-    count = header.get("export_count") or 0
-    depends = header.get("depends_offset") or 0
-    header_says = header.get("export_offset") or 0
-    base = depends - EXPORT_STRIDE * count if count and depends else None
-    closes = bool(base is not None and base + EXPORT_STRIDE * count == depends)
-    return {
-        "export_count": count,
-        "header_export_offset": header_says,
-        "depends_offset": depends,
-        "measured_stride": EXPORT_STRIDE,
-        "closure_base": base,
-        "closes_exactly": closes,
-        "header_offset_vs_closure_base": (header_says - base) if base else None,
-        "parsed": False,
-        "why_not": EXPORT_LIMITS,
-        "next_step": EXPORT_NEXT_STEP,
-    }
-    entries, unresolved = [], []
+def verify_tables(header, buf, imports, exports, end_offset, names):
+    """Four independent closures. Returns a list of (check_name, ok, detail).
+
+    Each check fails on a mis-based table, and each is independent of the others - that is the
+    only reason to believe a parse this large without a running game. `build()` raises when any
+    of them fails, so a wrong table cannot be returned and silently used to aim a co-op hook.
+
+      1. TABLE ADJACENCY. `import_offset + 28 * import_count == export_offset` in image space.
+         Holds on every package and pins the import start to the byte.
+      2. EXPORT WALK. Walking `export_count` records (68 bytes + 4 * NetObjectCount) from
+         `export_offset` must land exactly on `depends_offset`. This is the check that proves the
+         variable-length rule; it fails by 24 bytes on ME3 Engine and 288 on ME3 SFXGame when the
+         tail is ignored.
+      3. SERIAL CONTIGUITY. `serial_offset[k] + serial_size[k] == serial_offset[k + 1]` for every
+         adjacent pair, and the last `serial_offset + serial_size` must equal the image length
+         exactly. Serial data is packed with no gaps; nothing else in the record can fake this.
+      4. ACCEPTANCE. Every class index resolves to an object whose class is itself null (the UE3
+         chain always terminates in a class), and every `Default__X` export resolves its class to
+         the export named `X`. Note what is NOT required: that the package define any class at
+         all. Level packages (`Entry.pcc`) contain only actors and components, so they legitimately
+         have zero `class_index == 0` exports, and a "must define a class" gate rejected a correct
+         parse on a map.
+    """
+    out = []
     n = len(names)
-    for k in range(count):
-        e = start + k * EXPORT_STRIDE
-        if e + EXPORT_STRIDE > len(buf):
-            unresolved.append(k)
-            continue
-        v = struct.unpack_from("<i", buf, e + field_off)[0]
-        if 0 < v < n:
-            entries.append({"index": k, "name": names[v], "name_index": v,
-                            "offset": e})
-        else:
-            entries.append({"index": k, "name": None, "name_index": v, "offset": e})
-            unresolved.append(k)
-    cov = (count - len(unresolved)) / count if count else 0.0
-    return {"entries": entries, "coverage": cov, "unresolved": unresolved,
-            "limits": EXPORT_LIMITS}
+
+    ic, ioff = header.get("import_count") or 0, header.get("import_offset") or 0
+    ecount, eoff = header.get("export_count") or 0, header.get("export_offset") or 0
+    ok = ioff + IMPORT_SIZE * ic == eoff
+    out.append(("table_adjacency", ok,
+                "import_offset + 28*%d == export_offset  (%d vs %d)" % (ic, ioff + IMPORT_SIZE * ic, eoff)))
+
+    want = header.get("depends_offset") or 0
+    got = end_offset + buffer_base(header)
+    out.append(("export_walk", got == want,
+                "walked to %d, depends_offset %d, delta %d" % (got, want, got - want)))
+
+    if exports:
+        breaks = [e["index"] for p, e in zip(exports, exports[1:])
+                  if p["serial_offset"] + p["serial_size"] != e["serial_offset"]]
+        last = exports[-1]
+        serial_end = last["serial_offset"] + last["serial_size"]
+        want_end = len(buf) + buffer_base(header)
+        out.append(("serial_contiguity", not breaks and serial_end == want_end,
+                    "%d gap(s) %s; serial end %d vs image length %d"
+                    % (len(breaks), breaks[:4], serial_end, want_end)))
+    else:
+        out.append(("serial_contiguity", False, "no exports"))
+
+    classes = {e["index"] for e in exports if e["class_index"] == 0}
+    by_name = {}
+    for e in exports:
+        if e["object_name"]:
+            by_name.setdefault(e["object_name"].lower(), []).append(e)
+    bad_chain, bad_default, names_ok = 0, 0, 0
+    for e in exports:
+        if e["class_index"] > 0:
+            k = e["class_index"] - 1
+            if not (0 <= k < len(exports)) or exports[k]["class_index"] != 0:
+                bad_chain += 1
+        nm = e["object_name"] or ""
+        if nm.startswith("Default__"):
+            # Case-insensitive: ME3's Engine.pcc pairs `Default__ScoreBoard` with a class spelled
+            # `Scoreboard`. A case-sensitive lookup rejected that package on one capital letter.
+            base = nm[len("Default__"):].lower()
+            cls_idx = e["class_index"]
+            # The class may be either an export of this package or an IMPORT of it. A SeqVar
+            # archetype such as `Default__BioSeqVar_ObjectFindByTag` takes its class from
+            # `Core`, i.e. a negative index - and demanding an export there rejected two
+            # correct packages.
+            if cls_idx > 0:
+                target = exports[cls_idx - 1] if cls_idx - 1 < len(exports) else None
+                ok = target is not None and (target["object_name"] or "").lower() == base
+            elif cls_idx < 0:
+                k = -cls_idx - 1
+                target = imports[k] if k < len(imports) else None
+                ok = target is not None and (target["object_name"] or "").lower() == base
+            else:
+                ok = False
+            if ok:
+                names_ok += 1
+            elif base not in by_name and not any(
+                    (i["object_name"] or "").lower() == base for i in imports):
+                bad_default += 1
+    defaults = sum(1 for e in exports if (e["object_name"] or "").startswith("Default__"))
+    ok = (bad_chain == 0 and bad_default == 0
+          and (defaults == 0 or names_ok == defaults))
+    out.append(("acceptance", ok,
+                "%d class-ish exports; %d exports whose class is not itself a class; "
+                "%d/%d Default__X whose class is X" % (len(classes), bad_chain, names_ok, defaults)))
+    return out
 
 
-def build(package):
+def build(package, limit=None):
     pkg = load_pkg()
     data = open(package, "rb").read()
     dll = pkg.find_oodle()
@@ -304,41 +491,54 @@ def build(package):
         raise SystemExit("header layout not recognised")
 
     game = guess_game(package)
-    count = fields["import_count"]
-    best = None
-    for delta in range(0, 0x60):
-        start = name_end + delta
-        if start + count * IMPORT_SIZE > len(buf):
-            break
-        trial, pads_wrong = parse_imports(buf, start, count, names, LAYOUTS[game])
-        ok, why = _shape_ok(trial)
-        if not ok:
-            continue
-        score = (-pads_wrong, -delta)
-        if best is None or score > best[0]:
-            best = (score, start, delta, trial, pads_wrong, why)
-    if best is None:
+    disp = buffer_base(fields)
+    imp_start = image(fields, "import_offset")
+    exp_start = image(fields, "export_offset")
+
+    # The header's own arithmetic pins the import start; the name table must end exactly there.
+    # Asserting it rather than searching for it is what turns a 142-byte base error from a
+    # plausible-looking table into an immediate failure.
+    if imp_start != name_end:
         raise SystemExit(
-            "no import-table start after 0x%x gives a plausible table for %s with the known "
-            "layout. Refusing to guess: a mis-attributed import sends a co-op hook to the wrong "
-            "object silently." % (name_end, game))
-    _, imp_start, delta, imports, pads_wrong, why = best
+            "import table should start at the name-table end 0x%x but the header puts it at 0x%x "
+            "(after subtracting the %d-byte image displacement). The displacement or the header "
+            "layout is wrong for %s - refusing to parse rather than returning a shifted table."
+            % (name_end, imp_start, disp, os.path.basename(package)))
+
+    imports, numbers_wrong = parse_imports(buf, imp_start, fields["import_count"], names)
+    ok, why, metrics = _shape_ok(imports)
+    if not ok:
+        raise SystemExit(
+            "import table at 0x%x does not have the shape of a real table: %s. Refusing to "
+            "guess: a mis-attributed import sends a co-op hook to the wrong object silently."
+            % (imp_start, why))
+
+    exports, end_offset = parse_exports(buf, exp_start, fields["export_count"], names)
+    checks = verify_tables(fields, buf, imports, exports, end_offset, names)
+    failed = [c for c in checks if not c[1]]
+    if failed:
+        raise SystemExit(
+            "export table at 0x%x failed %d closure check(s): %s"
+            % (exp_start, len(failed), "; ".join("%s (%s)" % (c[0], c[2]) for c in failed)))
 
     return {
         "package": os.path.basename(package),
         "path": package,
         "game": game,
-        "layout": LAYOUTS[game],
+        "displacement": disp,
         "container": {"chunks": len(chunks), "uncompressed": len(buf)},
         "names": len(names),
         "name_table_end": name_end,
         "header": fields,
         "import_start": imp_start,
-        "import_start_delta": delta,
-        "import_pads_wrong": pads_wrong,
+        "import_numbers_wrong": numbers_wrong,
         "import_shape": why,
+        "import_metrics": metrics,
+        "exports_end": end_offset,
+        "checks": checks,
         "imports": imports,
-        "exports": exports_status(fields),
+        "exports": exports,
+        "exports_status": exports_status(fields),
     }
 
 
@@ -346,29 +546,34 @@ def build(package):
 def cmd_summary(args):
     t = build(args.package)
     print("%s  [%s]" % (t["package"], t["game"]))
+    print("  displacement       : %d bytes (header offsets are image-space)"
+          % t["displacement"])
     print("  names              : %d (table ends at 0x%x)" % (t["names"], t["name_table_end"]))
-    print("  imports            : %d at 0x%x (name-table end + %d)"
-          % (len(t["imports"]), t["import_start"], t["import_start_delta"]))
-    print("  layout             : %s" % t["layout"])
+    print("  imports            : %d at 0x%x (== name-table end)"
+          % (len(t["imports"]), t["import_start"]))
     print("  shape check        : %s" % t["import_shape"])
-    print("  non-zero pad words : %d" % t["import_pads_wrong"])
+    m = t["import_metrics"]
+    print("  shape metrics      : type names %.0f%%, numbered FNames %.1f%%, dominance %.0f%%"
+          % (m["type_share"] * 100, m["number_rate"] * 100, m.get("dominance", 0) * 100))
     by_src = collections.Counter(r["source_name"] for r in t["imports"])
     print("  sources            : %s"
           % ", ".join("%s %d" % (k, v) for k, v in by_src.most_common(6)))
-    by_obj = collections.Counter(r["object_name"] for r in t["imports"])
-    print("  top object kinds   : %s"
-          % ", ".join("%s %d" % (k, v) for k, v in by_obj.most_common(6)))
+    by_type = collections.Counter(r["type_name"] for r in t["imports"])
+    print("  top import types   : %s"
+          % ", ".join("%s %d" % (k, v) for k, v in by_type.most_common(6)))
     print()
-    e = t["exports"]
+    print("  exports            : %d at 0x%x, walked to 0x%x"
+          % (len(t["exports"]), t["exports_status"]["buffer_start"], t["exports_end"]))
+    by_cls = collections.Counter(
+        describe_index(e["class_index"], t["exports"], t["imports"]) for e in t["exports"])
+    print("  top export classes : %s"
+          % ", ".join("%s %d" % (k, v) for k, v in by_cls.most_common(6)))
+    named = [e["object_name"] for e in t["exports"] if e["object_name"]]
+    print("  distinct export nm : %d of %d" % (len(set(named)), len(named)))
     print()
-    print("  exports            : NOT PARSED")
-    print("    count            : %d" % e["export_count"])
-    print("    stride           : %d bytes nominal (%.3f measured over the region)"
-          % (e["measured_stride"],
-             (e["depends_offset"] - e["header_export_offset"]) / e["export_count"]
-             if e["export_count"] else 0))
-    print("    why not          : %s" % e["why_not"])
-    print("    next step        : %s" % e["next_step"])
+    print("  closure checks:")
+    for name, ok, detail in t["checks"]:
+        print("    %-18s %-4s %s" % (name, "ok" if ok else "FAIL", detail))
     return 0
 
 
@@ -382,59 +587,73 @@ def cmd_imports(args):
           % (t["package"], len(rows), " from %s" % want if want else ""))
     by_src = collections.Counter(r["source_name"] for r in t["imports"])
     print("  sources: %s" % ", ".join("%s %d" % (k, v) for k, v in by_src.most_common(8)))
-    print("  %-6s %-32s %-24s %s" % ("INDEX", "OBJECT", "TYPE", "SOURCE"))
+    print("  %-6s %-34s %-22s %-12s %s" % ("INDEX", "OBJECT", "TYPE", "SOURCE", "OUTER"))
     for r in rows[:args.limit]:
-        print("  %-6d %-32s %-24s %s"
-              % (r["index"], r["object_name"], r["type_name"], r["source_name"]))
+        print("  %-6d %-34s %-22s %-12s %s"
+              % (r["index"], r["object_name"], r["type_name"], r["source_name"],
+                 describe_index(r["outer_index"], t["exports"], t["imports"])))
     return 0
 
 
 def cmd_find(args):
+    """Find an object by name, in the export table (what this package DEFINES) or the imports."""
     t = build(args.package)
     want = args.name.lower()
-    hits = [r for r in t["imports"]
-            if want in (r["object_name"] or "").lower()
-            or want in (r["type_name"] or "").lower()]
-    if not hits:
-        print("%s: no import matches %r" % (t["package"], args.name))
+    imp_hits = [r for r in t["imports"]
+                if want in (r["object_name"] or "").lower()
+                or want in (r["type_name"] or "").lower()]
+    exp_hits = [e for e in t["exports"] if want in (e["object_name"] or "").lower()]
+    if not imp_hits and not exp_hits:
+        print("%s: nothing matches %r" % (t["package"], args.name))
         return 1
-    print("%s: %d import(s) matching %r" % (t["package"], len(hits), args.name))
-    for r in hits[:args.limit]:
-        print("  #%-5d object=%-32s type=%-24s source=%s"
-              % (r["index"], r["object_name"], r["type_name"], r["source_name"]))
+    if exp_hits:
+        print("%s: %d export(s) matching %r" % (t["package"], len(exp_hits), args.name))
+        for e in exp_hits[:args.limit]:
+            print("  #%-6d %-34s class=%-26s outer=%-22s size=%d"
+                  % (e["index"], e["object_name"],
+                     describe_index(e["class_index"], t["exports"], t["imports"]),
+                     describe_index(e["outer_index"], t["exports"], t["imports"]),
+                     e["serial_size"]))
+    if imp_hits:
+        print("%s: %d import(s) matching %r" % (t["package"], len(imp_hits), args.name))
+        for r in imp_hits[:args.limit]:
+            print("  #%-6d object=%-34s type=%-22s source=%s"
+                  % (r["index"], r["object_name"], r["type_name"], r["source_name"]))
     return 0
 
 
 def cmd_classes(args):
+    """Every class this package DEFINES: exports whose own class index is 0.
+
+    A class's class is null - `Core.Class` is itself an object in `Core`, reached through the
+    import table, not through the export's own class slot. That is why "count the exports whose
+    class resolves to `Core.Class`" returns 0 and is not a defect.
+    """
     t = build(args.package)
-    by = collections.Counter(r["type_name"] for r in t["imports"] if r["type_name"])
-    print("%s: %d distinct import classes" % (t["package"], len(by)))
-    for name, n in by.most_common(args.limit):
-        print("  %-38s %4d" % (name, n))
+    cls = [e for e in t["exports"] if e["class_index"] == 0]
+    print("%s: %d class(es) defined, %d export(s) total"
+          % (t["package"], len(cls), len(t["exports"])))
+    for e in cls[:args.limit]:
+        sup = describe_index(e["super_index"], t["exports"], t["imports"])
+        print("  #%-6d %-40s super=%-30s size=%d"
+              % (e["index"], e["object_name"], sup, e["serial_size"]))
     return 0
 
 
 def cmd_objects(args):
-    """Report the export-attribution attempt and why it was retracted.
-
-    This command exists so the negative result is discoverable rather than living only in a
-    commit message. It deliberately prints no object list: the fixed-stride read produces one
-    repeated filler name, and printing it would invite someone to use it.
-    """
+    """List exported objects with their class and outer, optionally filtered by name."""
     t = build(args.package)
-    e = t["exports"]
-    print("%s: the export table is NOT parsed" % t["package"])
-    print()
-    print("  exports           : %d" % e["export_count"])
-    print("  nominal stride    : %d bytes" % e["measured_stride"])
-    print("  why not           : %s" % e["why_not"])
-    print("  next step         : %s" % e["next_step"])
-    print()
-    print("  The measured-but-wrong name offsets were %s."
-          % ", ".join("%s +%d" % (g, o) for g, o in
-                      sorted(EXPORT_NAME_FIELD_UNPROVEN.items())))
-    print("  They resolve 87-99%% of entries to a name index - and those names are ~18,900 copies")
-    print("  of `__LoadingMovieDelegate__Delegate`. A test that accepts a constant is not a test.")
+    rows = t["exports"]
+    if getattr(args, "name", None):
+        want = args.name.lower()
+        rows = [e for e in rows if want in (e["object_name"] or "").lower()]
+    print("%s: %d export(s)" % (t["package"], len(rows)))
+    print("  %-6s %-40s %-28s %s" % ("INDEX", "OBJECT", "CLASS", "OUTER"))
+    for e in rows[:args.limit]:
+        print("  #%-6d %-40s %-28s %s"
+              % (e["index"], e["object_name"],
+                 describe_index(e["class_index"], t["exports"], t["imports"]),
+                 describe_index(e["outer_index"], t["exports"], t["imports"])))
     return 0
 
 
@@ -443,9 +662,10 @@ def cmd_json(args):
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"package": t["package"], "game": t["game"], "names": t["names"],
-                   "header": t["header"], "import_start": t["import_start"],
-                   "layout": t["layout"], "imports": t["imports"],
-                   "exports": t["exports"]}, f, indent=1)
+                   "displacement": t["displacement"], "header": t["header"],
+                   "import_start": t["import_start"],
+                   "imports": t["imports"], "exports": t["exports"],
+                   "checks": t["checks"], "retracted": RETRACTED}, f, indent=1)
     print("wrote %s (%d bytes)" % (args.out, os.path.getsize(args.out)))
     return 0
 
@@ -455,7 +675,7 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("summary", help="counts, validation and the export gap")
+    p = sub.add_parser("summary", help="counts, closure checks and a table overview")
     p.add_argument("package")
     p.set_defaults(func=cmd_summary)
 
@@ -468,19 +688,18 @@ def main():
     p.add_argument("--limit", type=int, default=40)
     p.set_defaults(func=cmd_imports)
 
-    p = sub.add_parser("find", help="find an import by object or class name")
+    p = sub.add_parser("find", help="find an object or class by name")
     p.add_argument("package")
     p.add_argument("name")
     p.add_argument("--limit", type=int, default=40)
     p.set_defaults(func=cmd_find)
 
-    p = sub.add_parser("classes", help="import classes by frequency")
+    p = sub.add_parser("classes", help="classes this package DEFINES")
     p.add_argument("package")
     p.add_argument("--limit", type=int, default=40)
     p.set_defaults(func=cmd_classes)
 
-    p = sub.add_parser("objects",
-                       help="objects this package DEFINES (export names), with coverage")
+    p = sub.add_parser("objects", help="exported objects with class and outer")
     p.add_argument("package")
     p.add_argument("name", nargs="?")
     p.add_argument("--limit", type=int, default=40)
