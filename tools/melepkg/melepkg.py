@@ -140,18 +140,26 @@ def _steam_roots():
 
 
 def game_dirs():
-    """Every plausible `Mass Effect Legendary Edition` install directory.
+    """Every plausible `Mass Effect Legendary Edition` install directory, de-duplicated.
 
     `$MELE_GAME_DIR` wins outright - that is how a modder points this at their own copy without
     editing code. Otherwise each Steam root is probed for the game under `steamapps/common`
     (where Steam actually puts it), and the folder is matched case-insensitively because
     `SteamLibrary` and `Steamlibrary` both occur.
+
+    **De-duplication is by `os.path.normcase` of the real path, and it matters.** `_steam_roots`
+    deliberately tries both spellings of the folder name, and Windows resolves both to the same
+    install - so this generator used to yield the same directory twice. Anything that walked every
+    root then parsed every package twice: `mele_index.build` reported "9892 parsed" for a
+    4,946-package build, exactly 2x, which is how it was caught. Deduplicating here rather than in
+    each caller removes the trap for every future caller at once.
     """
     env = os.environ.get("MELE_GAME_DIR")
     if env:
         yield env
         return
     want = "mass effect legendary edition"
+    seen = set()
     for root in _steam_roots():
         for sub in (os.path.join("steamapps", "common"), "common", ""):
             base = os.path.join(root, sub) if sub else root
@@ -160,8 +168,17 @@ def game_dirs():
             except OSError:
                 continue
             for entry in entries:
-                if entry.lower() == want:
-                    yield os.path.join(base, entry)
+                if entry.lower() != want:
+                    continue
+                full = os.path.join(base, entry)
+                try:
+                    key = os.path.normcase(os.path.realpath(full))
+                except OSError:
+                    continue
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield full
 
 
 def find_oodle(explicit=None):

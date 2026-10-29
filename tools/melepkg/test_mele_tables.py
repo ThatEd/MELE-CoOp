@@ -913,6 +913,31 @@ def t_class_fields_hedged():
         len(rows), owner)
 
 
+@case("game_dirs() reports each install once, even when two folder spellings resolve to it")
+def t_game_dirs_deduped():
+    """`_steam_roots` deliberately tries both `SteamLibrary` and `Steamlibrary`. On Windows both
+    resolve to the same directory, so this generator used to yield the install TWICE and anything
+    walking every root did all its work twice.
+
+    Measured before the fix: `mele_index.build` reported "9892 parsed" for a 4,946-package build -
+    exactly 2x, which is what exposed it. After the fix: 4,946. The assertion is on the
+    de-duplication, not the count, because the count depends on what is installed.
+    """
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("melepkg_probe",
+                                        os.path.join(HERE, "melepkg.py"))
+    pkg = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(pkg)
+    roots = list(pkg.game_dirs())
+    if not roots:
+        return "skip", "no install found"
+    keys = [os.path.normcase(os.path.realpath(r)) for r in roots]
+    if len(keys) != len(set(keys)):
+        return "fail", "%d roots but only %d distinct: %s" % (
+            len(keys), len(set(keys)), roots)
+    return "ok", "%d distinct root(s)" % len(keys)
+
+
 def main():
     failures = 0
     skips = 0

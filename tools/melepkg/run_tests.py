@@ -22,6 +22,8 @@ SUITES = [
     "test_mele_tables.py",
     # Bytecode extents, and the deliberate absence of a disassembler.
     "test_ue3_bytecode.py",
+    # The install index: compact reference format and its query semantics.
+    "test_mele_index.py",
 ]
 
 

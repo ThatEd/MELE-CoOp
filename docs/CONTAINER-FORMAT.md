@@ -274,6 +274,30 @@ A `UScriptStruct` is different: no native base, so offsets are exact.
 `SplitscreenData` is `{PlayerData: TArray<PerPlayerSplitscreenData>}` - the split-screen pane
 geometry, identical on all three builds.
 
+## Locating anything in the install
+
+`mele_tables.py` answers questions about one package. Co-op work asks the opposite: *which `.pcc` do
+I have to load or hook to get `BioTriggerVolume`?* `mele_index.py` walks the install once, caches
+the result under `local/MELE/index/`, and answers from the index.
+
+    python -I tools/melepkg/mele_index.py build            # incremental; --rebuild to force
+    python -I tools/melepkg/mele_index.py find  TriggerVolume --limit 20
+    python -I tools/melepkg/mele_index.py who   Actor          # which packages DEFINE it
+    python -I tools/melepkg/mele_index.py chain SFXPawn_Player # superclass chain, across packages
+    python -I tools/melepkg/mele_index.py members SFXGame      # its child exports
+    python -I tools/melepkg/mele_index.py stats
+
+Per package it stores four strings per export - name, class, super, outer - and nothing else. That
+is enough for every query above and keeps the index proportional to object count: an earlier
+version that stored the full parse produced a **591 MB** ME1 index for the same coverage.
+
+A package that fails to parse is stored as an **error**, not dropped, so "nothing matched" can be
+told apart from "the index never contained that file" - the distinction that hid 380 uncompressed
+ME1 packages earlier in this project.
+
+The index lives under `local/`, which both `.gitignore` files exclude, because it is derived from
+the game's own data.
+
 ## Bytecode property references (heuristic)
 
 A UE3 operand is a 1-byte token then a 4-byte package index, so scanning a function's bytecode for

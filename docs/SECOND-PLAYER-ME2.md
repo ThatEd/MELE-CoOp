@@ -192,6 +192,37 @@ credible is structure - each parameter appears three times at distinct offsets (
 for the return) and `GamePlayers` four times. `refs` prints the noise rate every time, and the test
 asserts the margin rather than the bare hit count.
 
+### What the bytecode says about the call sequence
+
+Beyond the shape of `AddLocalPlayer`, one reference is decisive for this page: **`CreatePlayer`
+references `AddLocalPlayer`** on all three builds - a direct 4-byte match on `AddLocalPlayer`'s
+export index+1, with a noise baseline of 11-19%, i.e. the sort of hit that is ~1-in-6 by chance and
+therefore worth checking but not worth trusting alone. Read together with the rest of the reference
+set it is not alone:
+
+| offset in `CreatePlayer` | reference |
+|---|---|
+| `+0x7b`, `+0x81`, `+0x9d`, `+0xa3` | `Engine.LocalPlayerClass` |
+| `+0xb1`, `+0xb7` | `LocalPlayer.ViewportClient` |
+| `+0xc5`, `+0xcb` | `LocalPlayer.ControllerId` |
+| `+0xd6`, `+0xf4` | `InsertIndex` (its own parameter) |
+| `+0xdb` | **`GameViewportClient.AddLocalPlayer`** |
+| `+0xeb` | `bSpawnActor` (its own parameter) |
+| `+0x134` | `SpawnPlayActor.ReturnValue` |
+
+So the outline is: read `LocalPlayerClass`, build a `LocalPlayer`, set its `ViewportClient` and
+`ControllerId`, call `AddLocalPlayer`(with `InsertIndex`), and separately reach `SpawnPlayActor`.
+That matches the leaf role established above - **`AddLocalPlayer` is the registration step, not the
+thing that creates a controller** - and it means the ME2 crash is upstream of it.
+
+It also explains why the crash sites looked unrelated: `CreatePlayer` is a *sequence* of large
+steps, so a fault "inside `CreatePlayer`" tells you almost nothing about which step.
+
+**Not a decode.** Property references are a heuristic (see `refs`), control flow is not recovered,
+and the ordering above is read off ascending offsets rather than from a decoded instruction stream.
+Treat it as a hypothesis to test against the offsets already measured, which is what makes it worth
+recording: every reference in the table above corresponds to a step the crash table already names.
+
 ## Honest status
 
 | Claim | Evidence |
@@ -202,6 +233,8 @@ asserts the margin rather than the bare hit count.
 | Import and export tables parse on all three builds | **proven** — four closures, **12,704/12,704 packages** (100% of the three installs) |
 | `SFXPlayerController : BioPlayerController : [BioBasePlayerController on ME2 only] : Core.PlayerController` | **proven** — export table chain, both builds; the builds differ in the middle |
 | `AddLocalPlayer` would work in ME2 | **unknown** — present, never dispatched |
+| `CreatePlayer` calls `AddLocalPlayer` on all three builds | **derived** — 4-byte reference at `+0xdb`, ~1-in-6 chance alone, consistent with its other references |
+| `AddLocalPlayer` registers a `LocalPlayer`; it does not create a `PlayerController` | **derived** — its only references are its params and `GamePlayers`, and returning a bare `int` rules out returning a controller |
 | `AddLocalPlayer` is `GameViewportClient.AddLocalPlayer` on all three builds | **proven** — `Engine.pcc` export table, class `Core.Function`, outer `GameViewportClient` |
 | `AddLocalPlayer` inserts `NewPlayer` into `GamePlayers` at `InsertIndex` | **derived** — bytecode property references, corroborated by `CreatePlayer`'s string constants, not a full decode |
 | `RemovePlayer` refuses on a role check, all three builds | **proven** — bytecode string constants |
