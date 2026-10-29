@@ -8,6 +8,38 @@ act.
 All of this is measured **offline**, by decompressing the packages with `tools/melepkg` and
 inventorying identifiers. Nothing here needed a running game.
 
+## The census, now over every level package rather than name lists
+
+The table below counted **class names that exist in each build**. With the export table and the
+install index the question can now be asked the other way round - *what does a level actually
+instantiate* - across all 11,438 level packages:
+
+| Game | level packages | with sequence objects | distinct action classes | total uses |
+|---|---|---|---|---|
+| ME1 | 4,367 | 2,989 (68%) | 273 | 892,720 |
+| ME2 | 3,485 | 2,575 (74%) | 382 | 633,763 |
+| ME3 | 3,586 | 2,934 (82%) | 377 | 621,537 |
+
+    python -I tools/melepkg/mele_index.py find SeqAct_Interp    # which levels use it
+
+The most-used classes are the same three shapes on every build, in slightly different order:
+
+| | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| 1 | `SeqAct_Interp` | `SeqAct_Interp` | `SeqAct_Interp` |
+| 2 | `BioSeqAct_EndCurrentConvNode` | `BioSeqAct_EndCurrentConvNode` | `BioSeqAct_EndCurrentConvNode` |
+| 3 | `SeqVar_External` | `BioSeqVar_ObjectFindByTag` | `SeqVar_Object` |
+| 4 | `SeqAct_FinishSequence` | `SeqVar_External` | `BioSeqVar_ObjectFindByTag` |
+| 5 | `SeqVar_ScopedNamed` | `SeqVar_Object` | `SeqEvent_SequenceActivated` |
+
+Two things follow for co-op. `SeqAct_Interp` (matinee) dominating means most level events are
+**cutscene-driven**, so anything that gates player 2 on story progress is gating on matinee
+completion, not on triggers. And `SeqVar_External` near the top on all three means levels read
+external state heavily - which is where a co-op session's own state would have to be injected.
+
+The full per-game census, with the top forty classes each, is written to
+`local/MELE/maps/sequence-class-census.json`.
+
 ## The measurement, and the surprise in it
 
 Counted across each game's whole script surface (all packages, both encodings):
