@@ -1003,10 +1003,23 @@ def cmd_signature(args):
             if e["object_name"] == args.name
             and describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.Function"]
     if not hits:
+        # Distinguish the three reasons this misses, because "did you mean X" naming X itself is
+        # what a caller saw before: a class export needs `members`, an import needs another
+        # package, and only then is the name genuinely absent.
+        same_name = [e for e in t["exports"] if e["object_name"] == args.name]
+        if same_name:
+            kinds = sorted({describe_index(e["class_index"], t["exports"], t["imports"])
+                            for e in same_name})
+            return _report_not_a_function(t, args.name, kinds)
         near = [e["object_name"] for e in t["exports"]
                 if args.name.lower() in (e["object_name"] or "").lower()][:8]
-        print("%s: no function named %r%s"
-              % (t["package"], args.name, ("; did you mean %s" % near) if near else ""))
+        if near:
+            print("%s: no function named %r; did you mean %s"
+                  % (t["package"], args.name, near))
+        else:
+            print("%s: nothing named %r" % (t["package"], args.name))
+        print("  (an object defined in another package is an IMPORT here - check the export"
+              " with `find` on that package)")
         return 1
     for e in hits[:args.limit]:
         s = signature(t, t["buf"], e)
@@ -1023,6 +1036,35 @@ def cmd_signature(args):
             print("    NOTE: declaration order unavailable (%s); parameters are in export"
                   " (alphabetical) order and MUST NOT be used to lay out a parms block"
                   % s["order"])
+    return 0
+
+
+def _report_not_a_function(t, name, kinds):
+    """Explain why a name exists but is not a function export, instead of implying a typo."""
+    real = [k for k in kinds if k != "None"]
+    if real:
+        print("%s: %r exists but is a %s, not a function"
+              % (t["package"], name, ", ".join(real)))
+    else:
+        print("%s: %r is a class (its own class is null), not a function"
+              % (t["package"], name))
+    for e in [x for x in t["exports"] if x["object_name"] == name][:1]:
+        kids = [x for x in t["exports"] if x["outer_index"] == e["index"] + 1]
+        funcs = [x for x in kids
+                 if describe_index(x["class_index"], t["exports"], t["imports"])
+                 == "Core.Function"]
+        defs = [x for x in kids if x["class_index"] == 0]
+        print("  it declares %d child export(s): %d class(es), %d function(s)"
+              % (len(kids), len(defs), len(funcs)))
+        if funcs:
+            print("  functions: %s" % ", ".join(f["object_name"] for f in funcs[:8]))
+            print("  try: signature <package> <one of those names>"
+                  "  (several exports may share it)")
+        elif kids:
+            print("  this is a Kismet action or a plain class: its properties are the children")
+            for k in kids[:8]:
+                print("     %-30s %s" % (k["object_name"],
+                      describe_index(k["class_index"], t["exports"], t["imports"])))
     return 0
 
 

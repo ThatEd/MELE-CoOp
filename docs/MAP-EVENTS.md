@@ -197,6 +197,25 @@ identifiers, i.e. it is a small leaf level whose Kismet lives in the intro/shutt
     python -I tools/melepkg/mele_script_map.py --diff local/MELE/maps/ME1.json local/MELE/maps/ME3.json
     python -I tools/melepkg/mele_script_map.py --package <BIOA_*.pcc> --events --limit 60
 
+    python -I tools/melepkg/mele_index.py find SeqAct_Interp        # which levels use it
+    python -I tools/melepkg/mele_tables.py members <SFXGame.pcc> BioTriggerVolume
+    python -I tools/melepkg/mele_tables.py signature <SFXGame.pcc> Activated
+
+## The two classes the trigger-delay design turns on
+
+`BioTriggerVolume` is defined once, in `SFXGame.pcc`, on **all three** builds, with
+`super=Core.TriggerVolume` - so the class is the same shape everywhere and `EWhoTriggers` is
+inherited from the engine's own `Trigger` rather than reimplemented per game.
+
+`BioSeqAct_CheckIfInVolume` is a **class**, not a function; what it declares is two functions,
+`Activated` and `GetObjClassVersion`. `Activated` takes `(eType: Byte, I: Int, oBehave: Object)`
+with a `0x10`-byte parms block - that is the signature of a Kismet action being fired, and it is
+what a co-op mod would have to call or suppress to gate a volume on player 2.
+
+`spec` prints what a name is when it is not a function, rather than suggesting the name back to
+you. That was a real defect: asking for `BioSeqAct_CheckIfInVolume` returned
+"no function named 'BioSeqAct_CheckIfInVolume'; did you mean ['BioSeqAct_CheckIfInVolume']".
+
 The last form is per level: `BIOA_CRD00.pcc` alone carries 58 event class names, i.e. the events a
 single level actually uses, which is a much shorter list than the whole build's.
 
