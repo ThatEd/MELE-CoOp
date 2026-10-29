@@ -335,6 +335,19 @@ asking whether the region *contains the instructions* - `CreatePlayer` must begi
 `e7 a8 ... "Creating n..."` and the text was 15 bytes late. Closure tests self-consistency, not
 truth.
 
+## The opcode table is underdetermined, and that is measured
+
+Deriving it looked decisive: one operand length per opcode, solved subject to "every function closes
+exactly" - 5,279 extents against 256 unknowns. Arc-consistency over all of them pins a unique length
+for exactly **two** tokens (`0x02`=2, `0x53`=1) and leaves the other **254** ambiguous over 1-20
+bytes. A two-byte function only exercises two tokens, so the system has far more freedom than
+constraints, and `EX_Skip`/`EX_LabelTable`/`EX_Context` are variable-length anyway.
+
+So no opcode table ships. `test_ue3_bytecode.py` asserts the 2-pinned/254-ambiguous outcome, so if a
+future table *were* derivable the test goes red and gets replaced with a real one rather than
+passing silently. A reference `EExprToken` for this engine version would settle it; what is
+reachable publicly is UE4 Kismet, a different opcode space.
+
 The **opcode table is not solved**. A walk that "closes" is meaningless here: a partition into
 instructions of any length 1..24 succeeds on 5279 of 5279 functions, so the closure test eliminates
 almost no hypotheses. `ue3_bytecode.py` therefore extracts bytecode and string constants and stops.

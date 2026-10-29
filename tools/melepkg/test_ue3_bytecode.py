@@ -203,6 +203,71 @@ def t_missing_function():
     return "ok", "absent"
 
 
+@case("the opcode solve leaves almost every token ambiguous: 2 pinned, 254 not")
+def t_opcode_table_underdetermined():
+    """The strongest available statement about the opcode table: it cannot be derived from closure.
+
+    The plan that looked decisive - one operand length per opcode, solved subject to "every
+    function closes exactly", 5,279 extents against 256 unknowns - forces a unique length for
+    exactly TWO tokens and leaves the other 254 ambiguous. This case re-runs the constraint
+    propagation on the package and asserts that outcome, so if a future change *were* to pin the
+    table, the test goes red and gets replaced by a real table test instead of silently passing.
+
+    It also asserts the propagation is not vacuous: `0x02`=2 and `0x53`=1 must come out, which are
+    the two lengths that are genuinely forced.
+    """
+    t, why = table("ME3")
+    if t is None:
+        return "skip", why
+    mt = bc.load_tables()
+    bodies = [f["body"] for f in bc.functions(t, mt)]
+    if len(bodies) < 5000:
+        return "fail", "only %d functions" % len(bodies)
+    MAXLEN = 20
+    allowed = {tok: set(range(1, MAXLEN + 1)) for tok in range(256)}
+    # Forced from the 514 bodies that are exactly two bytes, all of which are `0b 53`.
+    allowed[0x02] = {2}
+    for _ in range(4):
+        for b in bodies:
+            n = len(b)
+            if n == 0:
+                continue
+            ok = [False] * (n + 1)
+            ok[n] = True
+            for i in range(n - 1, -1, -1):
+                for L in allowed[b[i]]:
+                    if i + L <= n and ok[i + L]:
+                        ok[i] = True
+                        break
+            if not ok[0]:
+                return "fail", "no closure; the constraint propagation is broken"
+            reach = [False] * (n + 1)
+            reach[0] = True
+            for i in range(n):
+                if not reach[i]:
+                    continue
+                for L in allowed[b[i]]:
+                    if i + L <= n:
+                        reach[i + L] = True
+            for i in range(n):
+                if not reach[i]:
+                    continue
+                good = {L for L in allowed[b[i]] if i + L <= n}
+                if good:
+                    allowed[b[i]] &= good
+    pinned = {k: v.pop() for k, v in allowed.items() if len(v) == 1}
+    if pinned.get(0x02) != 2:
+        return "fail", "0x02 did not pin to 2: %r" % (pinned.get(0x02),)
+    if pinned.get(0x53) != 1:
+        return "fail", "0x53 did not pin to 1: %r" % (pinned.get(0x53),)
+    if len(pinned) > 8:
+        return "fail", ("%d tokens pinned; the earlier measurement said 2, so either the "
+                        "propagation changed or the table is now derivable - investigate "
+                        "rather than celebrate" % len(pinned))
+    return "ok", "%d pinned (0x02=2, 0x53=1), %d still ambiguous over 1-%d bytes" % (
+        len(pinned), 256 - len(pinned), MAXLEN)
+
+
 def main():
     failures = skips = 0
     for name, fn in CASES:

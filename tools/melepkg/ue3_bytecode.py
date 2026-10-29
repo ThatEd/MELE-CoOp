@@ -41,12 +41,31 @@ against, and neither is present here.
 
 Two observations a future attempt should start from, from reading the streams:
 
-  * `02 00` is the whole body of 514 two-byte functions (e.g. `Actor.Destroy`). In UE3 `0x02` is
-    `EX_DefaultVariable`, so such a function is probably "return the default value of property 0" -
-    a plausible native stub, but that is inference, not proof.
+  * `0x02 0x00` is the whole body of 514 two-byte functions (e.g. `Actor.Destroy`). In UE3
+    `0x02` is `EX_DefaultVariable`, so such a function is probably "return the default value of
+    property 0" - a plausible native stub, but that is inference, not proof.
   * `LayoutPlayers` ends with `53 00 00 0? 0? 00`, i.e. `0x53` then what looks like a two-byte
     count and that many two-byte entries. `0x53` is beyond the stock UE3 `EExprToken` range, so
     this build's table already differs from the SDK's.
+
+## The derivation was attempted, and it is underdetermined
+
+The plan that looked strongest: treat each opcode as having ONE operand length, and solve for the
+256 lengths subject to "every function closes exactly". 5,279 known extents overdetermine 256
+unknowns, so a wrong table should be impossible.
+
+It does not work, and the numbers say why. Arc-consistency over all 5,279 bodies forces a unique
+length for exactly **two** tokens: `0x02` = 2 bytes and `0x53` = 1 byte. The other 254 stay
+ambiguous over 1-20 bytes. A 2-byte function only ever exercises two tokens, and most tokens appear
+in a handful of positions, so the system has far more freedom than constraints.
+
+Worse, the fixed-length assumption is probably false: `EX_Skip`, `EX_LabelTable` and `EX_Context`
+are variable-length by construction in UE3, which removes the last handhold.
+
+So this needs a **reference table** for this engine version - the `EExprToken` enum from the
+shipped UE3 SDK or a compatible decompilation - and none is reachable here. What was reachable
+(CUE4Parse and friends) is UE4 Kismet, a different opcode space with different names, and using it
+would be exactly the kind of plausible-looking wrong answer this project keeps having to retract.
 
 Usage:
 

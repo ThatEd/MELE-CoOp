@@ -202,6 +202,12 @@ list**; if a section disagrees, this wins.
     does not produce - repetition at a stride, or agreement with an independent source - before
     calling it a finding. Rule 33 applied inside one function rather than across a table.
 
+41. **A negative result is worth a test, but only if the test can go red.** "The opcode table is
+    underdetermined" is useful knowledge and worthless as a `skip`. The case that records it
+    re-runs the constraint propagation and asserts both that the two genuinely forced lengths come
+    out AND that nothing else does, so it fails if the situation changes in either direction. The
+    first version of that case was a SKIP that always skipped - rules 25, 27 and 39 in a new shape.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -3850,3 +3856,39 @@ the tool cannot quietly present noise as a decode.
 noise. Report the baseline with the hits, and require a structure that noise does not produce -
 repetition at a stride, or agreement with an independent source - before calling it a finding.
 This is rule 33 applied inside a single function rather than across a table.
+
+## 2026-10-29 (opcode solve): the derivation was attempted and is underdetermined
+
+The plan that looked decisive for the opcode table: assume one operand length per opcode and solve
+all 256 subject to "every function closes exactly". There are 5,279 known extents in ME3's
+`Engine.pcc` against 256 unknowns, so a wrong table should be impossible.
+
+It is not possible, and the numbers say why. Arc-consistency over all 5,279 bodies forces a unique
+length for exactly **two** tokens:
+
+    **0x02 = 2 bytes**   (the 514 bodies that are exactly `0b 53` are 2 bytes, so 0x02 cannot be more)
+    **0x53 = 1 byte**
+
+The other **254** stay ambiguous over 1-20 bytes. A two-byte function only ever exercises two
+tokens, and most tokens appear in a handful of positions, so the system has far more freedom than
+constraints. The fixed-length assumption is also probably false: `EX_Skip`, `EX_LabelTable` and
+`EX_Context` are variable-length by construction in UE3.
+
+What this rules out is the hope that closure alone could recover the table. It needs a **reference**
+for this engine version - the `EExprToken` enum from a shipped UE3 SDK or a compatible
+decompilation. What is publicly reachable is UE4 Kismet (CUE4Parse and similar), which is a
+different opcode space with different names; adopting it would be exactly the plausible-looking
+wrong answer this project has had to retract four times.
+
+`test_ue3_bytecode.py` now asserts the 2-pinned/254-ambiguous outcome rather than skipping. If a
+future attempt does pin more tokens, that test goes red and gets replaced with a real table test
+instead of passing quietly. That matters because the first version of that case was a SKIP that
+always skipped - a check that cannot fail, which is the exact failure mode this project keeps
+hitting (rules 25, 27, 39).
+
+### Rule 41
+
+**A negative result is worth a test, but only if the test can go red.** "This is underdetermined" is
+useful knowledge and worthless as a `skip`. The case here re-runs the propagation and asserts both
+that the two forced lengths come out AND that nothing else does, so it fails if the situation
+changes in either direction.
