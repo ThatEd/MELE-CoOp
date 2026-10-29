@@ -1,0 +1,36 @@
+# Private state: game dumps, offsets, probe output, upstream source copies, test installs.
+#
+# This lives at the bundle root as well as at the hub root on purpose. If this folder is ever
+# extracted into its own repository, the hub's .gitignore does not come with it, and the contents
+# of local/ must still never be published: they contain decompressed game data, per-build offsets
+# and a 2.6 GB ME3 sandbox install.
+local/
+MELE/local/
+
+# Build and tool leftovers
+__pycache__/
+*.pyc
+build/
+CMakeCache.txt
+CMakeFiles/
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Test output
+coop-bots-out/
+*.log
+*.dmp
+run_*.json
+plan_*.json
+probe_*.json
+
+# Editor and OS noise
+.vs/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store

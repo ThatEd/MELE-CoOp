@@ -1,0 +1,4721 @@
+{
+ "schema": 1,
+ "generated_by": "tools/ue3live/ue3_command_suite.py catalogue",
+ "regenerate_when": "the taxonomy in ue3_command_suite.py changes, or a new map file appears in local/maps",
+ "what_this_is": "One entry per kind of command a Legendary Edition build exposes, grouped by the MECHANISM used to reach it. 'present' is measured from local/maps/<game>.json (decompressed identifier tables), never typed by hand; `verify` recomputes it and fails on drift.",
+ "evidence_level": "present = the identifier exists in that build's decompressed script data. It does NOT prove the function is reachable, owned by the class we intend, or safe to call. `probe` answers those live.",
+ "games": [
+  "ME1",
+  "ME2",
+  "ME3"
+ ],
+ "categories": {
+  "console": "Engine exec / console verbs. The one channel that exists in all three builds and needs no code, which makes it the reference implementation for every other command: if a console verb works for player 2 but a direct call does not, the difference is the path, not the engine.",
+  "kismet": "Sequence (Kismet) objects and their activation. Map events fire from here, and this is where 'the door opened for player 1 and player 2 walked into the back of it' comes from.",
+  "pawn": "Creating, possessing and releasing a body. The whole point of a second player.",
+  "transform": "Moving, attaching, hiding, colliding. Cheap to verify and the most common source of a client that is playing a different game.",
+  "state": "State machine entry and exit. A state a client enters and the host does not is a permanent divergence with no error message.",
+  "input": "Whether input reaches the pawn, and who it is routed to.",
+  "combat": "Firing, powers, damage. The player-visible half of the game and the half most likely to be gated per-pawn rather than per-client.",
+  "conversation": "Dialogue ownership. Player 2 has to become a spectator here without leaving the level.",
+  "camera": "View target and camera mode. Two clients, two viewports, one set of SetViewTarget calls written for one.",
+  "timer": "Timers and their identity. A timer set on the host's pawn and read on the client's is a different timer.",
+  "save": "Save and load. A co-op session that saves half a world is worse than one that refuses.",
+  "hud": "HUD presence and ownership. Cheap proxy for 'is this client still being rendered as a player'.",
+  "replication": "Actor roles and the client/server function family. LE3 is the only build with a real replication layer, which is why LE3 goes first.",
+  "message": "Text to a player. The first thing that breaks when there are two of them and the code says 'the player'.",
+  "travel": "Level transitions. Every one of them is a place a second client gets dropped.",
+  "query": "Read-only identity and context lookups. Must all succeed on both clients before any mutating command means anything.",
+  "audio": "Sound and music. One engine, two listeners; per-player audio is a later problem but the trigger path is the same one as everything else.",
+  "anim": "Animation and morph control. Scripted animation that assumes the player pawn is the one the script is driving.",
+  "pause": "Pausing and `bPlayersOnly`. The mechanism that already freezes both players, so it is the one place where a naive implementation looks correct.",
+  "squad": "Party membership. The client IS a squadmate, so these calls run on the thing the client is trying to control."
+ },
+ "risk_levels": {
+  "read": "queries only; cannot change state",
+  "low": "visual or self-restoring",
+  "medium": "moves, attaches or controls something",
+  "high": "creates/destroys objects, changes level, touches shared save state",
+  "blocked": "measured to crash this build; listed so it is not retried"
+ },
+ "counts": {
+  "commands": 156,
+  "by_game": {
+   "ME1": 97,
+   "ME2": 100,
+   "ME3": 143
+  },
+  "by_category": {
+   "console": 24,
+   "kismet": 17,
+   "pawn": 11,
+   "transform": 13,
+   "state": 5,
+   "input": 9,
+   "combat": 17,
+   "conversation": 4,
+   "camera": 6,
+   "timer": 3,
+   "save": 4,
+   "hud": 3,
+   "replication": 8,
+   "message": 4,
+   "travel": 5,
+   "query": 7,
+   "audio": 4,
+   "anim": 5,
+   "pause": 4,
+   "squad": 3
+  },
+  "by_risk": {
+   "read": 41,
+   "low": 42,
+   "medium": 52,
+   "high": 20,
+   "blocked": 1
+  },
+  "in_all_three": 75
+ },
+ "commands": [
+  {
+   "id": "console.exec",
+   "category": "console",
+   "mechanism": "console",
+   "call": "ConsoleCommand",
+   "targets": [
+    "PlayerController",
+    "BioPlayerController",
+    "SFXPlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Issue the same console line on both clients and compare what changed; a verb that changes only the caller's world is a desync the console can prove in seconds.",
+   "why": "The only command channel present in all three builds with no injected code. Every other route in this catalogue has to reproduce what this one already does.",
+   "args": [
+    [
+     "Command",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.channel",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Console",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Confirms the console object exists and is reachable, which is what the exec path needs before a line can be delivered.",
+   "why": "The console state object. Present in LE2/LE3 and absent in LE1, which is a real difference in how a line reaches the engine.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "found as 'console'"
+   }
+  },
+  {
+   "id": "console.on_command",
+   "category": "console",
+   "mechanism": "console",
+   "call": "OnConsoleCommand",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Intercept point: if the hook fires on both clients for one issued line, command delivery is shared and every console-driven test becomes a sync test.",
+   "why": "A hook callback, ME3 only. Useful as an observation point rather than a call.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.exec_verb",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Exec",
+   "targets": [
+    "PlayerController",
+    "UIInteraction",
+    "GameInfo"
+   ],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The lower-level entry the console verb table dispatches through; distinguishes 'the verb refused' from 'the line never arrived'.",
+   "why": "Separate from ConsoleCommand in every build, so testing one does not test the other.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'exec'",
+    "ME2": "found as 'exec'",
+    "ME3": "found as 'exec'"
+   }
+  },
+  {
+   "id": "console.god",
+   "category": "console",
+   "mechanism": "console",
+   "call": "God",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Toggles invulnerability on the LOCAL controller only in a naive implementation; a co-op build must decide whether that is per-player or per-world.",
+   "why": "The clearest example of a verb that is conceptually per-player and is implemented per-controller.",
+   "args": [
+    [
+     "bEnable",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "found as 'gOd'",
+    "ME3": "found as 'god'"
+   }
+  },
+  {
+   "id": "console.ghost",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Ghost",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Sets collision off and physics to flying; a client that ghosts its own pawn and not the host's is the classic asymmetric cheat and the classic desync.",
+   "why": "Combines the collision and physics paths in one verb, so it tests two entries at once.",
+   "args": [
+    [
+     "bEnable",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.fly",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Fly",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Changes pawn physics mode. Physics is replicated in LE3 and not in LE1/LE2, so the same verb produces different sync behaviour per game - worth measuring once.",
+   "why": "Physics-mode change via console. The measured value is visible in the pawn's Physics byte, so this is verifiable without trusting either client's log.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "found as 'fLY'",
+    "ME3": "found as 'fLy'"
+   }
+  },
+  {
+   "id": "console.walk",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Walk",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The inverse of Fly; the pair is a round-trip test that leaves the pawn in its original physics mode.",
+   "why": "Round-trip partner for Fly. Always run both, then assert the physics byte is back.",
+   "args": [
+    [
+     "bEnable",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'walk'",
+    "ME2": "exact",
+    "ME3": "found as 'walk'"
+   }
+  },
+  {
+   "id": "console.loaded",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Loaded",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Reports whether the current level finished loading. The first question to ask a client that is behaving as if the level is not there.",
+   "why": "A ready flag, not a command. Cheap gate before any level-dependent test.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'loaded'",
+    "ME2": "absent from identifier table",
+    "ME3": "found as 'loaded'"
+   }
+  },
+  {
+   "id": "console.slomo",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Slomo",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Time dilation is world state; if it is applied per-client the two clients run at different speeds and every timestamp-based check lies.",
+   "why": "Directly changes the world's time scale, which is exactly the quantity a naive lockstep implementation assumes is shared.",
+   "args": [
+    [
+     "NewTimeDilation",
+     "float"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "found as 'slomo'",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.timedilation",
+   "category": "console",
+   "mechanism": "console",
+   "call": "TimeDilation",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The same quantity as Slomo but through a property-set path present in LE1, so it gives a third game a way to test time scale.",
+   "why": "Present in all three builds while Slomo is not, so it is the portable form.",
+   "args": [
+    [
+     "NewTimeDilation",
+     "float"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.freezeframe",
+   "category": "console",
+   "mechanism": "console",
+   "call": "FreezeFrame",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Freezes rendering without stopping the simulation - a state that is easy to mistake for a pause and will be mistaken for one during testing.",
+   "why": "Separates 'not rendering' from 'not simulating', which a pause test must not conflate.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.playersonly",
+   "category": "console",
+   "mechanism": "console",
+   "call": "PlayersOnly",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Freezes every pawn in the level for everyone. Whether player 2 counts as a player here is the question, and it is measurable: the pawn's Physics byte changes.",
+   "why": "The world-level freeze that conversations and cutscenes already rely on, and the reason a conversation looks 'handled' when it is not.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.killpawns",
+   "category": "console",
+   "mechanism": "console",
+   "call": "KillPawns",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Kills every pawn in the level. Use on a throwaway copy only; it is the fastest way to prove which pawns a client still counts as alive.",
+   "why": "Bulk state change with a visible, countable result, so it makes a good assertion target even though it is destructive.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.allweapons",
+   "category": "console",
+   "mechanism": "console",
+   "call": "AllWeapons",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Gives the inventory set. A client that receives the weapons but cannot use them separates inventory sync from input and gate problems.",
+   "why": "Distinguishes 'the client has the item' from 'the client may use the item', which are different bugs with the same symptom.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.suicide",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Suicide",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Kills the caller's own pawn. The cheapest way to test death and respawn ownership, which is where a second player most often ends up stuck as a spectator.",
+   "why": "Forces the death path on demand instead of waiting for combat.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.stat",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Stat",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Toggles the perf overlay. Harmless and a reliable positive control: if this does not change the screen, the console route is broken and nothing else in the run counts.",
+   "why": "A positive control. Every suite needs one command that must visibly work.",
+   "args": [
+    [
+     "Command",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "console.physics",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Physics",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Reports/toggles physics debug. Read-mostly and present everywhere, so it doubles as a three-game control.",
+   "why": "Debug rendering path, present in all three, safe for control runs.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'physics'",
+    "ME2": "found as 'physics'",
+    "ME3": "found as 'physics'"
+   }
+  },
+  {
+   "id": "console.collision",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Collision",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Toggles collision debug draw. The visual form of what the collision commands change.",
+   "why": "Turns a boolean into something a screenshot can prove.",
+   "args": [
+    [
+     "Command",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'collision'",
+    "ME2": "found as 'collision'",
+    "ME3": "found as 'collision'"
+   }
+  },
+  {
+   "id": "console.say",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Say",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Text to other players. Used for timing markers: both clients log the same string at the same moment, which is the cheapest cross-client clock.",
+   "why": "A message channel that already exists. Markers sent through it give logs a shared reference without inventing a protocol.",
+   "args": [
+    [
+     "Msg",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "found as 'say'",
+    "ME3": "found as 'say'"
+   }
+  },
+  {
+   "id": "console.team",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Team",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Team index change. In a one-player build this is meaningless, which is exactly why it is worth knowing whether the plumbing is there.",
+   "why": "Present only where the engine kept team support, so it is a cheap probe of how much multiplayer machinery survived into the single-player build.",
+   "args": [
+    [
+     "TeamNumber",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "found as 'team'",
+    "ME3": "found as 'team'"
+   }
+  },
+  {
+   "id": "console.open",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Open",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Travels to a map. Every level transition is a place a second client is dropped, so this is the transition test itself.",
+   "why": "The level-transition primitive. Present in all three, so transitions can be tested identically across games.",
+   "args": [
+    [
+     "URL",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'open'",
+    "ME2": "found as 'open'",
+    "ME3": "found as 'open'"
+   }
+  },
+  {
+   "id": "console.login",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Login",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The login path that ME3SquadCoop's working co-op uses instead of CreatePlayer: it brings up the engine's own multi-player plumbing, which LE1/LE2 never load.",
+   "why": "For LE3 this is the documented route to a second player. For LE1/LE2 the same verb exists but there is no netcode behind it, so it must not be assumed equivalent.",
+   "args": [
+    [
+     "Portal",
+     "string"
+    ],
+    [
+     "Options",
+     "string"
+    ],
+    [
+     "Id",
+     "string"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'login'",
+    "ME2": "found as 'login'",
+    "ME3": "found as 'login'"
+   }
+  },
+  {
+   "id": "console.logout",
+   "category": "console",
+   "mechanism": "console",
+   "call": "Logout",
+   "targets": [],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The inverse of Login; needed to test a session that ends cleanly, which is where half-written co-op mods leave the engine.",
+   "why": "Every login test needs a logout or the copy must be restarted.",
+   "args": [
+    [
+     "Portal",
+     "string"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'logout'",
+    "ME2": "found as 'logout'",
+    "ME3": "found as 'logout'"
+   }
+  },
+  {
+   "id": "kismet.sequence",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "Sequence",
+   "targets": [
+    "Sequence"
+   ],
+   "role": "none",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The level's sequence container. Counting sequences on both clients tells you whether both loaded the same Kismet graph, which is upstream of every event divergence.",
+   "why": "The container for all map events. If the graphs differ, nothing downstream can match.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "found as 'sequence'",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.sequence_op",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "SequenceOp",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "none",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Base class of every action and event. Reading its links is what makes it possible to name an event that fires on one client only.",
+   "why": "Common base for actions and events; its input/output link arrays are the graph.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.activate",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "Activate",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "sequence",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Activates a sequence object remotely. This is the command that makes 'delay this until player 2 arrives' possible without editing the level.",
+   "why": "Remote activation of a Kismet object, present in LE2/LE3. In LE1 the same effect needs TriggerEvent/CauseEvent.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "found as 'activate'",
+    "ME3": "found as 'activate'"
+   }
+  },
+  {
+   "id": "kismet.activate_output_link",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "ActivateOutputLink",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "sequence",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Fires one specific output link instead of the whole action, so a door can be held open for player 2 without re-running the trigger.",
+   "why": "Finer-grained than Activate: it selects a link, which is what a per-player delay actually needs.",
+   "args": [
+    [
+     "OutputLinkIdx",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.input_links",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "InputLinks",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "sequence",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The inbound edges of an action. Reading them tells you which event would have to be held back to delay this action.",
+   "why": "Graph structure, readable offline in principle and live right now.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.output_links",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "OutputLinks",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "sequence",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The outbound edges. An action with two output links can usually be split so one branch waits.",
+   "why": "Graph structure again; the split point for a delayed event.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.active",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "bActive",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "sequence",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Whether the action is currently running. The direct measurement for 'did this fire on both clients'.",
+   "why": "The state bit to compare after triggering. Cheap and unambiguous.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.activated",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "Activated",
+   "targets": [
+    "SequenceOp"
+   ],
+   "role": "sequence",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Whether the action ever fired at all. Different from bActive, which can be true again after a restart.",
+   "why": "Latches the 'has run' question, which bActive does not.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "found as 'activated'",
+    "ME3": "found as 'activated'"
+   }
+  },
+  {
+   "id": "kismet.used",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "Used",
+   "targets": [
+    "SeqEvt_",
+    "SequenceEvent"
+   ],
+   "role": "sequence",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The used-flag on events that must only fire once. The exact flag that makes a map event fire for player 1 and be spent before player 2 walks in.",
+   "why": "This is the flag to inspect when a trigger 'already happened'. Naming it is most of the diagnosis.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "found as 'used'",
+    "ME2": "found as 'used'",
+    "ME3": "found as 'used'"
+   }
+  },
+  {
+   "id": "kismet.teleport",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "SeqAct_Teleport",
+   "targets": [
+    "SeqAct_Teleport"
+   ],
+   "role": "none",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "A map-level teleport. Whether it moves the acting client only or both is the whole question for any level that moves the player by Kismet.",
+   "why": "Player movement expressed as level data rather than code, so it exercises the Kismet-to-actor path.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.interp",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "SeqAct_Interp",
+   "targets": [
+    "SeqAct_Interp"
+   ],
+   "role": "none",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Matinee playback. Scripted camera and animation is where a second viewer is most obviously in the wrong place.",
+   "why": "The cutscene driver. Conversations and scripted sequences both route through it.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.delay",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "SeqAct_Delay",
+   "targets": [
+    "SeqAct_Delay"
+   ],
+   "role": "none",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": false
+   },
+   "sync": "A built-in delay node. If the level already has one, delaying for player 2 costs a parameter change rather than new code.",
+   "why": "Present in LE1/LE2 and absent in LE3, which is itself worth knowing before designing a delay that assumes it.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "kismet.cinematic_mode",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "SeqAct_ToggleCinematicMode",
+   "targets": [
+    "SeqAct_ToggleCinematicMode"
+   ],
+   "role": "none",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The level's own way into cinematic mode. Same effect as the code path, so a client that behaves differently under one and not the other is a client-path bug.",
+   "why": "Two routes to one state is a useful A/B, and it is how the game actually enters cutscenes.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.physics",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "SeqAct_SetPhysics",
+   "targets": [
+    "SeqAct_SetPhysics"
+   ],
+   "role": "none",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Sets a pawn's physics from level data. The documented working placement sequence needs physics 1 before ClientSetLocation, and this is the level-data form of that.",
+   "why": "Ties the placement order that is already proven to a Kismet action, so a level can reproduce it.",
+   "args": [
+    [
+     "Physics",
+     "byte"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.cause_event",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "CauseEvent",
+   "targets": [],
+   "role": "sequence",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Fires a named remote event. The portability answer for delayed triggers: all three builds have it, so one mechanism covers all three games.",
+   "why": "Present everywhere, which makes it the safest cross-game hook for 'player 2 has arrived'.",
+   "args": [
+    [
+     "EventName",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.trigger_event",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "TriggerEvent",
+   "targets": [],
+   "role": "sequence",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The older named-event entry. Coexists with CauseEvent in all three, so both should be measured rather than one assumed to subsume the other.",
+   "why": "A second spelling of the same idea. Present in every build; whether it reaches the same handlers is measurable.",
+   "args": [
+    [
+     "EventName",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's Kismet Sequence",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "kismet.remote_event",
+   "category": "kismet",
+   "mechanism": "kismet",
+   "call": "RemoteEvent",
+   "targets": [],
+   "role": "none",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Explicitly remote activation, absent in LE1. Where it exists it is the intended route rather than a side effect.",
+   "why": "Named for what a co-op trigger needs. Its absence in LE1 is why LE1 needs a different mechanism.",
+   "args": [
+    [
+     "EventName",
+     "FString"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.spawn",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "Spawn",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Creates an actor. Present in all three, which means a second body can be created everywhere; what differs is what the created actor needs attached.",
+   "why": "The generic creation primitive. It works in all three builds - the failures were always in what a PlayerController needs afterwards, not in Spawn itself.",
+   "args": [
+    [
+     "SpawnClass",
+     "class"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'spawn'",
+    "ME2": "found as 'spawn'",
+    "ME3": "found as 'spawn'"
+   }
+  },
+  {
+   "id": "pawn.spawn_default",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "SpawnDefaultPawnFor",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The GameInfo path that spawns a pawn FOR a controller, including the default pawn class and start spot. This is the call a CreatePlayer would have made internally.",
+   "why": "Presents in all three. If a second player can be given a body without CreatePlayer, this is where that happens - it takes a controller, so it needs one first.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.restart_player",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "RestartPlayer",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Respawns a controller's pawn using the normal game rules. The natural way to give an existing second controller a body after death or after a level change.",
+   "why": "Already the respawn path, so it is exercised by the game itself and less likely to hit an untested branch than a hand-built spawn.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.possess",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "Possess",
+   "targets": [
+    "Controller",
+    "PlayerController",
+    "BioPlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Points a controller at a body. The ME3SquadCoop takeover is exactly this: possess a squadmate pawn. Present in all three, so the mechanism ports.",
+   "why": "The proven co-op route in LE3. Everything else in this catalogue assumes it worked.",
+   "args": [
+    [
+     "inPawn",
+     "Actor"
+    ],
+    [
+     "bVehicleTransition",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "found as 'possess'",
+    "ME2": "found as 'possess'",
+    "ME3": "found as 'possess'"
+   }
+  },
+  {
+   "id": "pawn.unpossess",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "UnPossess",
+   "targets": [
+    "Controller"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Releases a pawn. Needed to test takeover reversibility; a takeover that cannot be undone is a bug that only shows up when the second player leaves.",
+   "why": "The inverse of the working route, and the thing to call between test phases so one phase cannot contaminate the next.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.spawn_from_type",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "SpawnActorFromType",
+   "targets": [
+    "GameInfo",
+    "Actor"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": false
+   },
+   "sync": "Spawns by class name, which is what Kismet and mods use. Absent in LE3, where Spawn(default) is the route.",
+   "why": "The class-name form a mod would call. Present in LE1/LE2, so those two can create a second body by name.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "pawn.debug_spawn",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "DebugSpawnActor",
+   "targets": [
+    "Actor"
+   ],
+   "role": "level",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "A debug spawn entry in LE1 only. Worth knowing about because it exists precisely to create actors from a console, which is the fastest experiment loop.",
+   "why": "LE1-only debug path. Useful, and only in the game that has the fewest alternatives.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the current ULevel actor list",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "pawn.create_player",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "CreatePlayer",
+   "targets": [
+    "GameViewportClient"
+   ],
+   "role": "none",
+   "risk": "blocked",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The UE3 call that would create a second local player outright. It is present only in LE3, where it works, and measured to crash LE1 and LE2 in three distinct ways.",
+   "why": "The obvious answer and the wrong one for two of three games. Listed so it is not re-attempted: see CO-OP-FAIL-POINTS.md for the three crash signatures.",
+   "args": [
+    [
+     "ControllerId",
+     "int"
+    ],
+    [
+     "OutError",
+     "string"
+    ]
+   ],
+   "note": "ME1/LE2 each crashed three ways: ucrtbase!aligned_realloc during the call, an engine-thread fault at +0x99611a AFTER a successful return, and a null PlayerInput call at [rax+0x6D0]. Do not retry without a new mechanism.",
+   "crashes": [
+    "ME1",
+    "ME2"
+   ],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.remove_player",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "RemovePlayer",
+   "targets": [
+    "GameViewportClient"
+   ],
+   "role": "viewport",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The inverse of CreatePlayer, ME3 only. If a session can be created and not removed, every test needs a restart.",
+   "why": "Every CreatePlayer test in LE3 needs this to leave a clean process.",
+   "args": [
+    [
+     "ExPlayer",
+     "LocalPlayer"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the GameViewportClient (players, split layout, HUD class)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.layout_players",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "LayoutPlayers",
+   "targets": [
+    "GameViewportClient"
+   ],
+   "role": "viewport",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Recomputes split-screen layout, which is where the split-screen harness gets its two viewports. The value is a layout enum, and a wrong value silently keeps one pane.",
+   "why": "Directly controls whether two viewports exist, which is the prerequisite for a local two-player proof before any network work.",
+   "args": [
+    [
+     "SplitscreenInfo",
+     "array"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the GameViewportClient (players, split layout, HUD class)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pawn.post_login",
+   "category": "pawn",
+   "mechanism": "pawn",
+   "call": "PostLogin",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The engine's own new-player hook. Calling it by hand exercises exactly what CreatePlayer would have called, with the option to attach things before it runs.",
+   "why": "Reaching past CreatePlayer to the hook it delegates to is the remaining unproven route, and this catalogues it as such.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_location",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetLocation",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The base teleport. Measured to fail on a falling pawn and to work after collisions and physics are corrected, so the ORDER is the finding, not the call.",
+   "why": "Documented result: Actor.SetLocation alone did not move a falling pawn (z went the wrong way), while SetCollision -> SeqAct_SetPhysics(1) -> ClientSetLocation did.",
+   "args": [
+    [
+     "NewLocation",
+     "vector"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_rotation",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetRotation",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Rotation follows location. A client that is in the right place facing the wrong way is a camera or a replication problem, and this separates them.",
+   "why": "Tests rotation independently of position so the two failures are distinguishable.",
+   "args": [
+    [
+     "NewRotation",
+     "rotator"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.client_set_location",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "ClientSetLocation",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The replicated form, ME3 only. Its existence in LE3 and absence in LE1/LE2 is the clearest evidence of how much more of the replication layer LE3 kept.",
+   "why": "The call that actually worked for placement. Present only where a client exists.",
+   "args": [
+    [
+     "NewLocation",
+     "vector"
+    ],
+    [
+     "NewRotation",
+     "rotator"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.client_set_rotation",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "ClientSetRotation",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Rotation-only replicated form, absent in LE1. Same argument as ClientSetLocation.",
+   "why": "Completes the replicated pair in LE2/LE3.",
+   "args": [
+    [
+     "NewRotation",
+     "rotator"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.teleport",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "Teleport",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "A higher-level teleport that preserves velocity and physics handling. Present where the engine kept it; absent in LE1.",
+   "why": "Often a better answer than SetLocation for a pawn, because it resolves the physics problem rather than requiring the caller to.",
+   "args": [
+    [
+     "DestLocation",
+     "vector"
+    ],
+    [
+     "DestRotation",
+     "rotator"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "found as 'teleport'",
+    "ME3": "found as 'teleport'"
+   }
+  },
+  {
+   "id": "xform.set_base",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetBase",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Attaches a pawn to a moving base. On a moving platform, host and client disagree about position by however far the platform moved.",
+   "why": "Present everywhere, and the mechanism behind every 'the elevator left without me'.",
+   "args": [
+    [
+     "NewBase",
+     "Actor"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_hard_attach",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetHardAttach",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The rigid form of SetBase. Hard attach makes the pawn part of the base, which is right for a vehicle and wrong for anything that should walk off.",
+   "why": "Distinguishes a soft from a hard attachment, which behave differently across a network boundary.",
+   "args": [
+    [
+     "bNewHardAttach",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_hidden",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetHidden",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Hides an actor. The cheapest round-trip test in the catalogue: toggle, read bHidden, toggle back, assert identical.",
+   "why": "Self-restoring and visible. A positive control for the whole dispatch path.",
+   "args": [
+    [
+     "bNewHidden",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_draw_scale",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetDrawScale",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Scale. A client that applied scale twice looks like a collision bug and is not.",
+   "why": "Cheap to read back via the scale property, so it verifies numerically.",
+   "args": [
+    [
+     "NewScale",
+     "float"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_scale",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetScale",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The portable spelling of scale, in all three builds.",
+   "why": "Gives LE1 the same test SetDrawScale gives the other two.",
+   "args": [
+    [
+     "NewScale",
+     "float"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.set_collision",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetCollision",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": false
+   },
+   "sync": "The call that has to succeed before a pawn can be placed. Measured as the first step of the working placement order.",
+   "why": "Proven necessary. Present in LE1/LE2 and replaced by SetCollisionType in LE3.",
+   "args": [
+    [
+     "bNewCollideActors",
+     "bool"
+    ],
+    [
+     "bNewBlockActors",
+     "bool"
+    ],
+    [
+     "bNewIgnoreEncroachers",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "xform.set_collision_type",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "SetCollisionType",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "LE3's replacement for SetCollision. A port that calls SetCollision on LE3 silently does nothing, which is exactly the class of failure this catalogue is for.",
+   "why": "Same job, different name. The rename is the porting work.",
+   "args": [
+    [
+     "NewCollisionType",
+     "byte"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "xform.collide_world",
+   "category": "transform",
+   "mechanism": "transform",
+   "call": "bCollideWorld",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The state bit SetCollision changes. Read it to verify, rather than trusting the call.",
+   "why": "Turns a command into an observable, which is what makes the test real.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "state.push",
+   "category": "state",
+   "mechanism": "state",
+   "call": "PushState",
+   "targets": [
+    "Object"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Enters a stacked state. A state a client enters and the host does not is a permanent divergence with no error.",
+   "why": "Present in all three. State divergence is silent, so it has to be measured rather than observed.",
+   "args": [
+    [
+     "NewState",
+     "name"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "state.pop",
+   "category": "state",
+   "mechanism": "state",
+   "call": "PopState",
+   "targets": [
+    "Object"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Leaves the stacked state. The inverse, needed to make a state test repeatable.",
+   "why": "Round-trip partner for PushState.",
+   "args": [
+    [
+     "bPopAll",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "state.begin",
+   "category": "state",
+   "mechanism": "state",
+   "call": "BeginState",
+   "targets": [
+    "Object",
+    "State"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The state entry callback. Firing it directly is a way to exercise state logic without a transition.",
+   "why": "Calling the callback tests the state body without needing a legal transition.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "state.end",
+   "category": "state",
+   "mechanism": "state",
+   "call": "EndState",
+   "targets": [
+    "Object",
+    "State"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The state exit callback, and the inverse of BeginState.",
+   "why": "Confirms that whatever BeginState set up can be torn down.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "state.get_name",
+   "category": "state",
+   "mechanism": "state",
+   "call": "GetStateName",
+   "targets": [
+    "Object"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Reports the current state name. THE assertion for every state test: compare the name on both clients, not a guess about what should have happened.",
+   "why": "Gives state divergence a comparable value.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "input.player_input",
+   "category": "input",
+   "mechanism": "input",
+   "call": "PlayerInput",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The input object on a controller. LE1 crashed with a NULL PlayerInput when spawning a controller, so this pointer is the thing a second player is missing.",
+   "why": "Measured null on a hand-built controller, and the crash followed. Read it first.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "input.apply_bindings",
+   "category": "input",
+   "mechanism": "input",
+   "call": "ApplyPCBindings",
+   "targets": [
+    "PlayerController",
+    "PlayerInput"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Pushes the PC bindings into a controller's input. The step that turns a created input object into one that responds to keys.",
+   "why": "Present in all three. Runs after PlayerInput exists, and is the safe half of input setup.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "input.enable",
+   "category": "input",
+   "mechanism": "input",
+   "call": "EnableInput",
+   "targets": [
+    "Actor",
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Grants an actor input processing. LE3 only, so input gating is expressible in LE3 and must be done another way in LE1/LE2.",
+   "why": "The explicit gate. Its absence in LE1/LE2 is a real capability difference.",
+   "args": [
+    [
+     "PlayerController",
+     "PlayerController"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "found as 'enableInput'"
+   }
+  },
+  {
+   "id": "input.disable",
+   "category": "input",
+   "mechanism": "input",
+   "call": "DisableInput",
+   "targets": [
+    "Actor",
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The inverse gate, and the mechanism a spectator mode would use.",
+   "why": "Reverses EnableInput; needed so a spectator can be un-spectated.",
+   "args": [
+    [
+     "PlayerController",
+     "PlayerController"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "found as 'disableInput'"
+   }
+  },
+  {
+   "id": "input.cinematic_mode",
+   "category": "input",
+   "mechanism": "input",
+   "call": "SetCinematicMode",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The code path into the same state ToggleCinematicMode reaches from level data. Measured to be present in all three, so a spectator lock can be built on it.",
+   "why": "The control hook with the widest availability. Sets bCinematicMode, which is readable, so the effect is verifiable.",
+   "args": [
+    [
+     "bInCinematicMode",
+     "bool"
+    ],
+    [
+     "bHidePlayer",
+     "bool"
+    ],
+    [
+     "bAffectsHUD",
+     "bool"
+    ],
+    [
+     "bAffectsMovement",
+     "bool"
+    ],
+    [
+     "bAffectsTurning",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "input.cinematic_bit",
+   "category": "input",
+   "mechanism": "input",
+   "call": "bCinematicMode",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The bit SetCinematicMode writes. The assertion, not the command.",
+   "why": "Readable in all three, so the effect of the command can be proved.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "input.bio_player_control",
+   "category": "input",
+   "mechanism": "input",
+   "call": "BioSeqAct_SetPlayerControlling",
+   "targets": [
+    "BioSeqAct_SetPlayerControlling"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "ME1's own Kismet action for changing which pawn the player controls. This is the closest thing LE1 has to a built-in takeover.",
+   "why": "The single most promising LE1-specific hook found. Present in LE1 only, and it is a level-data command, so it needs no injected code to try.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "input.bio_player_input_event",
+   "category": "input",
+   "mechanism": "input",
+   "call": "BioSeqEvt_PlayerInput",
+   "targets": [
+    "BioSeqEvt_PlayerInput"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "An ME1 Kismet event that fires on player input. An existing per-input observation point, which a spectator mode would need.",
+   "why": "LE1-only observation hook. Useful for logging what player 1 did, in order.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "input.bio_input_trap",
+   "category": "input",
+   "mechanism": "input",
+   "call": "BioSeqAct_SetInputTrap",
+   "targets": [
+    "BioSeqAct_SetInputTrap"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "ME1's input trap: a level-data way to stop the player acting for a while. The closest existing analogue to a control gate.",
+   "why": "LE1-only. It is the game's own 'the player cannot act here', which is the semantic a spectator needs.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "combat.can_fire",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "CanFireWeapon",
+   "targets": [
+    "Weapon",
+    "Pawn"
+   ],
+   "role": "weapon",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The gate. Present in all three, which makes it the first thing to read on a pawn the client is supposed to control.",
+   "why": "Documented as the function that decides whether firing is allowed. If it is false on a squadmate, possession alone does not produce a working client.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's current weapon",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.start_fire",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "StartFire",
+   "targets": [
+    "Weapon",
+    "Pawn"
+   ],
+   "role": "weapon",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Begins firing. Present everywhere, so a second player's ability to shoot can be tested in all three games.",
+   "why": "The player-visible half of the game. A silent no-op here is the bug the whole project is about.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's current weapon",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.stop_fire",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "StopFire",
+   "targets": [
+    "Weapon",
+    "Pawn"
+   ],
+   "role": "weapon",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Ends firing. Absent in LE1, so LE1's fire loop must be closed another way.",
+   "why": "Round-trip partner, and a real per-game difference.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's current weapon",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.can_fire_me3",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "CanFire",
+   "targets": [
+    "Pawn",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "ME3's differently-named gate. A port that calls CanFireWeapon on LE3 may be reading a different answer.",
+   "why": "The rename that matters. Two similar names, only one is live per build.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.handle_firing",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "HandleWeaponFiring",
+   "targets": [
+    "Pawn",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The ME3 internal fire path. It is where a client-only fire decision would be made if one exists.",
+   "why": "Documented in the firing chain notes as the ME3 route, hence worth naming separately.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.weapon_fire",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "WeaponFire",
+   "targets": [
+    "Weapon",
+    "BioWeapon"
+   ],
+   "role": "weapon",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "LE1's spelling of the fire event. The third spelling across three builds, which is the point: one concept, three names.",
+   "why": "Names must be resolved per build, not assumed.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's current weapon",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "combat.start_firing",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "StartFiring",
+   "targets": [
+    "Pawn",
+    "Weapon"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "A second fire spelling in LE2/LE3. Coexists with StartFire, so both should be measured.",
+   "why": "Two plausible entry points in the same build means guessing is unsafe.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.use_power",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "UsePower",
+   "targets": [
+    "Pawn",
+    "PlayerController",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Uses a power by id. Powers are the most per-pawn-gated action after firing, and the easiest to make silent.",
+   "why": "Present in all three, so power gating can be tested identically across games.",
+   "args": [
+    [
+     "PowerId",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.use_ability",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "UseAbility",
+   "targets": [
+    "Pawn",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The ability-level form. Present everywhere, distinct from UsePower in the same builds.",
+   "why": "A second power path in all three: measuring one does not measure the other.",
+   "args": [
+    [
+     "AbilityId",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.activate_power",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "ActivatePower",
+   "targets": [
+    "Pawn",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Explicit activation rather than use. Present in all three.",
+   "why": "Completes the trio; a port that maps only one of three names leaves two paths dead.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.hotkey",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "doHotKey",
+   "targets": [
+    "PlayerController",
+    "SFXPlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The hotkey route into powers, i.e. the input-driven one. A power that works via UsePower and not via doHotKey has an input problem, not a power problem.",
+   "why": "Separates the power path from the input path, which are otherwise conflated.",
+   "args": [
+    [
+     "HotKey",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.squad_power",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "SquadOrderUsePower",
+   "targets": [
+    "Squad",
+    "SFXPawn_SquadMember"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Orders a squadmate to use a power. THIS is the command a client playing a squadmate collides with: the host is already issuing it.",
+   "why": "Present in all three and directly about squad AI, so a co-op client fights it for control of the same pawn.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.take_damage",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "TakeDamage",
+   "targets": [
+    "Pawn",
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Damage entry. Whether a client's pawn is damageable decides whether combat is authoritative on one machine or two.",
+   "why": "Present everywhere. The single call that decides if the client's squadmate is invulnerable or doubly damageable.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.apply_damage",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "ApplyDamage",
+   "targets": [
+    "Actor",
+    "Pawn"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The caller side of damage. Absent in LE1, so LE1 tests must use TakeDamage.",
+   "why": "Shows the asymmetry: the same concept has different names for caller and callee per build.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.busy_state",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "SetBusyState",
+   "targets": [
+    "Pawn",
+    "BioPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": false
+   },
+   "sync": "Puts the pawn in a busy state, which blocks actions. One of the fewer-known gates that leaves the player unable to shoot with no obvious cause.",
+   "why": "Absent in LE3, present in LE1/LE2. A gate that exists in two builds and not the third, and is invisible unless measured.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "combat.give_weapon",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "GiveWeapon",
+   "targets": [
+    "Pawn",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Adds a weapon. ME3 only; LE1/LE2 use AddInventory.",
+   "why": "Weapon ownership has three different entry points across three builds.",
+   "args": [
+    [
+     "WeaponClass",
+     "class"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "combat.add_inventory",
+   "category": "combat",
+   "mechanism": "combat",
+   "call": "AddInventory",
+   "targets": [
+    "Pawn",
+    "BioPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The LE2/LE3 inventory route. Distinct from GiveWeapon even where both exist.",
+   "why": "Same outcome, different path; a port must not assume one implies the other.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "conv.start",
+   "category": "conversation",
+   "mechanism": "conversation",
+   "call": "StartConversation",
+   "targets": [
+    "Pawn",
+    "BioPawn",
+    "SFXPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": false
+   },
+   "sync": "Starts dialogue. Absent in LE3, so LE3's conversation entry is elsewhere and must not be assumed identical.",
+   "why": "The obvious hook, present in two of three builds. The winner of a conversation does not need it, but the loser does.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "conv.end",
+   "category": "conversation",
+   "mechanism": "conversation",
+   "call": "EndConversation",
+   "targets": [
+    "Pawn",
+    "PlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": false
+   },
+   "sync": "Ends dialogue and returns control. Where a spectator must be un-spectated.",
+   "why": "The inverse, and the point where a client most often stays stuck in a cinematic camera.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "conv.mode",
+   "category": "conversation",
+   "mechanism": "conversation",
+   "call": "ConversationMode",
+   "targets": [
+    "SFXPawn",
+    "SFXPawn_Player",
+    "Pawn"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "LE3's conversation state. The readable form of 'a conversation owns the player'.",
+   "why": "Gives LE3 the same assertion the conversation detector provides live.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "conv.facefx",
+   "category": "conversation",
+   "mechanism": "conversation",
+   "call": "PlayFaceFXAnim",
+   "targets": [
+    "Pawn",
+    "BioPawn"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "Facial animation from a name. LE1 only; it is how dialogue is lip-synced there.",
+   "why": "LE1-only, and it is the visible sign of a conversation, so it doubles as an observation point.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "camera.set_view_target",
+   "category": "camera",
+   "mechanism": "camera",
+   "call": "SetViewTarget",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Chooses what a client looks at. With two clients this is the call that must become per-player, and getting it wrong makes the second player's screen unusable.",
+   "why": "Present in LE1/LE3. Directly controls the second viewport's contents.",
+   "args": [
+    [
+     "NewViewTarget",
+     "Actor"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "camera.client_set_view_target",
+   "category": "camera",
+   "mechanism": "camera",
+   "call": "ClientSetViewTarget",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The replicated form. Its presence only in LE1 and LE3 is another per-game split.",
+   "why": "The form that would actually be used over a network.",
+   "args": [
+    [
+     "A",
+     "Actor"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "camera.set_mode",
+   "category": "camera",
+   "mechanism": "camera",
+   "call": "SetCameraMode",
+   "targets": [
+    "PlayerController",
+    "Camera"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Camera mode selection. Present in all three, so the second player's camera mode is expressible everywhere.",
+   "why": "The portable camera lever.",
+   "args": [
+    [
+     "NewMode",
+     "name"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "camera.view_point",
+   "category": "camera",
+   "mechanism": "camera",
+   "call": "GetPlayerViewPoint",
+   "targets": [
+    "PlayerController",
+    "Camera"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Reads the current view. The assertion for every camera test: compare the two clients' reported viewpoints rather than guessing.",
+   "why": "Present in all three and gives a comparable value.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "camera.update",
+   "category": "camera",
+   "mechanism": "camera",
+   "call": "UpdateCamera",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The per-frame camera update. ME3 only; useful as a hook point for a second camera.",
+   "why": "Where a second viewport's camera would be driven.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "camera.calc_camera",
+   "category": "camera",
+   "mechanism": "camera",
+   "call": "CalcCamera",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Computes the camera position for one controller. The function a second viewport needs to be called for it.",
+   "why": "ME3-only. Naming it is the first step to calling it twice.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "timer.set",
+   "category": "timer",
+   "mechanism": "timer",
+   "call": "SetTimer",
+   "targets": [
+    "Object"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Sets a named timer. Timers are keyed by name AND function, so a timer set on one object is invisible to another with the same name.",
+   "why": "Present everywhere. A cheap, verifiable round-trip and a real trap for anything that assumes timers are global.",
+   "args": [
+    [
+     "TimerName",
+     "name"
+    ],
+    [
+     "Rate",
+     "float"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "timer.clear",
+   "category": "timer",
+   "mechanism": "timer",
+   "call": "ClearTimer",
+   "targets": [
+    "Object"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Clears the named timer. The inverse.",
+   "why": "Round-trip partner; without it a timer test leaves a callback firing.",
+   "args": [
+    [
+     "TimerName",
+     "name"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "timer.is_active",
+   "category": "timer",
+   "mechanism": "timer",
+   "call": "IsTimerActive",
+   "targets": [
+    "Object"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Whether the timer exists. The assertion, and it distinguishes 'never set' from 'already fired'.",
+   "why": "The observable that makes a timer test real.",
+   "args": [
+    [
+     "TimerName",
+     "name"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "save.save_game",
+   "category": "save",
+   "mechanism": "save",
+   "call": "SaveGame",
+   "targets": [
+    "GameInfo",
+    "SFXSaveGame"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Writes a save. A co-op session that saves one player's world is worse than one that refuses, so the behaviour has to be known before it is allowed.",
+   "why": "Present in all three, and the save system is shared between copies through a fixed Documents path - so this is a real hazard during testing, not a hypothetical.",
+   "args": [
+    [
+     "SlotName",
+     "string"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "found as 'Savegame'"
+   }
+  },
+  {
+   "id": "save.load_game",
+   "category": "save",
+   "mechanism": "save",
+   "call": "LoadGame",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Loads a save, i.e. tears down and rebuilds the world. The most destructive command in the catalogue.",
+   "why": "Needs a restore point and a throwaway copy. Listed so it is used deliberately.",
+   "args": [
+    [
+     "SlotName",
+     "string"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "found as 'loadgame'",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "save.save_profile",
+   "category": "save",
+   "mechanism": "save",
+   "call": "SaveProfile",
+   "targets": [
+    "GameInfo",
+    "SFXProfile"
+   ],
+   "role": "gameinfo",
+   "risk": "high",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Writes the profile. Shared across every copy on the machine, so a test that runs it changes player 1's real profile.",
+   "why": "The sharpest shared-state hazard in the whole test environment.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "save.can_save",
+   "category": "save",
+   "mechanism": "save",
+   "call": "CanSave",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Whether saving is currently legal. The gate to read before considering a save test.",
+   "why": "Absent in LE1, so LE1 has no safe way to ask first.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "hud.show",
+   "category": "hud",
+   "mechanism": "hud",
+   "call": "ShowHUD",
+   "targets": [
+    "PlayerController",
+    "HUD"
+   ],
+   "role": "hud",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Shows or hides the HUD. A reliable, visible per-client effect, so it is the cheapest proof that a command reached a specific client.",
+   "why": "Two clients have two HUDs, so this is the clearest 'did it arrive' signal.",
+   "args": [
+    [
+     "bShow",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's HUD",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "hud.toggle",
+   "category": "hud",
+   "mechanism": "hud",
+   "call": "ToggleHUD",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "hud",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The inverse toggle, ME3 only.",
+   "why": "Completes the HUD pair where it exists.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's HUD",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "hud.client_set_hud",
+   "category": "hud",
+   "mechanism": "hud",
+   "call": "ClientSetHUD",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "hud",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Replaces a client's HUD class. The replicated form, and the one a second viewport would need a distinct instance of.",
+   "why": "ME3-only. Named for the client, which is exactly the distinction that matters here.",
+   "args": [
+    [
+     "NewHUDClass",
+     "class"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's HUD",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.role",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "Role",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "An actor's authority role. The single field that says whether a client's copy is allowed to act, and it exists in all three builds even though only LE3 has netcode.",
+   "why": "Readable everywhere. In LE1/LE2 it is vestigial, which is itself worth measuring rather than assuming.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.remote_role",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "RemoteRole",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The other end's role. Absent in LE1, so LE1 cannot express an asymmetric authority.",
+   "why": "A per-game capability difference with a clean observable.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.net_owner",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "bNetOwner",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Whether the local player owns this actor. The exact question a co-op client is asking about the squadmate it is controlling.",
+   "why": "ME3-only, and it is the engine's own answer to 'who may act on this'.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.net_update_frequency",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "NetUpdateFrequency",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "How often an actor replicates. ME3 only; the tuning knob for a second player's smoothness.",
+   "why": "Only meaningful where a replication layer exists, i.e. LE3.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.replicated_event",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "ReplicatedEvent",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The replicated-property notification. Calling it by hand simulates a replicate that never arrived, which is the cheapest way to test the notification path.",
+   "why": "ME3-only. Turns 'what happens on a late replicate' into a testable call.",
+   "args": [
+    [
+     "VarName",
+     "name"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.server_move",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "ServerMove",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The movement RPC a client sends to the server. Named here because it is the exact route a second client's movement would take if the engine path were used.",
+   "why": "ME3-only. 198 of the 283 client/server-shaped names live only in LE3, and this is the one that matters most.",
+   "args": [
+    [
+     "TimeStamp",
+     "float"
+    ],
+    [
+     "NewLoc",
+     "vector"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.client_ack_move",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "ClientAckGoodMove",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The server's acknowledgement of a client move. The other half of ServerMove.",
+   "why": "Together with ServerMove it is the engine's own movement sync, which is what a hand-built co-op would otherwise reimplement.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "repl.client_adjust_position",
+   "category": "replication",
+   "mechanism": "replication",
+   "call": "ClientAdjustPosition",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Server correction of a client position. The mechanism that resolves a client's disagreement about where it is.",
+   "why": "The correction pass. Relevant to any desync where positions drift but movement works.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "msg.client_message",
+   "category": "message",
+   "mechanism": "message",
+   "call": "ClientMessage",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Text to the local player. Present in all three, so it works as a marker channel in every build.",
+   "why": "A per-client message that cannot affect state, which makes it a safe cross-client timing marker.",
+   "args": [
+    [
+     "S",
+     "string"
+    ],
+    [
+     "Type",
+     "name"
+    ],
+    [
+     "MsgTime",
+     "float"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "msg.broadcast",
+   "category": "message",
+   "mechanism": "message",
+   "call": "BroadcastLocalizedMessage",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Localized text to all players. Absent in LE1, where the localized path is different.",
+   "why": "Another per-game split in a subsystem a co-op mod will want for its own UI.",
+   "args": [
+    [
+     "MessageClass",
+     "class"
+    ],
+    [
+     "Switch",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "msg.send",
+   "category": "message",
+   "mechanism": "message",
+   "call": "SendMessage",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "LE3's message route, distinct from ClientMessage in the same build.",
+   "why": "Two message paths in one build is exactly why names must be resolved, not assumed.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "msg.receive_localized",
+   "category": "message",
+   "mechanism": "message",
+   "call": "ReceiveLocalizedMessage",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The receiving end of the localized path.",
+   "why": "Completes the pair so a message test can assert receipt, not just send.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "travel.server_travel",
+   "category": "travel",
+   "mechanism": "travel",
+   "call": "ServerTravel",
+   "targets": [
+    "Engine",
+    "GameInfo"
+   ],
+   "role": "level",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Changes the level for everyone. The mechanism a co-op session would use to keep two clients together, and the one that drops a client when it fails.",
+   "why": "Absent in LE1, so LE1 transitions are all local. Another capability difference that changes the design per game.",
+   "args": [
+    [
+     "URL",
+     "string"
+    ],
+    [
+     "bAbsolute",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the current ULevel actor list",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "travel.client_travel",
+   "category": "travel",
+   "mechanism": "travel",
+   "call": "ClientTravel",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Sends one client to a URL. The per-client half of a transition.",
+   "why": "ME3-only. The call that would let the client follow the host.",
+   "args": [
+    [
+     "URL",
+     "string"
+    ],
+    [
+     "TravelType",
+     "byte"
+    ],
+    [
+     "bSeamless",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "travel.open_map",
+   "category": "travel",
+   "mechanism": "travel",
+   "call": "OpenMap",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "ME3 console-level map change. Distinct from ServerTravel in the same build.",
+   "why": "A third transition spelling, all in LE3.",
+   "args": [
+    [
+     "URL",
+     "string"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "travel.switch_level",
+   "category": "travel",
+   "mechanism": "travel",
+   "call": "SwitchLevel",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Switches level without a full travel. ME3 only.",
+   "why": "The cheap transition, useful for a test area that needs a reset without a reload.",
+   "args": [
+    [
+     "URL",
+     "string"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "travel.restart_level",
+   "category": "travel",
+   "mechanism": "travel",
+   "call": "RestartLevel",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "high",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Restarts the current level. ME3 only; the cleanest way to reset a test phase.",
+   "why": "A reset that does not need a process restart, which is the expensive thing here.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.local_controlled",
+   "category": "query",
+   "mechanism": "query",
+   "call": "IsLocallyControlled",
+   "targets": [
+    "Controller"
+   ],
+   "role": "player.controller",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Whether this controller is locally controlled. For a co-op client the answer should become true for the second player, and it is the single best gate before any input or camera test.",
+   "why": "Absent in LE2, present in LE1/LE3. The direct answer to 'is this client a player or a spectator'.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.local_controller",
+   "category": "query",
+   "mechanism": "query",
+   "call": "GetALocalPlayerController",
+   "targets": [
+    "GameInfo",
+    "Engine"
+   ],
+   "role": "gameinfo",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Returns a local player controller. Note the 'A': it returns an arbitrary one, which in a two-player build is exactly the ambiguity this project is about.",
+   "why": "Present in LE1/LE3. A function whose name promises less than a caller assumes.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.player_controller",
+   "category": "query",
+   "mechanism": "query",
+   "call": "GetPlayerController",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Controller by index. Present in all three, so 'which player am I' is expressible everywhere.",
+   "why": "The portable way to address player 2 rather than 'the' player.",
+   "args": [
+    [
+     "PlayerIndex",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.player_pawn",
+   "category": "query",
+   "mechanism": "query",
+   "call": "GetPlayerPawn",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Pawn by index. ME3 only, so LE1/LE2 must go through the controller.",
+   "why": "A convenience that only one build has; a port must not rely on it.",
+   "args": [
+    [
+     "PlayerIndex",
+     "int"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.local_player_controller",
+   "category": "query",
+   "mechanism": "query",
+   "call": "LocalPlayerController",
+   "targets": [
+    "LocalPlayerController"
+   ],
+   "role": "none",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The class of a local controller. Present in all three, so type checks are portable.",
+   "why": "Useful to verify that a hand-built controller is the class the rest of the code expects.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "no specific instance: a class-level lookup, or a Kismet action the game side must find by name",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.map_name",
+   "category": "query",
+   "mechanism": "query",
+   "call": "GetURLMap",
+   "targets": [
+    "WorldInfo",
+    "GameInfo"
+   ],
+   "role": "worldinfo",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The current map name. Present in all three and the cheapest way to prove two clients are in the same level.",
+   "why": "The first assertion of every multi-client test.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's WorldInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "q.map_name_me2",
+   "category": "query",
+   "mechanism": "query",
+   "call": "GetMapName",
+   "targets": [
+    "WorldInfo"
+   ],
+   "role": "worldinfo",
+   "risk": "read",
+   "present": {
+    "ME1": false,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "A second map-name accessor, absent in LE1.",
+   "why": "A port that calls only one of the two will fail on one game.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's WorldInfo",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "audio.play_sound",
+   "category": "audio",
+   "mechanism": "audio",
+   "call": "PlaySound",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Plays a sound locally. Present in all three, so it is a safe positive control that produces an observable change without touching game state.",
+   "why": "A control with a visible log line and no state change - rare and useful.",
+   "args": [
+    [
+     "SoundCue",
+     "object"
+    ],
+    [
+     "bNoReplication",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "audio.client_hear",
+   "category": "audio",
+   "mechanism": "audio",
+   "call": "ClientHearSound",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The replicated sound path. ME3 only, and the one that matters once two clients exist.",
+   "why": "Only meaningful with a client, which is the definition of LE3's advantage.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "audio.stop_all",
+   "category": "audio",
+   "mechanism": "audio",
+   "call": "StopAllSounds",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Silences everything. A blunt reset that is useful when a test leaves audio looping.",
+   "why": "Cleanup, not a test.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "audio.stop_music",
+   "category": "audio",
+   "mechanism": "audio",
+   "call": "StopMusic",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": false
+   },
+   "sync": "Stops the music track. LE1 only in this spelling.",
+   "why": "LE1-only audio control; listed because LE1 has the fewest levers.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "absent from identifier table"
+   }
+  },
+  {
+   "id": "anim.play",
+   "category": "anim",
+   "mechanism": "anim",
+   "call": "PlayAnim",
+   "targets": [
+    "SkeletalMeshComponent",
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Plays an animation on a skeletal mesh. Present everywhere, so scripted animation can be exercised in every build.",
+   "why": "Animation is a common source of a client looking wrong while behaving right.",
+   "args": [
+    [
+     "AnimSeqName",
+     "name"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "anim.stop",
+   "category": "anim",
+   "mechanism": "anim",
+   "call": "StopAnim",
+   "targets": [
+    "SkeletalMeshComponent",
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Stops it. The inverse.",
+   "why": "Round-trip partner.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "anim.play_anim_me3",
+   "category": "anim",
+   "mechanism": "anim",
+   "call": "PlayAnimation",
+   "targets": [
+    "Actor"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "The ME3 actor-level form, distinct from PlayAnim in the same build.",
+   "why": "A third spelling; measuring one does not measure the other.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "anim.morph",
+   "category": "anim",
+   "mechanism": "anim",
+   "call": "SetMorphWeight",
+   "targets": [
+    "SkeletalMeshComponent"
+   ],
+   "role": "player.pawn",
+   "risk": "low",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Facial morph weight. ME3 only, and the mechanism behind expressions in dialogue.",
+   "why": "Relevant to a spectator: expression changes are visible to both, so they must be either shared or suppressed.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "anim.skeletal_mesh",
+   "category": "anim",
+   "mechanism": "anim",
+   "call": "SetSkeletalMesh",
+   "targets": [
+    "SkeletalMeshComponent"
+   ],
+   "role": "player.pawn",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Swaps a mesh. The most visible possible test of whether a command reached a specific pawn.",
+   "why": "Present everywhere and unmistakable, which makes it a good end-to-end control.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's pawn (Physics, Location, Firing)",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pause.set",
+   "category": "pause",
+   "mechanism": "pause",
+   "call": "SetPause",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Pauses the game for the caller. In a one-player build this is global; with two clients it has to become per-session or it freezes both.",
+   "why": "Present in all three. The first command that must change meaning for co-op.",
+   "args": [
+    [
+     "bPause",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pause.clear",
+   "category": "pause",
+   "mechanism": "pause",
+   "call": "ClearPause",
+   "targets": [
+    "PlayerController"
+   ],
+   "role": "player.controller",
+   "risk": "medium",
+   "present": {
+    "ME1": false,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Unpauses. Absent in LE1, so LE1's pause must be closed by SetPause(false).",
+   "why": "An asymmetry that would leave LE1 stuck if a port assumed ClearPause.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the local player's PlayerController",
+   "present_evidence": {
+    "ME1": "absent from identifier table",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pause.pause_game",
+   "category": "pause",
+   "mechanism": "pause",
+   "call": "PauseGame",
+   "targets": [
+    "GameInfo"
+   ],
+   "role": "gameinfo",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": false,
+    "ME3": true
+   },
+   "sync": "Pauses via the game object rather than a controller.",
+   "why": "A second pause route; the one that is world-wide by construction.",
+   "args": [
+    [
+     "bPause",
+     "bool"
+    ]
+   ],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the active GameInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "absent from identifier table",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "pause.players_only",
+   "category": "pause",
+   "mechanism": "pause",
+   "call": "bPlayersOnly",
+   "targets": [
+    "WorldInfo"
+   ],
+   "role": "worldinfo",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "The world flag that freezes pawns. Readable in all three and the same flag conversations set.",
+   "why": "The observable that makes 'the world thinks a cutscene is running' measurable.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the level's WorldInfo",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "squad.add",
+   "category": "squad",
+   "mechanism": "squad",
+   "call": "AddMember",
+   "targets": [
+    "Squad",
+    "SFXSquad",
+    "BioSquad"
+   ],
+   "role": "squad.member",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Adds a squad member. Present everywhere, so the party can be arranged identically across games.",
+   "why": "The party container is what the client is trying to control, so knowing how it is edited matters.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the squadmate pawn the client is meant to control",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "squad.remove",
+   "category": "squad",
+   "mechanism": "squad",
+   "call": "RemoveMember",
+   "targets": [
+    "Squad",
+    "SFXSquad",
+    "BioSquad"
+   ],
+   "role": "squad.member",
+   "risk": "medium",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Removes one. The inverse.",
+   "why": "Round-trip partner; also the way to test a client leaving.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the squadmate pawn the client is meant to control",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  },
+  {
+   "id": "squad.member",
+   "category": "squad",
+   "mechanism": "squad",
+   "call": "SquadMember",
+   "targets": [
+    "Pawn"
+   ],
+   "role": "squad.member",
+   "risk": "read",
+   "present": {
+    "ME1": true,
+    "ME2": true,
+    "ME3": true
+   },
+   "sync": "Type/marker for a squad member pawn. The classification a takeover has to recognise.",
+   "why": "The offline and live way to tell a squadmate from the player, which is the first discrimination a co-op mod needs.",
+   "args": [],
+   "note": null,
+   "crashes": [],
+   "role_meaning": "the squadmate pawn the client is meant to control",
+   "present_evidence": {
+    "ME1": "exact",
+    "ME2": "exact",
+    "ME3": "exact"
+   }
+  }
+ ]
+}

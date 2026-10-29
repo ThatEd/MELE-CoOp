@@ -1,0 +1,165 @@
+{
+  "_notes": [
+    "Mass Effect Legendary Edition (Steam appid 1328670) - ME3 test copies. Baseline: ME3 is the only",
+    "game where a second player has been made to work, so its test environment is the reference the",
+    "ME1/ME2 configs are modelled on.",
+    "",
+    "Copy next to your work as local/mele-me3.json and set instances_root. Keep game_dir pointed at the",
+    "real install: instances are built from it with hard links, so the original is only read.",
+    "",
+    "instances_root MUST be on the same volume as game_dir (B:), because hard links cannot cross volumes.",
+    "",
+    "Save isolation is NOT solved by this file alone. LE derives its save directory from the Windows shell",
+    "folder, so every copy shares Documents\\BioWare\\...\\Save. Use tools/saverestore around each test,",
+    "and see games/mass-effect-legendary-edition/TEST-ENVIRONMENT.md for the stronger options.",
+    "",
+    "ready.type is 'window' because the game exposes no in-game bridge yet. When one exists, switch to it:",
+    "a window only proves a process started, not that the game reached gameplay."
+  ],
+  "name": "Mass Effect Legendary Edition - ME2",
+  "game_dir": "<game dir>",
+  "instances_root": "<instances dir>",
+  "process_name": "MassEffect2.exe",
+  "launch": {
+    "exe": "Game/Launcher/MassEffectLauncher.exe",
+    "args": [],
+    "env": {},
+    "window": "minimized",
+    "spawns_game": true,
+    "stagger_s": 8,
+    "child_wait_s": 60,
+    "watch_s": 5
+  },
+  "link": {
+    "modes": [
+      "hardlink"
+    ],
+    "per_instance_files": [
+      "Game/ME2/BioGame/Config/GamerSettings.ini"
+    ],
+    "empty_dirs": [],
+    "per_instance_dirs": [],
+    "root_skip_suffixes": [
+      ".log",
+      ".dmp",
+      ".mdmp"
+    ],
+    "pinned_files": [
+      "Game/ME2/Binaries/Win64/MassEffect2.exe"
+    ]
+  },
+  "config_files": {
+    "Game/ME2/BioGame/Config/GamerSettings.ini": {
+      "base": "{game_dir}/Game/ME2/BioGame/Config/GamerSettings.ini",
+      "fallback_base": null,
+      "encoding": "latin-1",
+      "edits": [
+        [
+          "SystemSettings",
+          "Fullscreen",
+          "False"
+        ],
+        [
+          "SystemSettings",
+          "ResX",
+          "1280"
+        ],
+        [
+          "SystemSettings",
+          "ResY",
+          "720"
+        ],
+        [
+          "SystemSettings",
+          "UseVSync",
+          "False"
+        ]
+      ]
+    }
+  },
+  "protected_paths": [
+    "%USERPROFILE%\\Documents\\BioWare\\Mass Effect Legendary Edition\\Save",
+    "%USERPROFILE%\\Documents\\BioWare\\Mass Effect Legendary Edition\\ScreenShots"
+  ],
+  "ready": {
+    "type": "window",
+    "timeout_s": 420
+  },
+  "crash": {
+    "logs": [],
+    "markers": [
+      "Fatal error",
+      "Unhandled exception"
+    ],
+    "wer_match": "MassEffect"
+  },
+  "collect_logs": [
+    "*.log",
+    "*.dmp",
+    "Game/ME2/Binaries/Win64/*.log"
+  ],
+  "lowcost": {
+    "post_checks": [
+      [
+        "Game/ME2/BioGame/Config/GamerSettings.ini",
+        "SystemSettings",
+        "Fullscreen",
+        "False"
+      ],
+      [
+        "Game/ME2/BioGame/Config/GamerSettings.ini",
+        "SystemSettings",
+        "ResX",
+        "1280"
+      ]
+    ],
+    "rows": [
+      {
+        "file": "Game/ME2/BioGame/Config/GamerSettings.ini",
+        "section": "SystemSettings",
+        "key": "Fullscreen",
+        "value": "False",
+        "why": "windowed so two or more copies can coexist; the owner's normal session is fullscreen",
+        "status": "required"
+      },
+      {
+        "file": "Game/ME2/BioGame/Config/GamerSettings.ini",
+        "section": "SystemSettings",
+        "key": "ResX",
+        "value": "1280",
+        "why": "small window: the test copies are looked at, not played",
+        "status": "recommended"
+      },
+      {
+        "file": "Game/ME2/BioGame/Config/GamerSettings.ini",
+        "section": "SystemSettings",
+        "key": "ResY",
+        "value": "720",
+        "why": "small window, matching ResX",
+        "status": "recommended"
+      },
+      {
+        "file": "Game/ME2/BioGame/Config/GamerSettings.ini",
+        "section": "SystemSettings",
+        "key": "UseVSync",
+        "value": "False",
+        "why": "a vsync-locked copy sits idle and inflates wall-clock test times",
+        "status": "recommended"
+      }
+    ]
+  },
+  "pool": {
+    "recycle_after": 10,
+    "ws_growth_mb": 1200,
+    "ws_max_mb": 4200,
+    "slot_ttl_s": 3600,
+    "tick_s": 5
+  },
+  "pairs": {
+    "_notes": "One running ME3 copy measured ~1.6 GB resident. Two copies plus the owner's session needs headroom. Port base is free for private use; the mod reads its role and port from its own settings file once that exists.",
+    "port_base": 27720,
+    "copy_gb": 1.7,
+    "reserve_gb": 3.0,
+    "proto": "udp"
+  }
+}
