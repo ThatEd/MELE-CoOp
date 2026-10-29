@@ -63,16 +63,55 @@ def t_no_disassembler():
     return "ok", "no walk()/OPCODES; only extent extraction is offered"
 
 
-@case("the function serial header is per-build: 47, 47, 38 with the length at +28")
+@case("bytecode starts at +32 and the trailer is 15/15/6 bytes")
 def t_header_constants():
-    """The header length differs by build and is NOT a constant. Measuring it wrong is silent:
-    the first version used ME3's 38 for all three and every ME1/ME2 function reported as not
-    closing, which looks like a parser bug rather than a wrong constant."""
-    if bc.FUNCTION_SERIAL_HEADER != {"ME1": 47, "ME2": 47, "ME3": 38}:
-        return "fail", "header table is %r" % (bc.FUNCTION_SERIAL_HEADER,)
+    """Two constants, both wrong on the first attempt, and the mistake is instructive.
+
+    The first version set `header = serial_size - u32(+28)` - 47 on ME1/ME2, 38 on ME3 - and that
+    identity held EXACTLY on every function, so it passed for a proven layout. It was really
+    describing `32 + trailer` and therefore started extraction inside the trailer: 15 bytes late on
+    ME1/ME2, 6 late on ME3. The closure check agreed with the wrong answer.
+
+    What exposed it was asking a second, independent question - does the extracted region actually
+    contain the function's instructions? - and the visible string-constant sequence
+    (`e7 a8 70 a8 a8 1f "Creating n..."`) was 15 bytes further in than predicted.
+    """
+    if bc.FUNCTION_BYTECODE_AT != 32:
+        return "fail", "bytecode at %r" % bc.FUNCTION_BYTECODE_AT
     if bc.BYTECODE_LEN_AT != 28:
         return "fail", "length field at %r" % bc.BYTECODE_LEN_AT
-    return "ok", "ME1/ME2 47, ME3 38, length always at +28"
+    if bc.FUNCTION_TAIL != {"ME1": 15, "ME2": 15, "ME3": 6}:
+        return "fail", "tail table is %r" % (bc.FUNCTION_TAIL,)
+    return "ok", "+32, length at +28, trailer 15/15/6"
+
+
+@case("the extracted region starts with the string-constant sequence, not mid-string")
+def t_extent_starts_at_the_right_byte():
+    """The independent check that the extent is not merely self-consistent.
+
+    `CreatePlayer`'s bytecode must BEGIN with `e7 a8 <name> a8 a8 1f` and the readable text
+    immediately after, because the first statement passes a newly built string to `LogInternal`.
+    An extraction offset that is 15 bytes late still closes arithmetically but starts inside the
+    string, so this is the case that distinguishes the two.
+    """
+    t = None
+    mt = bc.load_tables()
+    p = package("ME3")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mt.build(p)
+    fns = [f for f in bc.functions(t, mt) if f["export"]["object_name"] == "CreatePlayer"]
+    if not fns:
+        return "fail", "no CreatePlayer"
+    body = fns[0]["body"]
+    if body[0:1] != b"\xe7":
+        return "fail", "bytecode starts with %#04x, expected 0xe7 (the object/name/string prologue)" % body[0]
+    head = body[:24].decode("latin-1", "replace")
+    if not head.startswith("\xe7\xa8rX") and "\xe7\xa8" not in head:
+        return "fail", "prologue is %r" % head
+    if "Creating n" not in head:
+        return "fail", "the string does not begin at byte 0 of the region: %r" % head
+    return "ok", "region starts %r" % head
 
 
 @case("every function in ME3 Engine.pcc closes exactly")
@@ -87,8 +126,9 @@ def t_extent_closes():
     fns = bc.functions(t, mt)
     if len(fns) < 5000:
         return "fail", "only %d functions found; expected ~5279" % len(fns)
-    if any(f["extra"] != 0 for f in fns):
-        return "fail", "some functions do not close"
+    wrong = [f for f in fns if f["extra"] != bc.FUNCTION_TAIL["ME3"]]
+    if wrong:
+        return "fail", "%d functions have the wrong trailer" % len(wrong)
     return "ok", detail
 
 

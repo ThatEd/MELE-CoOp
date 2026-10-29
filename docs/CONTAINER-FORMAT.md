@@ -194,7 +194,7 @@ Two things worth recording, because both are how this looked wrong for a while:
 
 | Unknown | Why it matters |
 |---|---|
-| Whether function **bytecode** survives in these packages | **Solved**: it survives. Extent is `serial[H : H + u32(serial+28)]`, H = 47 on ME1/ME2 and 38 on ME3, closing on every function in all three builds. The *opcode table* is still unproven - see `tools/melepkg/ue3_bytecode.py`, which deliberately ships no disassembler |
+| Whether function **bytecode** survives in these packages | **Solved**: it survives. Extent is `serial[32 : 32 + u32(serial+28)]` plus a 15-byte trailer on ME1/ME2 (6 on ME3), closing on every function in all three builds. The *opcode table* is still unproven - see `tools/melepkg/ue3_bytecode.py`, which deliberately ships no disassembler |
 | Enum member values (e.g. `EWhoTriggers`) | enum **members** live in the class's default properties, not the export table; the class's serial data is the next target |
 | The `depends_offset` section | unexamined; the export walk lands exactly on it, so what follows is a separate structure |
 
@@ -265,8 +265,16 @@ difference: a 16-byte `FString` is 4-aligned in this ABI, and the struct total i
 
 ## Bytecode
 
-Present. Extent is `serial[H : H + u32(serial+28)]` with `H` = 47 on ME1/ME2 and 38 on ME3; that
-identity closes on every `Core.Function` in all three builds (5416/5416, 5350/5350, 5279/5279).
+Present. Extent is `serial[32 : 32 + u32(serial+28)]` plus a fixed trailer of 15 bytes on ME1/ME2
+and 6 on ME3; `32 + length + tail == serial_size` closes on every `Core.Function` in all three
+builds (5416/5416, 5350/5350, 5279/5279).
+
+**A correction worth keeping:** the first version of this said the bytecode starts at 47/47/38,
+because `serial_size - u32(+28)` is a constant per build. That constant is `32 + tail`, so the
+extraction started inside the trailer and the closure check agreed with it. What caught it was
+asking whether the region *contains the instructions* - `CreatePlayer` must begin with
+`e7 a8 ... "Creating n..."` and the text was 15 bytes late. Closure tests self-consistency, not
+truth.
 
 The **opcode table is not solved**. A walk that "closes" is meaningless here: a partition into
 instructions of any length 1..24 succeeds on 5279 of 5279 functions, so the closure test eliminates

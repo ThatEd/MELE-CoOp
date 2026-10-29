@@ -18,9 +18,9 @@ The function serial layout, because it closes exactly:
     +28   bytecode length
     +32   NativeFunctionIndex FName
 
-    bytecode occupies serial[H : H + u32(serial+28)]   where H is 47 on ME1/ME2 and 38 on ME3
+    bytecode occupies serial[32 : 32 + u32(serial+28)], followed by a fixed trailer
 
-`H + u32(+28) == serial_size` for every `Core.Function` in all three builds: ME1 5416/5416, ME2 5350/5350, ME3 5279/5279
+`32 + u32(+28) + tail == serial_size` for every `Core.Function` in all three builds: ME1 5416/5416 (tail 15), ME2 5350/5350 (15), ME3 5279/5279 (6)
 - zero exceptions. That is a fact about the layout, not a correlation.
 
 ## What is NOT proven, and must not be claimed
@@ -64,27 +64,29 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-FUNCTION_SERIAL_HEADER = {"ME1": 47, "ME2": 47, "ME3": 38}
+FUNCTION_BYTECODE_AT = 32         # bytecode starts this far into a Core.Function's serial data
 BYTECODE_LEN_AT = 28              # int32 inside that header holding the bytecode length
 
-# How the header length was established, because it is per-build and must not be hardcoded blindly.
+# A fixed-size trailer follows the bytecode. It differs by build:
 #
-# `serial_size - u32(serial+28)` is a CONSTANT for every `Core.Function` in a package:
+#     ME1  15 bytes   (5416/5416 functions in Engine.pcc)
+#     ME2  15 bytes   (5350/5350)
+#     ME3   6 bytes   (5279/5279)
 #
-#     ME1  47   (5416/5416 functions in Engine.pcc)
-#     ME2  47   (5350/5350)
-#     ME3  38   (5279/5279)
+# So `serial_size == 32 + u32(serial+28) + TAIL[build]` on every function, with zero variance.
 #
-# Zero variance, so the bytecode extent is `serial[HEADER : HEADER + u32(serial+28)]` exactly. The
-# 9-byte difference is the same kind of per-build variation as the packfile header's 9-byte shift,
-# and assuming ONE value - which the first version of this module did, using ME3's 38 for all
-# three - fails closed rather than silently: `verify()` reports every ME1/ME2 function as not
-# closing.
+# Both constants here were wrong on the first attempt, in a way worth recording because the mistake
+# looked like a success. The first version put the bytecode at `serial_size - u32(+28)` and called
+# that "the header length" - 47 on ME1/ME2 and 38 on ME3. That identity happened to hold exactly,
+# so it passed for a proven layout, but it was describing `32 + TAIL` and therefore starting the
+# extraction INSIDE the trailer. `ue3_bytecode.py` then reported "the opcode table is unproven" while
+# in fact it was reading 15 bytes of trailer plus a truncated instruction stream.
 #
-# A first attempt to find this used `size == H + field` with H in 34..42 for all builds at once and
-# reported 0/5416, because it searched the wrong pair. The right question was "what is
-# `size - field`", not "which H makes them equal" - the difference matters when the field is not at
-# the end of the header.
+# What exposed it: a script function's bytecode visibly begins with the string-constant sequence
+# `e7 a8 70 a8 a8 1f "Creating n..."` (object literal, name, string), and reading from +47 started
+# 15 bytes in, mid-string. Cross-checking two things that must agree - the documented layout and the
+# visible content - is what caught it; the closure identity alone agreed with the wrong answer.
+FUNCTION_TAIL = {"ME1": 15, "ME2": 15, "ME3": 6}
 
 ASCII_RUN = re.compile(rb"[\x20-\x7e]{4,}")
 
@@ -100,42 +102,42 @@ def load_tables():
 def functions(table, mt):
     """Every export whose class is `Core.Function`, with its bytecode extent resolved."""
     out = []
-    header = FUNCTION_SERIAL_HEADER.get(table["game"])
-    if header is None:
+    tail = FUNCTION_TAIL.get(table["game"])
+    if tail is None:
         return out
     disp = mt.buffer_base(table["header"])
     exports, imports = table["exports"], table["imports"]
     for e in exports:
         if mt.describe_index(e["class_index"], exports, imports) != "Core.Function":
             continue
-        if e["serial_size"] < header:
+        if e["serial_size"] < FUNCTION_BYTECODE_AT:
             continue
         at = e["serial_offset"] - disp
         if at + BYTECODE_LEN_AT + 4 > len(table["buf"]):
             continue
         length = struct.unpack_from("<i", table["buf"], at + BYTECODE_LEN_AT)[0]
-        start = at + header
+        start = at + FUNCTION_BYTECODE_AT
         if length < 0 or start + length > len(table["buf"]):
             continue
         out.append({"export": e, "start": start, "length": length,
                     "body": table["buf"][start:start + length],
-                    "extra": e["serial_size"] - header - length})
+                    "extra": e["serial_size"] - FUNCTION_BYTECODE_AT - length})
     return out
 
 
 def verify(table, mt):
-    """Does `header + bytecode_length == serial_size` hold for every function? Returns (ok, why)."""
-    header = FUNCTION_SERIAL_HEADER.get(table["game"])
-    if header is None:
+    """Does `32 + bytecode_length + tail == serial_size` hold for every function?"""
+    tail = FUNCTION_TAIL.get(table["game"])
+    if tail is None:
         return False, "unknown build %r" % (table["game"],)
     fns = functions(table, mt)
     if not fns:
         return False, "no Core.Function exports"
-    short = [f["export"]["object_name"] for f in fns if f["extra"] != 0]
-    if short:
-        return False, ("%d/%d functions do not close with header %d (first: %s)"
-                       % (len(short), len(fns), header, short[:4]))
-    return True, "%d functions close with header %d" % (len(fns), header)
+    bad = [f["export"]["object_name"] for f in fns if f["extra"] != tail]
+    if bad:
+        return False, ("%d/%d functions have a %r-byte tail instead of %d (first: %s)"
+                       % (len(bad), len(fns), sorted({f["extra"] for f in fns}), tail, bad[:4]))
+    return True, "%d functions close with a %d-byte tail" % (len(fns), tail)
 
 
 def cmd_survey(args):

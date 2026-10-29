@@ -188,11 +188,13 @@ list**; if a section disagrees, this wins.
     derived this way reproduce the live-measured `CreatePlayer` layout to the byte (total 0x2c),
     which is the strongest validation in this project.
 
-39. **A closure test that a large search space can always satisfy proves nothing.** "The bytecode
-    walk ends exactly where it should" is satisfied by a partition into instructions of any length
-    1..24 for 5279 of 5279 functions. Before trusting a closure, ask how many hypotheses it
-    eliminates; if the answer is "almost none", it is rule 25 in a new shape. This is why
-    `ue3_bytecode.py` ships no opcode table, and a test asserts the absence.
+39. **A closure test that a large search space can always satisfy proves nothing - and neither does
+    a closure test that agrees with a wrong constant.** "The bytecode walk ends exactly where it
+    should" is satisfied by a partition into instructions of any length 1..24 for 5279 of 5279
+    functions, which is why `ue3_bytecode.py` ships no opcode table. Separately, "`size - u32(+28)`
+    is constant" was true *and* described the wrong offset (`32 + trailer`), so the extraction
+    started inside the trailer while the check still passed. A closure proves self-consistency, not
+    truth: pair it with an independent question - here, "does the region contain the instructions?".
 
 ## Game identity (verified 2026-10-28)
 
@@ -3671,11 +3673,27 @@ Int`, parms `0x10`, `NewPlayer` at 0.
 
 `CONTAINER-FORMAT.md` listed this as unknown. It is present, and the extent is proven:
 
-    serial[H : H + u32(serial+28)]        H = 47 on ME1/ME2, 38 on ME3
+    serial[32 : 32 + u32(serial+28)]  followed by a fixed trailer
 
-`H + u32(+28) == serial_size` for **every** `Core.Function` export: ME1 5416/5416, ME2 5350/5350,
-ME3 5279/5279. Zero variance, so it is a fact about the layout rather than a correlation. The
-9-byte difference is the same per-build variation as the packfile header's.
+    tail = 15 bytes on ME1 and ME2, 6 bytes on ME3
+
+`32 + u32(+28) + tail == serial_size` for **every** `Core.Function` export: ME1 5416/5416,
+ME2 5350/5350, ME3 5279/5279. Zero variance.
+
+**Correction to my own first version of this note.** I wrote that the bytecode starts at 47 on
+ME1/ME2 and 38 on ME3, on the strength of the identity `serial_size - u32(+28)` being constant.
+That identity holds exactly - and it was describing `32 + tail`, so the extraction began *inside*
+the trailer: 15 bytes late on ME1/ME2, 6 late on ME3. The closure check agreed with the wrong
+answer, because closure only tests self-consistency.
+
+What exposed it was a second, independent question: does the extracted region actually contain the
+function's instructions? `CreatePlayer`'s bytecode must begin `e7 a8 <name> a8 a8 1f "Creating n..."`,
+and the visible text was 15 bytes further in than predicted. A per-function trailer histogram then
+settled it - 15, 15, 6, zero variant per build.
+
+The byte total was identical either way (411,511 bytes on ME3 `Engine.pcc`), so only inspecting the
+content distinguished them. That is rule 33 again: distinctness and plausibility, not coverage, and
+not closure either.
 
 ### The opcode table is NOT solved, and a disassembler was written and withdrawn
 
