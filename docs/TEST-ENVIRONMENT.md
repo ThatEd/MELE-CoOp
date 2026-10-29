@@ -9,9 +9,9 @@ this page is the Mass Effect Legendary Edition configuration for it.
 
 | File | Game | Process |
 |---|---|---|
-| [tools/gamepool/examples/masseffect-le-me1.json](../tools/gamepool/examples/masseffect-le-me1.json) | ME1 | `MassEffect1.exe` |
-| [tools/gamepool/examples/masseffect-le-me2.json](../tools/gamepool/examples/masseffect-le-me2.json) | ME2 | `MassEffect2.exe` |
-| [tools/gamepool/examples/masseffect-le-me3.json](../tools/gamepool/examples/masseffect-le-me3.json) | ME3 | `MassEffect3.exe` |
+| [tools/gamepool/examples/masseffect-le-me1.json](../../tools/gamepool/examples/masseffect-le-me1.json) | ME1 | `MassEffect1.exe` |
+| [tools/gamepool/examples/masseffect-le-me2.json](../../tools/gamepool/examples/masseffect-le-me2.json) | ME2 | `MassEffect2.exe` |
+| [tools/gamepool/examples/masseffect-le-me3.json](../../tools/gamepool/examples/masseffect-le-me3.json) | ME3 | `MassEffect3.exe` |
 
 Each has been checked against the real install: every referenced file exists, the launcher
 path resolves, and per-game port bases differ (27710 / 27720 / 27730).

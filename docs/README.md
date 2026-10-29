@@ -83,7 +83,7 @@ Two supporting pages:
   it proves and what would make it wrong. Also the per-game capability differences it measured
   (`IsLocallyControlled` absent in LE2, `SetCollision` vs `SetCollisionType`, LE1's
   `BioSeqAct_SetPlayerControlling` control hook, why `CreatePlayer` is LE3-only).
-- [COMMAND-SUITE-ADAPTER.md](./COMMAND-SUITE-ADAPTER.md) - the five in-game bridge methods a mod
+- [COMMAND-SUITE-ADAPTER.md](./COMMAND-SUITE-ADAPTER.md) - the four in-game bridge methods a mod
   must implement for the suite to actually call anything, with the validation order that turns a
   silent wrong answer into a loud one.
 - [SPLITSCREEN-PLAN.md](./SPLITSCREEN-PLAN.md) - why two panes cannot be the plan for LE1/LE2, the

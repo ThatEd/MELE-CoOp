@@ -10,6 +10,8 @@ retractions are kept visible rather than quietly edited away.
 |---|---|
 | [README.md](README.md) | The game's state, the projects that exist, what works and what does not |
 | [NOTES.md](NOTES.md) | The working log. **31 rules** at the top, each with the incident that produced it; then every crash with its stack and root cause, and all verified offsets |
+| [SECOND-PLAYER-ME2.md](SECOND-PLAYER-ME2.md) | **The second player in ME2**: the correction to "there is no AddLocalPlayer", the measured per-package table, and the ordered route |
+| [ME3-TEST-SUITE.md](ME3-TEST-SUITE.md) | The ME3 suite operationally: preflight, what runs without a game, and what the first live session should do |
 | [SPLITSCREEN-PLAN.md](SPLITSCREEN-PLAN.md) | Why two panes cannot be the plan for LE1/LE2, the measured per-game field table, the ordered steps — and two corrections to earlier documents |
 
 ## How the engine works, for co-op
@@ -43,6 +45,8 @@ The full list with incidents is at the top of [NOTES.md](NOTES.md). The ones tha
   while testing nothing.
 - **A value that is per-launch must not be baked into a plan.** Carry a role, resolve it live.
 - **Read the faulting instruction, not the frame list.**
+- **A package is not a build.** "There is no `AddLocalPlayer`" was proven and wrong: it was
+  measured on `SFXGame.pcc`, and the function is in `Engine.pcc` on all three games.
 
 ## Reading order for someone picking this up
 

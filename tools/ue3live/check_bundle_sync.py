@@ -50,6 +50,17 @@ HUB_ONLY = {
     "gamepool/examples/fnv.json",
 }
 
+# Files that legitimately differ because the bundle has different relative links. The hub's docs
+# live under `games/mass-effect-legendary-edition/` and link to `../../tools/`; the bundle's live
+# under `docs/` and link to `../tools/`. Mirroring either direction over these destroys the other
+# side's links, so they are excluded and the difference is stated rather than silently "fixed".
+LINK_VARIANTS = {
+    "ue3live/README.md",
+    "bridge/README.md",
+    "bridge/examples/fnv/README.md",
+    "gamepool/README.md",
+}
+
 
 def digest(path):
     h = hashlib.sha256()
@@ -82,7 +93,10 @@ def compare():
         hub = walk(hub_root)
         bnd = walk(os.path.join(BUNDLE_TOOLS, sub))
         for rel in sorted(set(hub) | set(bnd)):
-            if "%s/%s" % (sub, rel) in HUB_ONLY:
+            key = "%s/%s" % (sub, rel)
+            if key in HUB_ONLY:
+                continue
+            if key in LINK_VARIANTS:
                 continue
             h, b = hub.get(rel), bnd.get(rel)
             if h and b:

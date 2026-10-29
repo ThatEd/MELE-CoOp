@@ -36,6 +36,8 @@ SUITES = [
     # The shared-data-dir resolver. local/ is shared with other games, so a wrong answer here
     # means a tool silently finds nothing rather than failing.
     "test_mele_paths.py",
+    # Offsets preflight: catches a file copied from another build before a game is launched.
+    "test_preflight_offsets.py",
 ]
 
 

@@ -140,6 +140,12 @@ list**; if a section disagrees, this wins.
     did not need to exist. Treat a per-build number as a hypothesis about a **specific exe hash**
     until it has been read from that build, and name the build whenever the number is recorded.
 
+32. **A package is not a build.** "There is no `AddLocalPlayer`" was `[proven]` and wrong: it was
+    measured on `SFXGame.pcc`, while the function lives in `Engine.pcc` on all three games.
+    Concluding "the engine does not have X" from one package is the same error as concluding it
+    from one game. Name the artefact a finding came from, because the next reader will assume it
+    is the whole build.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -3159,3 +3165,156 @@ Test totals now **94 across five suites**, all passing, still needing no game.
 
 `local/MELE/README.md` - what is in each subfolder, what is regenerable and what is irreplaceable
 evidence, how the tools find it, and where the game install and saves actually are.
+
+
+## 2026-10-29 (bundle): shareable output in `MELE Co-Op Mod/`
+
+Owner asked for everything worth sharing to be in a non-`local` folder so another agent can push it
+to git. `local/` is git-ignored and holds decompressed game data, per-build offsets, probe dumps and
+a 2.6 GB ME3 sandbox — none of which belongs in a repository.
+
+### What the bundle is
+
+`MELE Co-Op Mod/` — 87 files, 1.32 MB: README, LICENSE (MIT, inherited from the hub), `PUBLISHING.md`,
+`.gitignore`, one `run_all_tests.py`, 14 docs, and copies of the five tools that are MELE's
+(`ue3live`, `melepkg`, `bridge`, `saverestore`, `gamepool`).
+
+**Green from a fresh clone with no game installed and no data present.** Verified by copying the
+folder to a temp directory and running `run_all_tests.py` there. Skipped cases name the file and the
+command that regenerates it, so a clean checkout is green-with-visible-gaps rather than red.
+
+### The change that made it work
+
+Every tool had `REPO = dirname(dirname(HERE))`, which is a hardcoded depth. That breaks in a copy
+because `tools/` sits at a different level. `mele_paths.py` now searches **upward** for `local/` or
+`tools/bridge`, so the same code runs in the hub and in the bundle.
+
+Two bugs in that resolver, both caught by tests rather than by luck:
+
+1. **The `tools/bridge` fallback took one `dirname` and got `<root>/tools`**, so a clone with no
+   `local/` resolved to `<root>/tools/local` — a path that cannot exist, reported as "no data"
+   instead of "wrong path". Reported as `dir` only after a fresh-clone test failed.
+2. **`repo_root` inspected `basename(HERE)`** (`ue3live`) and so never escaped a `tools` ancestor.
+   The ancestors have to be walked, not the leaf.
+
+Also made `melepkg` find the game install properly: `$MELE_GAME_DIR`, then the Steam registry, then
+a bounded per-drive probe for both spellings of `SteamLibrary`, looking under `steamapps/common`.
+The previous hardcoded drive list worked on exactly one machine — and a first attempt at the fix
+listed the Steam root and missed `steamapps/common`, which the container test caught immediately.
+
+### Drift protection
+
+`tools/ue3live/check_bundle_sync.py` compares 68 files between the hub and the bundle and refuses to
+pretend they match. Proven by adding a line to a bundle copy and requiring it to report `differs`,
+then restoring. `--fix` copies hub → bundle, `--reverse` after editing link paths, because the two
+have different relative paths and a blind mirror either way destroys work. Hub-only files that
+belong to other games (`gamepool/examples/fnv.json`) are listed explicitly so the checker does not
+cry wolf until someone disables it.
+
+### Privacy pass
+
+Six real leaks found and replaced with placeholders: the owner's profile name in four paths across
+`CO-OP-FAIL-POINTS.md`, `NOTES.md` and `README.md`, and the drive-specific Documents path. The
+*fact* is kept (Documents is often not on `C:`, resolve it from the registry); the identity is not.
+The checklist's own grep pattern is assembled at runtime so `PUBLISHING.md` does not match itself —
+a checklist that always trips its own check teaches you to ignore it.
+
+### Test totals
+
+**97 in the bundle** (10 conversation, 30 command suite, 29 runner, 19 fields, 9 paths) plus the
+container invariants. All passing, none needing a game.
+
+### Deliberately not in the bundle
+
+`local/`, `build/`, `__pycache__`, the hub's `tools/test_all.py` wiring, other games' gamepool
+configs, and the `p2v2_*` DLLs (built artefacts, host-specific).
+
+
+## 2026-10-29 (second player + ME3 suite): one conclusion overturned, one table parsed
+
+Two tasks: reverse-engineer the second player for ME2, and set up the ME3 test suite. No games were
+launched. Both produced findings that change what to do next.
+
+### The ME2 answer, and the correction it forced
+
+**ME2 reaches a second player through `AddLocalPlayer`, which the build does have.**
+
+The record said "Fail point A1 - there is no `AddLocalPlayer`", marked `[proven]`. That was measured
+on `SFXGame.pcc` and is **false of the build**. Every one of the three games ships the whole
+local-player and split-screen surface in `Engine.pcc`:
+
+| Identifier | ME1 `Engine` | ME2 `Engine` | ME3 `Engine` |
+|---|---|---|---|
+| `AddLocalPlayer` | yes | yes | yes |
+| `CreatePlayer` / `RemovePlayer` / `LayoutPlayers` | yes | yes | yes |
+| `SplitscreenInfo` / `Desired` / `Active` / `PerPlayerSplitscreenData` | yes | yes | yes |
+| `InitInputSystem` / `SpawnPlayerController` / `LocalPlayerControllers` | yes | yes | yes |
+
+The identifier maps under `local/MELE/maps/` were generated from *one package per game*, and that
+answers "does the script package reference this", not "does the build contain this". For engine
+machinery the answer lives in `Engine.pcc`. This is rule 31 with a sharper edge: a value measured in
+one *artefact* is not a value of the system.
+
+**What did not change:** `CreatePlayer` still crashes in LE1/LE2 three ways with every input verified.
+Having a function is not having a working call. What changes is the next candidate: `AddLocalPlayer`
+is the step `CreatePlayer` delegates to, and it has never been dispatched.
+
+Corrected at source in `CO-OP-FAIL-POINTS.md` (A1 relabelled "in `SFXGame.pcc`", with the table and
+the correction), and written up in `SECOND-PLAYER-ME2.md` with the ordered route.
+
+### The import table, parsed and validated
+
+`tools/melepkg/mele_tables.py` now parses the import table, which says **which package an object
+comes from and what kind of object it is** - the thing an identifier list cannot say.
+
+28 bytes per entry on all three builds, but the field order **differs**:
+
+| | start | imports | layout | dominant source |
+|---|---|---|---|---|
+| ME1 `SFXGame` | name-end + 4 | 1,426 | `(cls 1, outer 3, obj 4, src 6)` | `Core` 1,292 |
+| ME2 `SFXGame` | name-end + 4 | 1,909 | same | `Core` 1,764 |
+| ME3 `SFXGame` | name-end + 16 | 4,189 | **rotated** `(cls 5, outer 0, obj 1, src 3)` | `Core` 4,021 |
+
+The table also does not start at the header's `import_offset` - that field points 126 bytes past the
+real start on ME3.
+
+**Four false passes before this worked**, each caught and recorded in the module:
+
+1. Range-checking name indices: index 0 is a valid name, so a garbage base resolves every field to
+   it and scores 100%.
+2. "Names are not filler": ME1's filler is `***Deleted***`, ME2's is `!_Dup` - real entries in those
+   name tables.
+3. "Two or more distinct sources": passes on 1,425 correct entries plus one coincidence.
+4. A single-value source column: only caught after a test required >= 2 real sources.
+
+What works is SHAPE: one source dominating, many object kinds, at least two sources. That is the
+third time this project has had to replace a check that could not fail.
+
+**The export table is still not parsed.** 68-byte entries close exactly on `depends_offset`, but the
+field order inside an entry is unestablished. `exports_status()` returns the measurements and the
+gap rather than a fabricated export, because a wrong class attribution sends a co-op hook to the
+wrong object silently.
+
+### The ME3 test suite
+
+`ue3_preflight_offsets.py` validates an offsets file **without a game**: required keys (each naming
+the tool it breaks), per-build offset values (so a file copied from LE1 and relabelled LE3 is caught
+- `PlayerController.Pawn` is `+0x3DC`/`+0x294`/`+0x3BC`), and the `verified` flag. `--strict`
+refuses an unverified file outright.
+
+Notably it refuses **its own repository's** LE2/LE3 files if anyone flips `verified: true` without a
+live re-check - there is a test for exactly that.
+
+`local/MELE/offsets/offsets_LE3.json` and a full `offsets_LE2.json` (not discovery-only) now exist,
+both with `verified: false` and a `verified_note` saying why. That flag is the difference between "I
+have offsets" and "I have verified offsets", and no game was launched, so nothing is verified.
+
+**123 tests across 8 suites, ALL OK**, with container and table suites skipping their
+install-dependent cases when the game is absent.
+
+### Rule 32
+
+**A package is not a build.** Concluding "the engine does not have X" from one package is the same
+error as concluding it from one game. `SFXGame.pcc` holds BioWare's script layer; `Engine.pcc` holds
+the engine. Check which artefact the question is about before trusting an answer, and record the
+artefact alongside the finding.

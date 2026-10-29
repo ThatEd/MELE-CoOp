@@ -48,10 +48,27 @@ all in the Legendary Edition.
 | LE2 | `CreatePlayer` crashes inside its own allocation path, 7 engine frames past `ProcessEvent`, `ucrtbase!aligned_realloc`. `[proven]` |
 | LE1 | `CreatePlayer(bSpawnActor=1)` crashes in the engine's own thread *after* the call returns (`+0x99611a`, `mov r10,[rax+0x90]`, `rax=0`). `CreatePlayer(bSpawnActor=0)` also crashes, in `ucrtbase!aligned_realloc`, synchronously inside the call. `[proven]` |
 
-**Fail point A1 — there is no `AddLocalPlayer`.** Scanning LE1's full object graph finds no
-`AddLocalPlayer`, no `JoinSplitscreen`, no `CreateLocalPlayer`. `[proven]` So even the
-"call the right function" escape hatch does not exist: `CreatePlayer` on the viewport is the
-*only* scripted entry, and it is the one that crashes.
+**Fail point A1 — there is no `AddLocalPlayer` *in `SFXGame.pcc`*.** Scanning LE1's script package
+finds no `AddLocalPlayer`, no `JoinSplitscreen`, no `CreateLocalPlayer`. `[proven for that package]`
+
+**CORRECTION 2026-10-29: that is true of `SFXGame.pcc` and false of the build.** All three games
+ship the whole local-player and split-screen surface in `Engine.pcc`:
+
+| Identifier | ME1 `Engine.pcc` | ME2 `Engine.pcc` | ME3 `Engine.pcc` |
+|---|---|---|---|
+| `AddLocalPlayer` | yes | yes | yes |
+| `CreatePlayer`, `RemovePlayer`, `LayoutPlayers` | yes | yes | yes |
+| `SplitscreenInfo`, `DesiredSplitscreenType`, `ActiveSplitscreenType`, `PerPlayerSplitscreenData` | yes | yes | yes |
+| `InitInputSystem`, `SpawnPlayerController`, `LocalPlayerControllers` | yes | yes | yes |
+
+Measured from each build's `Engine.pcc` identifier table. The earlier conclusion came from scanning
+one package per game, which answers a narrower question than "does the build contain this". See
+[SECOND-PLAYER-ME2.md](SECOND-PLAYER-ME2.md).
+
+**What still stands:** dispatching `CreatePlayer` crashed LE1 and LE2 three ways with every input
+verified, so having the function is not the same as the call succeeding. What changes is the next
+thing to try — `AddLocalPlayer` is the step `CreatePlayer` itself delegates to, and it has never
+been dispatched.
 
 **Fail point A2 — a standalone controller is not viable.** `Actor.Spawn(BioPlayerController)`
 with the measured `0x50` parms layout **succeeds** and then the engine faults on a later
@@ -62,7 +79,9 @@ campaign's login path is what normally creates one.
 **Fail point A3 — the view cannot be split instead.** Each `LocalPlayer` owns its own
 `ViewState`/camera, and `SplitscreenInfo`/`PerPlayerSplitscreenData` is indexed *by local
 player*. `[derived]` One `LocalPlayer` means one view, so "add a view, not a player" is not
-available either.
+available either. **Still derived, not proven** — the experiment that would settle it needs a second
+`LocalPlayer`, and the only scripted route to one (`CreatePlayer`) crashes. `AddLocalPlayer` being
+present in `Engine.pcc` is the untried route.
 
 **How to detect A1–A3 cheaply, in LE1/LE2:** do not dispatch. Read, per game:
 

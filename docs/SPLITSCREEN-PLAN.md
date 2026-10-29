@@ -156,7 +156,7 @@ a write path — and the write path is deliberately hard to misuse.
 
 | Piece | What it does |
 |---|---|
-| [`tools/ue3live/ue3_fields.py`](../tools/ue3live/ue3_fields.py) | A **fixed allow-list** of named fields. A caller names a *field*, never an address, so arbitrary writes cannot be expressed. |
+| [`tools/ue3live/ue3_fields.py`](../../tools/ue3live/ue3_fields.py) | A **fixed allow-list** of named fields. A caller names a *field*, never an address, so arbitrary writes cannot be expressed. |
 | `S00`–`S04` field phases | The split-screen plan as verified reads and writes: baseline, request split, restore, player cap, `PlayerInput` slot. |
 
 Four rules, all enforced by tests:
