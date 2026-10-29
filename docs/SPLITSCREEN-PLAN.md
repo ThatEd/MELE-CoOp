@@ -73,6 +73,29 @@ notes already record the retraction, and this page exists so it is not re-discov
 
 ---
 
+## The split-screen enum, decoded
+
+`ue3_fields.py` used to say the `ESplitScreenType` member list was "not recoverable offline".
+It is - a `UEnum`'s members are in its serial data - and the list is **identical on ME1, ME2 and
+ME3**:
+
+| value | member |
+|---|---|
+| 0 | `eSST_NONE` |
+| 1 | `eSST_2P_HORIZONTAL` |
+| 2 | `eSST_2P_VERTICAL` |
+| 3 | `eSST_3P_FAVOR_TOP` |
+| 4 | `eSST_3P_FAVOR_BOTTOM` |
+| 5 | `eSST_4P` |
+| 6 | `eSST_MAX` |
+
+Two consequences. **Value 1 is HORIZONTAL**, so the one step this project has actually observed
+working - `DesiredSplitscreenType = 1` - was producing a horizontal split, not the vertical one an
+earlier comment claimed. And `eSST_MAX` (6) is a bound rather than a layout, so the write
+allow-list still refuses it even though the engine defines it.
+
+`test_fields.py` now reads the enum from the package and compares it to the allow-list, so the two
+cannot drift; the case prints the member list when they disagree.
 ## 2. What split screen was for is already built
 
 Split screen's stated purpose was a cheap local harness for two players. **Two isolated copies

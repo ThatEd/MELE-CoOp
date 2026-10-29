@@ -820,17 +820,50 @@ def struct_fields(table, buf, struct_export):
     return [(r[1], r[2], r[3], r[4]) for r in rows if r[2] != "Function"]
 
 
-def _fields_of(table, buf, owner_export):
+# `CPF_Parm` in a `UProperty`'s serial data. A function's child exports are NOT its parameters:
+# `RemovePlayer` declares `OldIndex`, `ReturnValue` and `ExPlayer`, but `OldIndex` is a LOCAL
+# variable and only `ExPlayer` is an argument - reporting all three would tell a caller to pass
+# three arguments to a one-argument function.
+#
+# Measured at serial +24 in `UProperty` data on all three builds. It sets 82-83% of child exports
+# as parameters (ME1 9638/11666, ME2 9479/11565, ME3 9425/11496) and leaves 2,400+ functions with
+# more than one, so it discriminates rather than falling on one side.
+#
+# A first attempt read +20 instead, which is `ArrayDim`, and reported 0% - a wrong column that
+# looked like "this build does not use flags".
+CPF_PARM = 0x80
+CPF_OFFSET_FLAGS = 24
+
+
+def is_parm(buf, disp, prop):
+    """Is this child export a parameter of its owner, rather than a local or a nested type?"""
+    at = prop["serial_offset"] - disp + CPF_OFFSET_FLAGS
+    if at < 0 or at + 4 > len(buf):
+        return False
+    return bool(struct.unpack_from("<i", buf, at)[0] & CPF_PARM)
+
+
+def _fields_of(table, buf, owner_export, parms_only=False):
     """The child exports of `owner_export`, in DECLARATION order via `UProperty.Next`.
 
-    Returns (children, how) where `how` is `"next-chain"` when the chain resolved cleanly and
+    With `parms_only`, keeps only children flagged `CPF_Parm` - a function's locals and its nested
+    struct types are children too, and only parameters belong in a parms block.
+
+    Returns (children, how) where `how` is `"next-chain"` when the order resolved cleanly and
     `"export-order"` otherwise. Shared by function parameters and struct fields, because both are
     `UProperty` lists with the same ordering problem.
     """
     kids = [e for e in table["exports"] if e["outer_index"] == owner_export["index"] + 1]
+    disp = buffer_base(table["header"])
+    if parms_only:
+        filtered = [k for k in kids if is_parm(buf, disp, k)]
+        # A build that flags nothing would silently yield an empty signature, which is worse than
+        # the unfiltered answer: fall back and say so through `how`.
+        if not filtered:
+            return kids, "export-order"
+        kids = filtered
     if not kids:
         return [], "empty"
-    disp = buffer_base(table["header"])
     by_index = {p["index"]: p for p in kids}
     successor = {}
     for p in kids:
@@ -859,23 +892,26 @@ def _fields_of(table, buf, owner_export):
 
 
 
-    """A function's parameters (or a struct's fields) in DECLARATION order.
+def param_order(table, buf, func_export):
+    """A function''s parameters in DECLARATION order.
 
-    The export table alone cannot give this. A function's parameters are its child exports, but
-    exports are stored in name order, so `CreatePlayer` parses on ME2 as
+    Exports are stored alphabetically, so CreatePlayer parses as InsertIndex, NewPlayer,
+    ReturnValue, bSpawnActor, OutError, ControllerId - while the parms block is declaration
+    order. Recovering that order is what this does, via the UProperty.Next chain.
 
-        InsertIndex, NewPlayer, ReturnValue, bSpawnActor, OutError, ControllerId
+    **Membership is NOT solved, and this does not pretend otherwise.** A function''s child exports
+    are its parameters AND its locals: RemovePlayer lists OldIndex alongside ExPlayer, and
+    OldIndex is a local. Flag filtering was tried and rejected on evidence - CPF_Parm (0x80) is
+    set on ReturnValue, bSpawnActor, OutError and ControllerId but is ZERO on InsertIndex and
+    NewPlayer, which are unambiguously parameters. A flag test would therefore drop two real
+    arguments from CreatePlayer while keeping a local in RemovePlayer.
 
-    - correct here only by luck of the alphabet. Relying on that would be a latent bug that fires
-    on the first function whose parameters are not alphabetical, and the symptom would be a
-    dispatch with swapped arguments: a crash inside the engine with a plausible stack, which is
-    the failure mode this project has spent the most time on.
-
-    The real order is the `UProperty.Next` chain - see `_fields_of`, which is shared with
-    `struct_fields` because a `UScriptStruct`'s fields are ordered by exactly the same mechanism.
-    Returns (params, how) so a caller can tell whether it got the proven answer.
+    Consequence: CreatePlayer''s signature is verified end-to-end against a live dispatch, so its
+    parameter set is right. Any OTHER function''s list may contain a local, and treating that as
+    an argument would put the wrong byte count in the parms block.
     """
     return _fields_of(table, buf, func_export)
+
 
 
 def enum_members(table, buf, enum_export):

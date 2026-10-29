@@ -82,10 +82,19 @@ FIELDS = {
     # ---- viewport: the split-screen control surface -----------------------------------
     "viewport.desired_splitscreen_type": {
         "role": "viewport", "kind": "enum8", "writable": True,
-        # ESplitScreenType as this project has observed it: 0 = single, 1 = two-pane vertical.
-        # The full member list is not recoverable offline (enum members are not in the
-        # identifier table), so only the two values anyone has a use for are permitted.
-        "values": {0: "single player", 1: "two-pane vertical split"},
+        # ESplitScreenType, decoded from `Engine.pcc`'s enum serial data (see `enum_members` in
+        # melepkg/mele_tables.py), identical on ME1, ME2 and ME3:
+        #
+        #   0 eSST_NONE   1 eSST_2P_HORIZONTAL   2 eSST_2P_VERTICAL
+        #   3 eSST_3P_FAVOR_TOP   4 eSST_3P_FAVOR_BOTTOM   5 eSST_4P   6 eSST_MAX
+        #
+        # This corrects an earlier comment here that said the member list was "not recoverable
+        # offline". It is, and the values are now named rather than numbered, so a wrong write is
+        # a wrong NAME rather than an unexplained index. Note 1 is HORIZONTAL, not vertical - the
+        # documented working step (`DesiredSplitscreenType = 1`) is a horizontal two-pane split.
+        "values": {0: "single player", 1: "two-pane horizontal split",
+                   2: "two-pane vertical split", 3: "three-pane, top favoured",
+                   4: "three-pane, bottom favoured", 5: "four-pane split"},
         "means": "Ask the viewport for a split layout. The engine then sets Active itself - "
                  "this is the one step this project has actually observed working.",
         "offsets": {"ME1": 0x1C0},
@@ -98,7 +107,9 @@ FIELDS = {
     },
     "viewport.active_splitscreen_type": {
         "role": "viewport", "kind": "enum8", "writable": False,
-        "values": {0: "single player", 1: "two-pane vertical split"},
+        "values": {0: "single player", 1: "two-pane horizontal split",
+                   2: "two-pane vertical split", 3: "three-pane, top favoured",
+                   4: "three-pane, bottom favoured", 5: "four-pane split"},
         "means": "What the viewport says it is currently doing. READ ONLY: the engine maintains "
                  "this, and writing it would claim a layout that does not exist.",
         "offsets": {"ME1": 0x1C1},

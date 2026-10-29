@@ -127,8 +127,11 @@ def t_no_value():
 
 @case("values outside the kind's range are refused")
 def t_range():
+    # NOTE: 2 used to be in this list as "a byte, but not a split member". It IS a member -
+    # `eSST_2P_VERTICAL` - so it moved to the accepted set below. The case still discriminates
+    # because the out-of-range probes are now values no member has.
     cases = [
-        ("viewport.desired_splitscreen_type", 2),      # byte, but a split enum
+        ("viewport.desired_splitscreen_type", 6),       # eSST_MAX, not a usable layout
         ("viewport.desired_splitscreen_type", -1),
         ("gameinfo.max_players", 2 ** 40),
     ]
@@ -136,9 +139,9 @@ def t_range():
         msg = refuses(ue3_fields.resolve, field, "ME1", value=val, writing=True)
         if not msg:
             return "fail", "%s accepted out-of-range value %r" % (field, val)
-    # In range must be accepted.
-    ue3_fields.resolve("viewport.desired_splitscreen_type", "ME1", value=1, writing=True)
-    ue3_fields.resolve("viewport.desired_splitscreen_type", "ME1", value=0, writing=True)
+    # In range must be accepted - including every decoded split member.
+    for good in (0, 1, 2, 3, 4, 5):
+        ue3_fields.resolve("viewport.desired_splitscreen_type", "ME1", value=good, writing=True)
     ue3_fields.resolve("gameinfo.max_players", "ME1", value=4, writing=True)
     return "ok", "3 out-of-range refused, in-range accepted"
 
@@ -278,7 +281,9 @@ def t_enum_members():
                        "cannot stop an undefined member" % spec["kind"]
     if not spec.get("values"):
         return "fail", "the enum declares no accepted values"
-    for bad in (2, 3, 200, 255):
+    # 2, 3, 4 and 5 are now DEFINED members (decoded from the enum's serial data), so the
+    # undefined-value probe has to move up: 6 is eSST_MAX and 7..255 are not members at all.
+    for bad in (6, 7, 200, 255):
         msg = refuses(ue3_fields.resolve, "viewport.desired_splitscreen_type", "ME1",
                       value=bad, writing=True)
         if not msg:
@@ -297,6 +302,61 @@ def t_int_not_enum():
     ue3_fields.resolve("gameinfo.max_players", "ME1", value=2, writing=True)
     ue3_fields.resolve("gameinfo.max_players", "ME1", value=16, writing=True)
     return "ok", "int fields accept arbitrary in-range values"
+
+
+@case("the split-screen enum values match the decoded engine enum")
+def t_splitscreen_enum_matches_engine():
+    """`ue3_fields.py` used to say the `ESplitScreenType` member list was "not recoverable
+    offline". It is - a `UEnum`'s members are in its serial data - and the decoded list is
+    identical on ME1, ME2 and ME3:
+
+        0 eSST_NONE  1 eSST_2P_HORIZONTAL  2 eSST_2P_VERTICAL  3 eSST_3P_FAVOR_TOP
+        4 eSST_3P_FAVOR_BOTTOM  5 eSST_4P  6 eSST_MAX
+
+    This case reads that from the package and compares it to the allow-list, so the two cannot
+    drift. It also pins a detail that matters: **1 is HORIZONTAL**, and the documented working
+    step `DesiredSplitscreenType = 1` is therefore a horizontal split, not the vertical one an
+    earlier comment claimed.
+
+    Skips when the install is absent; the allow-list itself is still checked in that case by
+    `test_fields.py`.
+    """
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location(
+        "mele_tables", os.path.join(os.path.dirname(HERE), "melepkg", "mele_tables.py"))
+    if not os.path.isfile(spec.origin if hasattr(spec, "origin") else ""):
+        return "skip", "mele_tables.py not reachable from here"
+    mt = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mt)
+    pkg = mt.load_pkg()
+    roots = list(pkg.game_dirs())
+    if not roots:
+        return "skip", "no install"
+    want = ["eSST_NONE", "eSST_2P_HORIZONTAL", "eSST_2P_VERTICAL", "eSST_3P_FAVOR_TOP",
+            "eSST_3P_FAVOR_BOTTOM", "eSST_4P", "eSST_MAX"]
+    got = None
+    for game in ("ME1", "ME2", "ME3"):
+        p = os.path.join(roots[0], "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+        if not os.path.isfile(p):
+            continue
+        t = mt.build(p)
+        hit = [e for e in t["exports"] if e["object_name"] == "ESplitScreenType"]
+        if not hit:
+            return "fail", "%s: no ESplitScreenType export" % game
+        members = mt.enum_members(t, t["buf"], hit[0])
+        if members != want:
+            return "fail", "%s: enum is %s" % (game, members)
+        got = members
+    if got is None:
+        return "skip", "no Engine.pcc found"
+    field = ue3_fields.FIELDS["viewport.desired_splitscreen_type"]["values"]
+    # eSST_MAX (6) is deliberately not writable: it is a bound, not a layout.
+    expected = {i: name for i, name in enumerate(
+        ["single player", "two-pane horizontal split", "two-pane vertical split",
+         "three-pane, top favoured", "three-pane, bottom favoured", "four-pane split"])}
+    if field != expected:
+        return "fail", "allow-list is %r, expected %r" % (field, expected)
+    return "ok", "7 members decoded and matched on all three builds; 1 = horizontal"
 
 
 def main():
