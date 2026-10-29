@@ -136,6 +136,38 @@ So the class the client's controller must be is a `SFXPlayerController` subclass
 `Core.PlayerController` through `BioPlayerController` on every build that has one; and the pawn a
 second player would drive is an `SFXPawn_Player` subclass reaching `Core.Pawn`. Neither is a guess.
 
+## Signatures, without a game
+
+The export table gives every function's parameters as child exports, and the `UProperty.Next` chain
+at serial `+16` recovers **declaration order** (exports are alphabetical, so the naive read is only
+right by luck):
+
+    python -I tools/melepkg/mele_tables.py signature <Engine.pcc> CreatePlayer
+
+    GameViewportClient::CreatePlayer(
+        ControllerId: Int, OutError: Str, bSpawnActor: Bool,
+        NewPlayer: Object, InsertIndex: Int) -> Object      [parms 0x2c]
+
+Those offsets reproduce the **live-measured** layout the engine accepted, field for field —
+`ControllerId@0x00, OutError@0x04, bSpawnActor@0x14, ReturnValue@0x18, NewPlayer@0x20,
+InsertIndex@0x28`, total `0x2c`. Identical on ME1, ME2 and ME3.
+
+`AddLocalPlayer` is `(NewPlayer: Object, InsertIndex: Int) -> Int`, parms `0x10`.
+
+### `RemovePlayer` refuses on a role check — in all three builds
+
+Recovered from the function's bytecode string constants, no game running:
+
+    "Not removing player ... because player does not have appropriate role ("
+
+That matters here: the plan's undo path is `RemovePlayer`, and if the second player's role does not
+satisfy the check the call will return without removing anything. **The failure will look like
+"the removal did nothing", not like an error.** Any test that dispatches `RemovePlayer` must verify
+`GamePlayers` actually shrank.
+
+`AddLocalPlayer` and `LayoutPlayers` contain no strings (87 and 713 bytes of bytecode), so their
+behaviour still needs a live probe.
+
 ## Honest status
 
 | Claim | Evidence |

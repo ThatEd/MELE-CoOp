@@ -194,14 +194,14 @@ Two things worth recording, because both are how this looked wrong for a while:
 
 | Unknown | Why it matters |
 |---|---|
-| Whether function **bytecode** survives in these packages | decides whether script *logic* can be read, not just names |
-| Enum member values (e.g. `EWhoTriggers`) | the enum's *members* are not in the export table; they are in the class's default properties |
+| Whether function **bytecode** survives in these packages | **Solved**: it survives. Extent is `serial[H : H + u32(serial+28)]`, H = 47 on ME1/ME2 and 38 on ME3, closing on every function in all three builds. The *opcode table* is still unproven - see `tools/melepkg/ue3_bytecode.py`, which deliberately ships no disassembler |
+| Enum member values (e.g. `EWhoTriggers`) | enum **members** live in the class's default properties, not the export table; the class's serial data is the next target |
 | The `depends_offset` section | unexamined; the export walk lands exactly on it, so what follows is a separate structure |
 
 Resolved since this page was first written: the field offsets (they differ per game), the chunk
-index (4-tuples, 95/95 verified), the name table (parseable, and UTF-16LE in ME3), and **the import
-and export tables** (see below). The earlier entry in this table said "class -> function ->
-property attribution is unavailable"; that was wrong, and the reason it was wrong is worth keeping.
+index (4-tuples, 95/95 verified), the name table (parseable, wide in ME3 and mixed in at least one
+ME2 map), **the import and export tables** (see below), **function signatures in declaration
+order**, and **that bytecode is present**.
 
 ## The import and export tables (solved 2026-10-29)
 
@@ -241,4 +241,35 @@ the full sweep is the population.
     python -I tools/melepkg/mele_tables.py summary <pkg>
     python -I tools/melepkg/mele_tables.py find    <pkg> <name>
     python -I tools/melepkg/mele_tables.py classes <pkg>
+    python -I tools/melepkg/mele_tables.py chain   <pkg> <class>
+    python -I tools/melepkg/mele_tables.py signature <pkg> <function>
     python -I tools/melepkg/mele_tables.py objects <pkg> [name]
+    python -I tools/melepkg/ue3_bytecode.py survey <pkg>
+    python -I tools/melepkg/ue3_bytecode.py strings <pkg> <function>
+
+## Function signatures, offline
+
+A function's parameters are its child exports, but exports are alphabetically ordered, so the
+export list is NOT declaration order. The real order is the `UProperty.Next` chain at serial `+16`:
+
+    python -I tools/melepkg/mele_tables.py signature <Engine.pcc> CreatePlayer
+
+    CreatePlayer(ControllerId: Int, OutError: Str, bSpawnActor: Bool,
+                 NewPlayer: Object, InsertIndex: Int) -> Object      [parms 0x2c]
+        +0x00 ControllerId   +0x04 OutError     +0x14 bSpawnActor
+        +0x18 ReturnValue    +0x20 NewPlayer    +0x28 InsertIndex
+
+This reproduces the layout measured from live memory in a running game, field for field - the
+strongest cross-check in this project, because the engine accepted that layout. Two rules make the
+difference: a 16-byte `FString` is 4-aligned in this ABI, and the struct total is 4-aligned, not 8.
+
+## Bytecode
+
+Present. Extent is `serial[H : H + u32(serial+28)]` with `H` = 47 on ME1/ME2 and 38 on ME3; that
+identity closes on every `Core.Function` in all three builds (5416/5416, 5350/5350, 5279/5279).
+
+The **opcode table is not solved**. A walk that "closes" is meaningless here: a partition into
+instructions of any length 1..24 succeeds on 5279 of 5279 functions, so the closure test eliminates
+almost no hypotheses. `ue3_bytecode.py` therefore extracts bytecode and string constants and stops.
+String constants alone already answer real questions - `RemovePlayer` refuses on a role check
+("player does not have appropriate role") in all three builds.

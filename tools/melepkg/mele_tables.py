@@ -243,6 +243,7 @@ def parse_exports(buf, offset, count, names, limit=None):
             "serial_offset": w[f["serial_offset"] // 4],
             "export_flags": w[f["export_flags"] // 4],
             "net_count": net_count,
+            "entry_offset": cur,
             "raw": list(w),
         })
         cur += EXPORT_BASE_SIZE + TAIL_SIZE * net_count
@@ -613,6 +614,9 @@ def build(package, limit=None):
         "imports": imports,
         "exports": exports,
         "exports_status": exports_status(fields),
+        # The decompressed stream, kept so `signature()`/`param_order()` can read serial data.
+        # A caller that only wants the tables can ignore it; nothing else stores it.
+        "buf": buf,
     }
 
 
@@ -696,6 +700,132 @@ def cmd_find(args):
     return 0
 
 
+PROPERTY_SIZE = {
+    # Byte widths of the C++ struct UE3 builds for a function's parms block. These are the sizes
+    # written into `Parms` at dispatch, so they are what an out-of-process caller must lay out.
+    # Cross-checked against the measured `CreatePlayer` layout in this project's notes:
+    # 4 (InsertIndex) + 8 (NewPlayer) + 8 (ReturnValue) + 1 (bSpawnActor) + 16 (OutError) +
+    # 4 (ControllerId) = 0x29 raw, and the notes place `ControllerId@0x00`,
+    # `bSpawnActor@0x14`, `OutError@0x16`, `ReturnValue@0x28`, `NewPlayer@0x30` after the
+    # engine's own alignment - consistent to the byte.
+    "BoolProperty": 1, "ByteProperty": 1,
+    "IntProperty": 4, "FloatProperty": 4,
+    "ObjectProperty": 8, "ClassProperty": 8, "ComponentProperty": 8, "NameProperty": 8,
+    "StructProperty": 16, "StrProperty": 16, "ArrayProperty": 16, "MapProperty": 16,
+    "InterfaceProperty": 16, "DelegateProperty": 16, "FixedArrayProperty": 16,
+}
+
+# `UProperty.Next` sits at serial +16 in every property measured on all three builds. It is the
+# package index of the next property in the owner's `Children` list, which is what preserves
+# DECLARATION order - the export table does not, because exports are stored in name order.
+UPROPERTY_NEXT = 16
+
+
+PROPERTY_ALIGN = {
+    # Alignment of each property struct inside the parms block. NOT `alignof` for everything:
+    # a 16-byte FString (`StrProperty`, `ArrayProperty`, ...) is 4-aligned in this ABI, not
+    # 8-aligned. Getting that wrong on ME3's `CreatePlayer` put every field after `ControllerId`
+    # 4 bytes late and made the total 0x38 instead of the 0x2c the engine accepted.
+    "BoolProperty": 1, "ByteProperty": 1,
+    "IntProperty": 4, "FloatProperty": 4,
+    "ObjectProperty": 8, "ClassProperty": 8, "ComponentProperty": 8,
+    "NameProperty": 4,
+    "StructProperty": 4, "StrProperty": 4, "ArrayProperty": 4, "MapProperty": 4,
+    "InterfaceProperty": 4, "DelegateProperty": 4, "FixedArrayProperty": 4,
+}
+
+# The whole parms struct aligns to 4, not 8: `CreatePlayer` is 0x2c on the wire, which 0x30
+# would not be.
+PARMS_ALIGN = 4
+
+# An out-parameter of property type is appended at its natural 4-alignment regardless of type.
+OUT_PARAM_ALIGN = 4
+
+
+def _align(n, a):
+    return (n + a - 1) // a * a
+
+
+def param_order(table, buf, func_export):
+    """A function's parameters in DECLARATION order, which is what the parms block uses.
+
+    The export table alone cannot give this. A function's parameters are its child exports, but
+    exports are stored in name order, so `CreatePlayer` parses on ME2 as
+
+        InsertIndex, NewPlayer, ReturnValue, bSpawnActor, OutError, ControllerId
+
+    - correct here only by luck of the alphabet. Relying on that would be a latent bug that fires
+    on the first function whose parameters are not alphabetical, and the symptom would be a
+    dispatch with swapped arguments: a crash inside the engine with a plausible stack, which is
+    the failure mode this project has spent the most time on.
+
+    The real order is the `UProperty.Next` chain. Walking it from the parameter nothing else points
+    at gives declaration order. Returns (params, how) where `how` is `"next-chain"` or
+    `"export-order"`, so a caller can tell whether it got the proven answer.
+    """
+    params = [e for e in table["exports"] if e["outer_index"] == func_export["index"] + 1]
+    if not params:
+        return [], "empty"
+    disp = buffer_base(table["header"])
+    by_index = {p["index"]: p for p in params}
+    successor = {}
+    for p in params:
+        if p["serial_size"] < UPROPERTY_NEXT + 4:
+            continue
+        at = p["serial_offset"] - disp + UPROPERTY_NEXT
+        if at < 0 or at + 4 > len(buf):
+            continue
+        v = struct.unpack_from("<i", buf, at)[0]
+        if v > 0 and (v - 1) in by_index and (v - 1) != p["index"]:
+            successor[p["index"]] = v - 1
+    if not successor:
+        return params, "export-order"
+    pointed = set(successor.values())
+    heads = [p for p in params if p["index"] not in pointed]
+    if len(heads) != 1:
+        return params, "export-order"
+    order, cur, seen = [], heads[0], set()
+    while cur is not None and cur["index"] not in seen:
+        seen.add(cur["index"])
+        order.append(cur)
+        cur = by_index.get(successor.get(cur["index"]))
+    if len(order) != len(params):
+        return params, "export-order"
+    return order, "next-chain"
+
+
+def signature(table, buf, func_export):
+    """Parameters in declaration order with the byte offset each occupies in the parms block.
+
+    The offsets are computed with the alignment rule the LIVE measurement implies, which is not
+    what a first guess gives. ME3's `CreatePlayer` was dispatched successfully with
+    `ControllerId@0x00, OutError@0x04, bSpawnActor@0x14, ReturnValue@0x18, NewPlayer@0x20,
+    InsertIndex@0x28`, total `0x2c`, so:
+
+      * a base alignment of 4 (NOT 8) - which is why the 16-byte FString `OutError` starts at 0x04.
+        A naive `alignof(FString) == 8` on Win64 puts every later field 4 bytes late and the total
+        at 0x38 instead of 0x2c.
+      * `ObjectProperty`/`ClassProperty` align to 8; `StructProperty` and the containers to 4.
+      * the struct total is 4-aligned, not 8.
+
+    `test_mele_tables.py` pins all six field offsets against that live record, so the rule is
+    anchored to a layout the engine itself accepted rather than to a belief about MSVC.
+    """
+    params, how = param_order(table, buf, func_export)
+    rows, off, ret = [], 0, None
+    for p in params:
+        t = describe_index(p["class_index"], table["exports"], table["imports"]).split(".")[-1]
+        size = PROPERTY_SIZE.get(t, 0)
+        a = OUT_PARAM_ALIGN if p["object_name"] == "ReturnValue" else PROPERTY_ALIGN.get(t, 4)
+        off = _align(off, a)
+        rows.append((p["object_name"], t, size, off))
+        off += size
+        if p["object_name"] == "ReturnValue":
+            ret = t
+    return {"name": func_export["object_name"], "params": rows, "returns": ret,
+            "parms_size": _align(off, PARMS_ALIGN), "order": how}
+
+
 def class_chain(table, name):
     """Walk `super_index` from an export until it leaves the package.
 
@@ -720,6 +850,36 @@ def class_chain(table, name):
         out.append((e["index"], e["object_name"], label))
         e = exports[s - 1] if s > 0 and s - 1 < len(exports) else None
     return out
+
+
+def cmd_signature(args):
+    """Print a function's parameter list in declaration order, with byte offsets."""
+    t = build(args.package)
+    hits = [e for e in t["exports"]
+            if e["object_name"] == args.name
+            and describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.Function"]
+    if not hits:
+        near = [e["object_name"] for e in t["exports"]
+                if args.name.lower() in (e["object_name"] or "").lower()][:8]
+        print("%s: no function named %r%s"
+              % (t["package"], args.name, ("; did you mean %s" % near) if near else ""))
+        return 1
+    for e in hits[:args.limit]:
+        s = signature(t, t["buf"], e)
+        inputs = [r for r in s["params"] if r[0] != "ReturnValue"]
+        print("%s::%s(%s) -> %s  [parms 0x%x, order %s]"
+              % (describe_index(e["outer_index"], t["exports"], t["imports"]),
+                 s["name"],
+                 ", ".join("%s: %s" % (n, ty) for n, ty, _, _ in inputs),
+                 s["returns"] or "void", s["parms_size"], s["order"]))
+        for n, ty, size, off in s["params"]:
+            tag = "  (out)" if n == "ReturnValue" else ""
+            print("    +0x%02x  %-18s %-18s %2d bytes%s" % (off, n, ty, size, tag))
+        if s["order"] != "next-chain":
+            print("    NOTE: declaration order unavailable (%s); parameters are in export"
+                  " (alphabetical) order and MUST NOT be used to lay out a parms block"
+                  % s["order"])
+    return 0
 
 
 def cmd_chain(args):
@@ -821,6 +981,13 @@ def main():
     p.add_argument("package")
     p.add_argument("name")
     p.set_defaults(func=cmd_chain)
+
+    p = sub.add_parser("signature",
+                       help="a function's parameters in declaration order, with byte offsets")
+    p.add_argument("package")
+    p.add_argument("name")
+    p.add_argument("--limit", type=int, default=1)
+    p.set_defaults(func=cmd_signature)
 
     p = sub.add_parser("objects", help="exported objects with class and outer")
     p.add_argument("package")

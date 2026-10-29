@@ -20,6 +20,8 @@ SUITES = [
     # The import and export tables: the coordinate space, the four closures, and the
     # ownership answers the co-op work depends on.
     "test_mele_tables.py",
+    # Bytecode extents, and the deliberate absence of a disassembler.
+    "test_ue3_bytecode.py",
 ]
 
 

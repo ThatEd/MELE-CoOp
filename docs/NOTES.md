@@ -181,6 +181,19 @@ list**; if a section disagrees, this wins.
     produce a table running past its own end, so the retry is gated on it landing exactly on
     `import_offset`. Every retry added here is conditional on closure.
 
+38. **A function's parameters are not in the export table's order.** Child exports are alphabetical;
+    the parms block is declaration order, recovered from the `UProperty.Next` chain at serial +16.
+    Anything building an argument list from export order is correct only by coincidence of
+    spelling, and the symptom is a crash inside the engine rather than a wrong value. Offsets
+    derived this way reproduce the live-measured `CreatePlayer` layout to the byte (total 0x2c),
+    which is the strongest validation in this project.
+
+39. **A closure test that a large search space can always satisfy proves nothing.** "The bytecode
+    walk ends exactly where it should" is satisfied by a partition into instructions of any length
+    1..24 for 5279 of 5279 functions. Before trusting a closure, ask how many hypotheses it
+    eliminates; if the answer is "almost none", it is rule 25 in a new shape. This is why
+    `ue3_bytecode.py` ships no opcode table, and a test asserts the absence.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -3610,3 +3623,100 @@ result closes.** `BIOA_LOS10_06a_DSG.pcc` has an entry no scan rule accepts; the
 produce a table that runs past its own end, so the retry is gated on `import_offset` matching the
 end exactly. Both retries added here are conditional on closure, which is what keeps them from
 becoming a way to explain away a wrong base.
+
+## 2026-10-29 (signatures + bytecode): what the tables give that a live read did not
+
+The export table's serial offsets are a doorway into the layer below the metadata, and two things
+came out of it that the project had listed as unknowns.
+
+### Function parameters, in declaration order, with byte offsets
+
+A function's parameters are exports whose `outer_index` points at the function, so the tables alone
+give every signature offline. But **not in declaration order**: exports are stored alphabetically,
+and `CreatePlayer` parses as `InsertIndex, NewPlayer, ReturnValue, bSpawnActor, OutError,
+ControllerId`. Laying out a parms block from that order would swap arguments and fault inside the
+engine with a plausible stack - the failure mode this project has spent the most time on.
+
+The real order is the `UProperty.Next` chain at serial `+16`. Result, for all three builds:
+
+    GameViewportClient::CreatePlayer(
+        ControllerId: Int, OutError: Str, bSpawnActor: Bool,
+        NewPlayer: Object, InsertIndex: Int) -> Object
+
+and the offsets computed from it reproduce the **live-measured** layout byte for byte:
+
+| field | offline | live (engine accepted) |
+|---|---|---|
+| ControllerId | 0x00 | 0x00 |
+| OutError | 0x04 | 0x04 |
+| bSpawnActor | 0x14 | 0x14 |
+| ReturnValue | 0x18 | 0x18 |
+| NewPlayer | 0x20 | 0x20 |
+| InsertIndex | 0x28 | 0x28 |
+| total | **0x2c** | **0x2c** |
+
+Two rules had to be right, and both were wrong on the first attempt:
+
+* a 16-byte `FString` is **4**-aligned in this ABI, not 8. Assuming 8 put every field after
+  `ControllerId` four bytes late and made the total 0x38.
+* the struct total is **4**-aligned, not 8.
+
+This is the strongest validation in the project: an offline parse reproducing a layout a running
+engine accepted. It is `t_createplayer_layout` in `test_mele_tables.py`.
+
+`AddLocalPlayer`'s signature is now known the same way: `(NewPlayer: Object, InsertIndex: Int) ->
+Int`, parms `0x10`, `NewPlayer` at 0.
+
+### UnrealScript bytecode survives
+
+`CONTAINER-FORMAT.md` listed this as unknown. It is present, and the extent is proven:
+
+    serial[H : H + u32(serial+28)]        H = 47 on ME1/ME2, 38 on ME3
+
+`H + u32(+28) == serial_size` for **every** `Core.Function` export: ME1 5416/5416, ME2 5350/5350,
+ME3 5279/5279. Zero variance, so it is a fact about the layout rather than a correlation. The
+9-byte difference is the same per-build variation as the packfile header's.
+
+### The opcode table is NOT solved, and a disassembler was written and withdrawn
+
+The only honest closure test for UE3 bytecode is "walk with a candidate table and require the cursor
+to land exactly on the end". `tools/melepkg/ue3_bytecode.py` contains no opcode table because that
+test is worthless here: a dynamic-programming partition of each function into instructions of any
+length 1..24 succeeded on **5279 of 5279** functions. A partition exists for almost any byte string,
+so "the walk closed" is evidence of nothing - rule 25 in a new shape, and the sixth time this
+project has had a check that could not fail.
+
+Proving the table needs the `EExprToken` enum for this exact engine version, or an independent
+implementation to compare against. Neither exists here, so the module extracts bytecode and stops.
+`test_ue3_bytecode.py` asserts that no `walk()`/`OPCODES` is exposed, so adding one has to be a
+deliberate act with a test that can fail.
+
+### What string constants already answer without an opcode table
+
+Strings are NUL-terminated runs, so extracting them is independently checkable and needs no
+disassembly. From `GameViewportClient`'s functions:
+
+* `CreatePlayer`: "Creating new player with ControllerId", "Successfully created new player with
+  ControllerId", "Player creation failed with error:", "- inserted into GamePlayers array at index".
+  So the function's own success path reports insertion into `GamePlayers` - a useful invariant for
+  asserting a dispatch worked.
+* `RemovePlayer`, **all three builds**: "Not removing player ... because player does not have
+  appropriate role (". **`RemovePlayer` refuses on a role check.** That is load-bearing for ME2:
+  the plan's undo path may silently decline to remove the second player, and the failure would look
+  like "the removal did nothing" rather than an error.
+* `AddLocalPlayer` and `LayoutPlayers` contain no strings at all (87 and 713 bytes), so their
+  behaviour still needs the opcode table or a live probe.
+
+### Rule 38
+
+**A function's parameters are not in the export table's order.** Child exports are alphabetical;
+the parms block is declaration order, recovered from the `UProperty.Next` chain. Anything that
+builds an argument list from export order is correct only by coincidence of spelling, and the
+symptom is a crash inside the engine rather than a wrong value.
+
+### Rule 39
+
+**A closure test that a large search space can always satisfy proves nothing.** "The bytecode walk
+ends exactly where it should" is satisfied by a partition into instructions of any length 1..24 for
+5279 of 5279 functions. Before trusting a closure, ask how many hypotheses the check eliminates -
+if the answer is "almost none", it is the same class of test as rule 25's.

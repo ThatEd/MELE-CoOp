@@ -635,6 +635,95 @@ def t_serial_overshoot():
     return "ok", detail[:80]
 
 
+@case("CreatePlayer's parms layout reproduces the LIVE-measured one, byte for byte")
+def t_createplayer_layout():
+    """The strongest check in this file: an offline parse vs a live memory read.
+
+    `CreatePlayer` was dispatched successfully in a running game using the layout
+    `ControllerId@0x00, OutError@0x04, bSpawnActor@0x14, ReturnValue@0x18, NewPlayer@0x20,
+    InsertIndex@0x28`, total `0x2c`. That record came from reading the engine's own parms struct
+    and the engine accepted it. Reproducing it from the package alone means the offline model and
+    the runtime disagree about nothing.
+
+    Two rules had to be right for this to match, and both were wrong on the first attempt:
+      * declaration order is the `UProperty.Next` chain, not the export (alphabetical) order
+      * a 16-byte FString is 4-aligned here, and the struct total is 4-aligned, not 8
+    """
+    LIVE = {"ControllerId": 0x00, "OutError": 0x04, "bSpawnActor": 0x14,
+            "ReturnValue": 0x18, "NewPlayer": 0x20, "InsertIndex": 0x28}
+    LIVE_TOTAL = 0x2c
+    results, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game, "Engine")
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        hit = [e for e in t["exports"] if e["object_name"] == "CreatePlayer"]
+        if not hit:
+            return "fail", "%s: no CreatePlayer export in Engine.pcc" % game
+        s = mele_tables.signature(t, t["buf"], hit[0])
+        if s["order"] != "next-chain":
+            return "fail", "%s: fell back to %r; declaration order is required" % (
+                game, s["order"])
+        got = {n: off for n, _ty, _sz, off in s["params"]}
+        if got != LIVE:
+            return "fail", "%s: %s, expected %s" % (game, got, LIVE)
+        if s["parms_size"] != LIVE_TOTAL:
+            return "fail", "%s: parms 0x%x, expected 0x%x" % (
+                game, s["parms_size"], LIVE_TOTAL)
+        results[game] = s["parms_size"]
+    if not results:
+        return "skip", "no Engine.pcc found (%s)" % ", ".join(skipped)
+    return "ok", "6 offsets + 0x2c on %s" % ", ".join(sorted(results))
+
+
+@case("declaration order differs from export order, so the fallback is detectable")
+def t_param_order_is_not_export_order():
+    """`CreatePlayer`'s parameters happen to be alphabetical in NO useful sense - the export order
+    is InsertIndex, NewPlayer, ReturnValue, bSpawnActor, OutError, ControllerId, while the real
+    declaration order starts with ControllerId. If `param_order` ever silently falls back to
+    export order, the layout test above turns red; this case explains why."""
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    e = [x for x in t["exports"] if x["object_name"] == "CreatePlayer"][0]
+    chain, how = mele_tables.param_order(t, t["buf"], e)
+    export_order = [x for x in t["exports"] if x["outer_index"] == e["index"] + 1]
+    if how != "next-chain":
+        return "fail", "order came from %r" % how
+    a = [x["object_name"] for x in chain]
+    b = [x["object_name"] for x in export_order]
+    if a == b:
+        return "ok but surprising", ("chain order equals export order for CreatePlayer, so this "
+                                     "case no longer discriminates")
+    return "ok", "chain %s != export %s" % (a[:3], b[:3])
+
+
+@case("AddLocalPlayer's signature: (NewPlayer, InsertIndex) -> int")
+def t_addlocalplayer_signature():
+    """The function the ME2 plan wants to call. Its parms block is 0x10 and the out-parameter is
+    an `IntProperty`, so a caller must supply 16 bytes with `NewPlayer` at 0."""
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    e = [x for x in t["exports"] if x["object_name"] == "AddLocalPlayer"][0]
+    s = mele_tables.signature(t, t["buf"], e)
+    names = [n for n, _ty, _sz, _o in s["params"]]
+    if "NewPlayer" not in names or "InsertIndex" not in names:
+        return "fail", "params are %s" % names
+    if s["returns"] != "IntProperty":
+        return "fail", "returns %r" % (s["returns"],)
+    offs = {n: o for n, _t, _s, o in s["params"]}
+    if offs["NewPlayer"] != 0:
+        return "fail", "NewPlayer at 0x%x, expected 0" % offs["NewPlayer"]
+    if s["parms_size"] % 4:
+        return "fail", "parms size 0x%x is not 4-aligned" % s["parms_size"]
+    return "ok", "NewPlayer@0, parms 0x%x, returns int" % s["parms_size"]
+
+
 def main():
     failures = 0
     skips = 0
