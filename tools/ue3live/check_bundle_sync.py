@@ -109,16 +109,46 @@ def compare():
     return rows
 
 
+def fix_doc_links(bundle=BUNDLE, quiet=False):
+    """Rewrite hub-relative doc links to bundle-relative ones, in place.
+
+    The docs are maintained in the hub, where they sit under
+    `games/mass-effect-legendary-edition/` and reach tools as `../../tools/`. In the bundle they
+    sit under `docs/` and reach the same files as `../tools/`. Copying docs into the bundle
+    therefore reintroduces 14 broken links every time - which happened, twice, before this was
+    automated. Running it as part of the publish step is the fix; remembering is not.
+    """
+    import glob
+    import re
+    d = os.path.join(bundle, "docs")
+    changed = {}
+    for path in glob.glob(os.path.join(d, "*.md")):
+        src = open(path, encoding="utf-8").read()
+        out = re.sub(r"\]\((?:\.\./)+tools/", "](../tools/", src)
+        out = re.sub(r"\]\((?:\.\./)+games/mass-effect-legendary-edition/", "](", out)
+        if out != src:
+            open(path, "w", encoding="utf-8", newline="").write(out)
+            changed[os.path.basename(path)] = True
+    if not quiet:
+        print("rewrote doc links in %d file(s)%s"
+              % (len(changed), ": " + ", ".join(sorted(changed)) if changed else ""))
+    return changed
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fix", action="store_true", help="copy hub -> bundle")
     ap.add_argument("--reverse", action="store_true", help="copy bundle -> hub")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--fix-links", action="store_true",
+                    help="rewrite bundle doc links from hub-relative to bundle-relative")
     args = ap.parse_args()
     if args.fix and args.reverse:
         print("pick one of --fix / --reverse")
         return 2
+    if args.fix_links:
+        fix_doc_links()
 
     rows = compare()
     counts = {}

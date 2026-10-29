@@ -19,7 +19,7 @@ game calls.
 | `ue3.chain` | main thread | no |
 
 Register them as **custom** methods on the existing bridge
-([`tools/bridge`](../../tools/bridge/README.md)); custom methods already run on the main thread
+([`tools/bridge`](../tools/bridge/README.md)); custom methods already run on the main thread
 through the request queue, which is exactly the requirement.
 
 ---
@@ -91,7 +91,7 @@ The only method that mutates a named field. Two obligations on the adapter:
    trusting a call that silently did nothing.
 
 The runner only ever asks for offsets from the fixed allow-list in
-[`tools/ue3live/ue3_fields.py`](../../tools/ue3live/ue3_fields.py) — four writable fields, each
+[`tools/ue3live/ue3_fields.py`](../tools/ue3live/ue3_fields.py) — four writable fields, each
 with a measured per-game offset and a documented reason. **`ue3.write` must not be a general
 write primitive**: the safety comes from the caller being unable to name an address, so the
 adapter should refuse an offset it was not asked for by name, and the allow-list should stay

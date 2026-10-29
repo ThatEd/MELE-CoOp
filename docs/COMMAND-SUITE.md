@@ -10,11 +10,11 @@ ordered phases instead of 156 independent attempts.
 
 | Part | Where |
 |---|---|
-| Catalogue (156 command mechanisms, measured presence per game) | [`tools/ue3live/commands.json`](../../tools/ue3live/commands.json) |
-| Generator, verifier, live resolver, plan builder | [`tools/ue3live/ue3_command_suite.py`](../../tools/ue3live/ue3_command_suite.py) |
-| **Runner** — executes a plan through the in-game bridge | [`tools/ue3live/ue3_run_plan.py`](../../tools/ue3live/ue3_run_plan.py) |
+| Catalogue (156 command mechanisms, measured presence per game) | [`tools/ue3live/commands.json`](../tools/ue3live/commands.json) |
+| Generator, verifier, live resolver, plan builder | [`tools/ue3live/ue3_command_suite.py`](../tools/ue3live/ue3_command_suite.py) |
+| **Runner** — executes a plan through the in-game bridge | [`tools/ue3live/ue3_run_plan.py`](../tools/ue3live/ue3_run_plan.py) |
 | **Game-side adapter contract** — the five methods a mod implements | [COMMAND-SUITE-ADAPTER.md](COMMAND-SUITE-ADAPTER.md) |
-| Tests (30 + 24 cases, no game required) | [`test_command_suite.py`](../../tools/ue3live/test_command_suite.py), [`test_run_plan.py`](../../tools/ue3live/test_run_plan.py) |
+| Tests (30 + 24 cases, no game required) | [`test_command_suite.py`](../tools/ue3live/test_command_suite.py), [`test_run_plan.py`](../tools/ue3live/test_run_plan.py) |
 
 ```
 python -I tools/ue3live/ue3_command_suite.py list
@@ -292,14 +292,14 @@ entire problem. LE1 and LE3 have it, LE2 does not.
 - **An offsets file for two of the three games.** `probe` reads a per-game offsets JSON, and
   only LE1 has a complete, verifier-passed one. LE3 and LE2 have their `objects_rva`,
   `name_pools_rva` and `engine_global_rva` recorded in the
-  [ue3live README](../../tools/ue3live/README.md), but no `offsets_LE3.json` exists — so
+  [ue3live README](../tools/ue3live/README.md), but no `offsets_LE3.json` exists — so
   probing **LE3, the first target game, needs `ue3_discover_external.py` and
   `ue3_verify_offsets.py` run against a live LE3 first.** Writing that file by hand from the
   README's RVAs is the worst option available: it would look authoritative, carry a
   `"verified": true` nobody earned, and fail mid-dispatch. Discover, verify, then write.
 - **Two clients.** Every phase describes a comparison between two clients, and the harness
-  that runs both is the [bridge](../../tools/bridge/README.md) plus
-  [gamepool](../../tools/gamepool/). The suite is the content; the plumbing to drive two
+  that runs both is the [bridge](../tools/bridge/README.md) plus
+  [gamepool](../tools/gamepool/). The suite is the content; the plumbing to drive two
   copies at once is the next piece.
 
 ## Status
