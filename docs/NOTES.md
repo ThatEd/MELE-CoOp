@@ -196,6 +196,12 @@ list**; if a section disagrees, this wins.
     started inside the trailer while the check still passed. A closure proves self-consistency, not
     truth: pair it with an independent question - here, "does the region contain the instructions?".
 
+40. **Measure the chance-match rate before believing a scan.** A 4-byte scan for package indices in
+    a 32,135-export package hits **10.9%** of the time, so "I found 13 references" is ~1.4
+    references plus noise. Report the baseline alongside the hits and require a structure noise
+    does not produce - repetition at a stride, or agreement with an independent source - before
+    calling it a finding. Rule 33 applied inside one function rather than across a table.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -3790,3 +3796,57 @@ be looked up per build rather than carried across.
 Also relevant, and found the same way: ME1's `EPhysics` has two members ME2/ME3 do not
 (`PHYS_Mounting`, `PHYS_Hopping`), which shifts `PHYS_MAX` from 18 to 16 - the same hazard in a
 different enum.
+
+## 2026-10-29 (bytecode references): what `AddLocalPlayer` does, and a 10.9% noise floor
+
+`AddLocalPlayer` has no string constants (87 bytes of bytecode), so the summarise-by-strings
+technique says nothing about it. Its **property references** do.
+
+A UE3 operand is a 1-byte token followed by a 4-byte package index. Scanning a function's bytecode
+for dwords that land on a valid export index therefore finds real references:
+
+    AddLocalPlayer, ME3 Engine.pcc
+      +0x02 InsertIndex   +0x0c NewPlayer   +0x15 InsertIndex
+      +0x22 GamePlayers   +0x28 GamePlayers +0x2f InsertIndex
+      +0x3b GamePlayers   +0x46 NewPlayer   +0x4c InsertIndex
+      +0x52 ReturnValue
+
+Read: it takes `InsertIndex` and `NewPlayer`, touches `GamePlayers`, and writes `ReturnValue` - so
+it inserts `NewPlayer` into `GamePlayers` at `InsertIndex`. That is corroborated by `CreatePlayer`'s
+string constants ("Successfully created new player ... - inserted into GamePlayers array at index"),
+which come from a different function, so the agreement is not circular.
+
+### The measurement that stops this being a false pass
+
+**10.9% of random 4-byte windows in `Engine.pcc` match an export index** (10.5% at a random sample
+of 20,000 windows; 32,135 exports in 1..32135 makes a high chance baseline). So of 13 hits, ~1.4 are
+expected by chance and the hit count alone is nearly worthless.
+
+What makes the result credible is STRUCTURE, not count:
+
+* each of the three parameters appears three times at distinct offsets - read for the comparison,
+  read for the insert, read for the return
+* `GamePlayers` appears four times
+
+A chance match does not repeat on the same operand at a predictable stride. `mele_tables.py refs`
+prints the baseline on every run and `test_mele_tables.py` asserts the 4x margin over chance, so
+the tool cannot quietly present noise as a decode.
+
+### What this does NOT give
+
+* **Local variables are not matched.** They index the function's own `Variables` array, a different
+  index space, so they look like ordinary small integers. Half of any function's operands are
+  therefore invisible to this method.
+* **Control flow is not recovered.** `0x07` (`EX_JumpIfNot`) and `0x06` (`EX_Jump`) carry relative
+  offsets; knowing they exist does not tell you the operand sizes of what they skip over without
+  the opcode table.
+* `LayoutPlayers` produced no such structure (its 713 bytes reference nothing resolvable that
+  repeats), so its behaviour is still unknown.
+
+### Rule 40
+
+**Measure the chance-match rate before believing a scan.** A 4-byte scan for package indices in a
+32,135-export package hits 10.9% of the time, so "I found 13 references" is ~1.4 references plus
+noise. Report the baseline with the hits, and require a structure that noise does not produce -
+repetition at a stride, or agreement with an independent source - before calling it a finding.
+This is rule 33 applied inside a single function rather than across a table.

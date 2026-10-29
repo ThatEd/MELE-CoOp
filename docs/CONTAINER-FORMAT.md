@@ -245,9 +245,27 @@ the full sweep is the population.
     python -I tools/melepkg/mele_tables.py signature <pkg> <function>
     python -I tools/melepkg/mele_tables.py enum    <pkg> <EWhoTriggers>
     python -I tools/melepkg/mele_tables.py enums   <pkg>
+    python -I tools/melepkg/mele_tables.py refs    <pkg> <function>
     python -I tools/melepkg/mele_tables.py objects <pkg> [name]
     python -I tools/melepkg/ue3_bytecode.py survey <pkg>
     python -I tools/melepkg/ue3_bytecode.py strings <pkg> <function>
+
+## Bytecode property references (heuristic)
+
+A UE3 operand is a 1-byte token then a 4-byte package index, so scanning a function's bytecode for
+dwords that land on a valid export index finds real property references:
+
+    python -I tools/melepkg/mele_tables.py refs <Engine.pcc> AddLocalPlayer
+    +0x02 InsertIndex  +0x0c NewPlayer  +0x22 GamePlayers  +0x52 ReturnValue  ...
+
+That reads as "insert `NewPlayer` into `GamePlayers` at `InsertIndex`", corroborated by
+`CreatePlayer`'s string constants naming the same array.
+
+**It is a heuristic and the tool says so on every run**: 10.9% of random 4-byte windows in this
+package match an export index, so 13 hits is ~1.4 hits plus noise. What makes it credible is
+structure - each parameter appears three times at a stride, and `GamePlayers` four. Local variables
+are NOT matched (they index the function's own `Variables` array), and control flow is not
+recovered.
 
 ## Enum members
 

@@ -788,6 +788,64 @@ def t_enums_all_close():
     return "ok", "%d/%d enums closed" % (closed, len(enums))
 
 
+@case("AddLocalPlayer's bytecode references GamePlayers, above chance by structure")
+def t_addlocalplayer_refs():
+    """A HEURISTIC result, corroborated rather than trusted.
+
+    Scanning a function's bytecode for dwords that land on export indices finds real references -
+    and also noise: 10.9% of random 4-byte windows in ME3's Engine.pcc match an export index, so a
+    ~13-hit list has ~1.4 expected by chance. Count alone is therefore weak.
+
+    What makes this credible is STRUCTURE, not count: the three parameters of `AddLocalPlayer`
+    appear three times each at distinct offsets (read for the comparison, read for the insert, read
+    for the return), and `GamePlayers` appears four times - the array `CreatePlayer`'s string
+    constants independently name ("inserted into GamePlayers array at index"). Two unrelated sources
+    agreeing is evidence; a hit list is not.
+    """
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    hit = [e for e in t["exports"] if e["object_name"] == "AddLocalPlayer"]
+    if not hit:
+        return "fail", "no AddLocalPlayer"
+    refs, baseline = mele_tables.bytecode_refs(t, t["buf"], hit[0])
+    names = [r[2] for r in refs]
+    if "GamePlayers" not in names:
+        return "fail", "GamePlayers is not referenced; got %s" % sorted(set(names))
+    # Every parameter must appear more than once: a single occurrence would be consistent with a
+    # chance match, three is not.
+    for param in ("InsertIndex", "NewPlayer"):
+        n = names.count(param)
+        if n < 2:
+            return "fail", "%s appears %d time(s); expected a read and a write" % (param, n)
+    if baseline >= 0.5:
+        return "fail", "baseline %.2f is implausibly high; the sampling is broken" % baseline
+    expected = len(refs) * baseline
+    if len(refs) < 4 * expected:
+        return "ok but surprising", ("%d hits vs %.1f expected by chance; the margin is thin"
+                                     % (len(refs), expected))
+    return "ok", "%d hits vs %.1f by chance; GamePlayers x%d, params repeated" % (
+        len(refs), expected, names.count("GamePlayers"))
+
+
+@case("the refs heuristic reports its noise rate rather than implying certainty")
+def t_refs_reports_baseline():
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    hit = [e for e in t["exports"] if e["object_name"] == "CreatePlayer"]
+    if not hit:
+        return "fail", "no CreatePlayer"
+    refs, baseline = mele_tables.bytecode_refs(t, t["buf"], hit[0])
+    if not (0.0 < baseline < 1.0):
+        return "fail", "baseline is %r, outside (0,1)" % baseline
+    if not refs:
+        return "fail", "no references found in CreatePlayer"
+    return "ok", "%d hits, %.1f%% chance baseline reported" % (len(refs), baseline * 100)
+
+
 def main():
     failures = 0
     skips = 0

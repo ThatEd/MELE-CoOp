@@ -168,6 +168,30 @@ satisfy the check the call will return without removing anything. **The failure 
 `AddLocalPlayer` and `LayoutPlayers` contain no strings (87 and 713 bytes of bytecode), so their
 behaviour still needs a live probe.
 
+### What `AddLocalPlayer` actually does, to the extent it can be read
+
+`AddLocalPlayer`'s bytecode contains no strings, so the summarise-by-strings method says nothing
+about it. Its **property references** do:
+
+    python -I tools/melepkg/mele_tables.py refs <Engine.pcc> AddLocalPlayer
+
+    +0x02 InsertIndex      +0x0c NewPlayer        +0x15 InsertIndex
+    +0x22 GamePlayers      +0x28 GamePlayers      +0x2f InsertIndex
+    +0x3b GamePlayers      +0x46 NewPlayer        +0x4c InsertIndex
+    +0x52 ReturnValue
+
+So it reads its `InsertIndex` parameter, its `NewPlayer` parameter, and the engine's
+`GamePlayers` array, and writes `ReturnValue` — i.e. **it inserts `NewPlayer` into `GamePlayers`
+at `InsertIndex` and returns an int.** That is consistent with `CreatePlayer`'s string constants
+("inserted into GamePlayers array at index"), which come from a different function, so the two
+agreeing is not circular.
+
+**Treat this as a lead, not a decode.** The scan is a heuristic: 10.9% of random 4-byte windows in
+this package match an export index, so ~1.4 of the 13 hits are expected by chance. What makes it
+credible is structure - each parameter appears three times at distinct offsets (read, read, read
+for the return) and `GamePlayers` four times. `refs` prints the noise rate every time, and the test
+asserts the margin rather than the bare hit count.
+
 ## Honest status
 
 | Claim | Evidence |
@@ -179,4 +203,6 @@ behaviour still needs a live probe.
 | `SFXPlayerController : BioPlayerController : [BioBasePlayerController on ME2 only] : Core.PlayerController` | **proven** — export table chain, both builds; the builds differ in the middle |
 | `AddLocalPlayer` would work in ME2 | **unknown** — present, never dispatched |
 | `AddLocalPlayer` is `GameViewportClient.AddLocalPlayer` on all three builds | **proven** — `Engine.pcc` export table, class `Core.Function`, outer `GameViewportClient` |
+| `AddLocalPlayer` inserts `NewPlayer` into `GamePlayers` at `InsertIndex` | **derived** — bytecode property references, corroborated by `CreatePlayer`'s string constants, not a full decode |
+| `RemovePlayer` refuses on a role check, all three builds | **proven** — bytecode string constants |
 | Two panes need a second `LocalPlayer` | **derived**, not proven |

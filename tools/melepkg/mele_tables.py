@@ -923,6 +923,82 @@ def cmd_signature(args):
     return 0
 
 
+def bytecode_refs(table, buf, func_export):
+    """Export indices referenced from inside a function's bytecode. A HEURISTIC, not a decode.
+
+    UE3 operand references are a 1-byte token followed by a 4-byte package index, so scanning for
+    dwords that land on a valid export index finds them - but it also finds noise, and the noise
+    rate is high enough that a bare hit list is not evidence.
+
+    Measured on ME3's `Engine.pcc`, which has 32,135 exports: **10.5% of random 4-byte windows**
+    (2106 of 20000) contain a value in `1..export_count`. So in a function with ~14 candidate
+    operands, about 1.5 false positives are expected. That is why this returns the rate alongside
+    the hits, and why the caller is expected to check a hit against something independent - e.g.
+    `AddLocalPlayer` references `GamePlayers`, and `CreatePlayer`'s own string constants say
+    "inserted into GamePlayers array at index", which is a correlation across two unrelated sources
+    rather than a scan result on its own.
+
+    What this CANNOT do is distinguish a property reference from a local-variable reference: locals
+    are indices into the function's own `Variables` array, a different index space, so they appear
+    as ordinary small integers and are not matched here. Reading a full instruction stream needs
+    the opcode table, which is unproven - see `ue3_bytecode.py`.
+
+    Returns (hits, baseline_rate) where each hit is (offset, index, name, type, outer).
+    """
+    disp = buffer_base(table["header"])
+    exports, imports = table["exports"], table["imports"]
+    by_index = {e["index"]: e for e in exports}
+    at = func_export["serial_offset"] - disp
+    if at + 32 > len(buf):
+        return [], 0.0
+    length = struct.unpack_from("<i", buf, at + 28)[0]
+    if length < 0 or at + 32 + length > len(buf):
+        return [], 0.0
+    body = buf[at + 32:at + 32 + length]
+    hits = []
+    for i in range(0, len(body) - 4):
+        v = struct.unpack_from("<i", body, i)[0]
+        if v > 0 and (v - 1) in by_index:
+            t = by_index[v - 1]
+            hits.append((i, v, t["object_name"],
+                         describe_index(t["class_index"], exports, imports), t["outer_index"]))
+    # Baseline: the chance a random 4-byte window in the buffer matches an export index.
+    valid = len(exports)
+    sample = 0
+    matches = 0
+    step = max(4, len(buf) // 4000)
+    for i in range(0, len(buf) - 4, step):
+        sample += 1
+        if 0 < struct.unpack_from("<i", buf, i)[0] <= valid:
+            matches += 1
+    return hits, (matches / sample if sample else 0.0)
+
+
+def cmd_refs(args):
+    """Property references found inside a function's bytecode, with the noise rate stated."""
+    t = build(args.package)
+    hits = [e for e in t["exports"]
+            if e["object_name"] == args.name
+            and describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.Function"]
+    if not hits:
+        print("%s: no function named %r" % (t["package"], args.name))
+        return 1
+    refs, baseline = bytecode_refs(t, t["buf"], hits[0])
+    print("%s::%s: %d candidate reference(s)" % (t["package"], args.name, len(refs)))
+    for off, idx, nm, ty, outer in refs[:args.limit]:
+        print("  +0x%02x  #%-6d %-26s %-24s outer=%s"
+              % (off, idx, nm, ty,
+                 describe_index(outer, t["exports"], t["imports"])))
+    print()
+    print("  HEURISTIC: a random 4-byte window matches an export index %.1f%% of the time in this"
+          % (baseline * 100))
+    print("  package, so ~%.1f of these would be expected by chance alone. Treat a hit as a lead,"
+          % (len(refs) * baseline))
+    print("  not a finding - corroborate it against something independent.")
+    print("  Local variables are NOT matched: they index the function's own Variables array.")
+    return 0
+
+
 def cmd_enum(args):
     """Print a UEnum's members, in declaration order."""
     t = build(args.package)
@@ -1073,6 +1149,13 @@ def main():
     p.add_argument("package")
     p.add_argument("name")
     p.set_defaults(func=cmd_enum)
+
+    p = sub.add_parser("refs",
+                       help="property references in a function's bytecode (heuristic)")
+    p.add_argument("package")
+    p.add_argument("name")
+    p.add_argument("--limit", type=int, default=40)
+    p.set_defaults(func=cmd_refs)
 
     p = sub.add_parser("enums", help="every enum a package defines")
     p.add_argument("package")
