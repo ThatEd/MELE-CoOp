@@ -724,6 +724,70 @@ def t_addlocalplayer_signature():
     return "ok", "NewPlayer@0, parms 0x%x, returns int" % s["parms_size"]
 
 
+@case("EWhoTriggers members are decoded, and ME3's numbering differs from ME1/ME2")
+def t_who_triggers():
+    """The enum TRIGGER-DELAY.md needed and could not get.
+
+    ME1/ME2: WT_PlayerOnly, WT_PlayerAndSquad, WT_Everyone, WT_TagList, WT_MAX
+    ME3:     WT_PlayerOnly, WT_PlayerOnlyLocal, WT_PlayerAndSquad, WT_Everyone, WT_TagList, WT_MAX
+
+    ME3 inserts `WT_PlayerOnlyLocal`, which shifts every later value by one. So a mod that writes
+    ME2's `WT_Everyone` (2) into ME3 gets `WT_PlayerAndSquad`, and ME2's `WT_PlayerAndSquad` (1)
+    becomes `WT_PlayerOnlyLocal`. This is rule 31 with a byte-level consequence: the same number
+    means different things per build.
+    """
+    want = {
+        "ME1": ["WT_PlayerOnly", "WT_PlayerAndSquad", "WT_Everyone", "WT_TagList", "WT_MAX"],
+        "ME2": ["WT_PlayerOnly", "WT_PlayerAndSquad", "WT_Everyone", "WT_TagList", "WT_MAX"],
+        "ME3": ["WT_PlayerOnly", "WT_PlayerOnlyLocal", "WT_PlayerAndSquad", "WT_Everyone",
+                "WT_TagList", "WT_MAX"],
+    }
+    got, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game, "Engine")
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        hit = [e for e in t["exports"] if e["object_name"] == "EWhoTriggers"]
+        if not hit:
+            return "fail", "%s: no EWhoTriggers export in Engine.pcc" % game
+        members = mele_tables.enum_members(t, t["buf"], hit[0])
+        if not members:
+            return "fail", "%s: EWhoTriggers did not close" % game
+        got[game] = members
+    if not got:
+        return "skip", "no Engine.pcc found (%s)" % ", ".join(skipped)
+    bad = {g: v for g, v in got.items() if v != want[g]}
+    if bad:
+        return "fail", "%s" % bad
+    if got.get("ME1") == got.get("ME3"):
+        return "fail", "ME1 and ME3 members are identical; the fixture stopped discriminating"
+    return "ok", ("ME1/ME2 5 members, ME3 6 (inserts WT_PlayerOnlyLocal at 1); "
+                  "WT_Everyone is 2 on ME1/ME2 and 3 on ME3")
+
+
+@case("every enum in Engine.pcc closes as (count@+20, 8-byte names)")
+def t_enums_all_close():
+    """The structural check behind `enum_members`: if the stride or the count offset were wrong,
+    most enums would fail to close. Measured 255/255 on ME3 before this was written, so this is
+    pinning a result rather than seeking one - which is why the threshold is 100%, not 90%."""
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    enums = [e for e in t["exports"]
+             if mele_tables.describe_index(e["class_index"], t["exports"], t["imports"])
+             == "Core.Enum"]
+    if len(enums) < 100:
+        return "fail", "only %d enums found" % len(enums)
+    closed = sum(1 for e in enums if mele_tables.enum_members(t, t["buf"], e))
+    if closed != len(enums):
+        return "fail", "%d/%d enums closed; the stride or count offset is wrong" % (
+            closed, len(enums))
+    return "ok", "%d/%d enums closed" % (closed, len(enums))
+
+
 def main():
     failures = 0
     skips = 0

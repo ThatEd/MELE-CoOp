@@ -3738,3 +3738,55 @@ symptom is a crash inside the engine rather than a wrong value.
 ends exactly where it should" is satisfied by a partition into instructions of any length 1..24 for
 5279 of 5279 functions. Before trusting a closure, ask how many hypotheses the check eliminates -
 if the answer is "almost none", it is the same class of test as rule 25's.
+
+## 2026-10-29 (enums): `EWhoTriggers` decoded, and ME3 numbers it differently
+
+`TRIGGER-DELAY.md` named `EWhoTriggers` as the engine's own answer to "who is allowed to trigger
+this" and recorded it as unavailable, because enum members are not in the export table.
+They are in the enum's serial data, and the structure closes.
+
+### The layout
+
+A `UEnum` is `UObject` fields then `TArray<FName> Names`:
+
+    +0   NetIndex (FName index)
+    +4   a constant (13240 on ME3)
+    +8   two zero dwords
+    +16  StateIndex (FName index)
+    +20  Names.Num()
+    +24  Names[0..Num-1], each a 4-byte index plus a 4-byte NUMBER  -> 8 bytes
+    end  24 + 8 * Num  ==  serial_size
+
+Closes on **255 of 255** enums in ME3's `Engine.pcc`. The competing hypothesis - count at `+16`,
+4-byte names - closes on **zero**, which is what ruled it out rather than a plausibility argument.
+The 8-byte stride is ME:LE writing FNames with their number half; every number here is 0.
+
+### The answer
+
+    ME1, ME2:  0 WT_PlayerOnly   1 WT_PlayerAndSquad   2 WT_Everyone   3 WT_TagList   4 WT_MAX
+    ME3:       0 WT_PlayerOnly   1 WT_PlayerOnlyLocal  2 WT_PlayerAndSquad
+               3 WT_Everyone     4 WT_TagList          5 WT_MAX
+
+So the engine already has every policy the trigger-delay feature needs. `WT_PlayerAndSquad` is the
+existing "more than one player-side actor" concept, and `WT_PlayerOnly` is the local player - no new
+enum is needed, only a different value in an existing field.
+
+### ME3 is not ME2 plus one
+
+ME3 inserts `WT_PlayerOnlyLocal` at index 1, shifting every later member:
+
+| intent | ME1 / ME2 | ME3 |
+|---|---|---|
+| local player only | 0 | 0 |
+| player and squad | 1 | **2** |
+| everyone | 2 | **3** |
+| tag list | 3 | **4** |
+
+Writing ME2's `WT_Everyone` (2) into a ME3 trigger selects `WT_PlayerAndSquad`; ME2's
+`WT_PlayerAndSquad` (1) selects `WT_PlayerOnlyLocal`. A delay tuned on LE2 and copied to LE3 changes
+who can set it off, silently. Rule 31 with a byte-level consequence, and the reason the values must
+be looked up per build rather than carried across.
+
+Also relevant, and found the same way: ME1's `EPhysics` has two members ME2/ME3 do not
+(`PHYS_Mounting`, `PHYS_Hopping`), which shifts `PHYS_MAX` from 18 to 16 - the same hazard in a
+different enum.

@@ -195,7 +195,7 @@ Two things worth recording, because both are how this looked wrong for a while:
 | Unknown | Why it matters |
 |---|---|
 | Whether function **bytecode** survives in these packages | **Solved**: it survives. Extent is `serial[32 : 32 + u32(serial+28)]` plus a 15-byte trailer on ME1/ME2 (6 on ME3), closing on every function in all three builds. The *opcode table* is still unproven - see `tools/melepkg/ue3_bytecode.py`, which deliberately ships no disassembler |
-| Enum member values (e.g. `EWhoTriggers`) | enum **members** live in the class's default properties, not the export table; the class's serial data is the next target |
+| Enum member values (e.g. `EWhoTriggers`) | **Solved**: a `UEnum`'s serial data is `UObject` fields then `TArray<FName>`, with the count at `+20` and 8-byte (index + number) names after it. Closes on 255/255 ME3 enums. `enum` and `enums` commands in `mele_tables.py` |
 | The `depends_offset` section | unexamined; the export walk lands exactly on it, so what follows is a separate structure |
 
 Resolved since this page was first written: the field offsets (they differ per game), the chunk
@@ -243,9 +243,26 @@ the full sweep is the population.
     python -I tools/melepkg/mele_tables.py classes <pkg>
     python -I tools/melepkg/mele_tables.py chain   <pkg> <class>
     python -I tools/melepkg/mele_tables.py signature <pkg> <function>
+    python -I tools/melepkg/mele_tables.py enum    <pkg> <EWhoTriggers>
+    python -I tools/melepkg/mele_tables.py enums   <pkg>
     python -I tools/melepkg/mele_tables.py objects <pkg> [name]
     python -I tools/melepkg/ue3_bytecode.py survey <pkg>
     python -I tools/melepkg/ue3_bytecode.py strings <pkg> <function>
+
+## Enum members
+
+A `UEnum`'s serial data is the `UObject` fields then `TArray<FName> Names`:
+
+    +0   NetIndex, +4 constant, +8 two zero dwords, +16 StateIndex
+    +20  Names.Num()
+    +24  names, each a 4-byte index plus a 4-byte number (8 bytes)
+    end  24 + 8 * Num, which equals serial_size
+
+Closes on **255 of 255** enums in ME3's `Engine.pcc`, which is what rules out the alternative
+(count at `+16` with 4-byte names) - that hypothesis closes on zero. `EWhoTriggers` comes out as
+`WT_PlayerOnly, WT_PlayerAndSquad, WT_Everyone, WT_TagList, WT_MAX` on ME1/ME2 and, on ME3,
+`WT_PlayerOnly, WT_PlayerOnlyLocal, WT_PlayerAndSquad, ...` - **the same number means a different
+policy per build.**
 
 ## Function signatures, offline
 

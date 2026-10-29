@@ -603,6 +603,7 @@ def build(package, limit=None):
         "displacement": disp,
         "container": _container_info(chunks),
         "names": len(names),
+        "name_table": names,
         "name_table_end": name_end,
         "header": fields,
         "import_start": imp_start,
@@ -794,6 +795,46 @@ def param_order(table, buf, func_export):
     return order, "next-chain"
 
 
+def enum_members(table, buf, enum_export):
+    """A `UEnum`'s member names, in declaration order.
+
+    A UE3 enum's serial data is `UObject` fields then `TArray<FName> Names`. Measured on ME3's
+    `Engine.pcc`, all 255 enums:
+
+        +0   NetIndex (FName index)      - irrelevant
+        +4   a constant (13240)
+        +8   two zero dwords
+        +16  StateIndex (FName index)
+        +20  Names.Num()
+        +24  Names[0 .. Num-1], each entry a 4-byte index plus a 4-byte number
+        end  = 24 + 8 * Num, which is exactly `serial_size`
+
+    The 8-byte stride is not a guess: ME:LE writes FNames with their number half, and every one of
+    these is 0. `EPhysics` closes as 24 + 8*17 = 160 = its serial size.
+
+    The alternative hypothesis - count at +16 with 4-byte names - closes on **zero** enums, which
+    is what ruled it out rather than a plausibility argument.
+
+    Returns a list of names, or [] if the structure does not close.
+    """
+    disp = buffer_base(table["header"])
+    at = enum_export["serial_offset"] - disp
+    size = enum_export["serial_size"]
+    if at < 0 or at + 24 > len(buf) or size < 24:
+        return []
+    count = struct.unpack_from("<i", buf, at + 20)[0]
+    if not (0 <= count <= 5000) or 24 + 8 * count != size:
+        return []
+    names = table.get("name_table")
+    if not isinstance(names, list):
+        return []
+    out = []
+    for i in range(count):
+        idx = struct.unpack_from("<i", buf, at + 24 + 8 * i)[0]
+        out.append(names[idx] if 0 <= idx < len(names) else "<%d>" % idx)
+    return out
+
+
 def signature(table, buf, func_export):
     """Parameters in declaration order with the byte offset each occupies in the parms block.
 
@@ -879,6 +920,52 @@ def cmd_signature(args):
             print("    NOTE: declaration order unavailable (%s); parameters are in export"
                   " (alphabetical) order and MUST NOT be used to lay out a parms block"
                   % s["order"])
+    return 0
+
+
+def cmd_enum(args):
+    """Print a UEnum's members, in declaration order."""
+    t = build(args.package)
+    hits = [e for e in t["exports"]
+            if e["object_name"] == args.name
+            and describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.Enum"]
+    if not hits:
+        near = [e["object_name"] for e in t["exports"]
+                if e["class_index"] == 0
+                and (e["object_name"] or "").startswith(("E", "e"))
+                and args.name.lower() in (e["object_name"] or "").lower()][:10]
+        print("%s: no enum named %r%s"
+              % (t["package"], args.name, ("; near: %s" % near) if near else ""))
+        return 1
+    members = enum_members(t, t["buf"], hits[0])
+    if not members:
+        print("%s: enum %r did not close; structure unproven for this build" % (t["package"], args.name))
+        return 1
+    print("%s::%s (%d members)" % (t["package"], args.name, len(members)))
+    for i, m in enumerate(members):
+        print("  %2d  %s" % (i, m))
+    return 0
+
+
+def cmd_enums(args):
+    """List every enum a package defines."""
+    t = build(args.package)
+    enums = [e for e in t["exports"]
+             if describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.Enum"]
+    closed = 0
+    print("%s: %d enum(s)" % (t["package"], len(enums)))
+    for e in enums[:args.limit]:
+        members = enum_members(t, t["buf"], e)
+        if members:
+            closed += 1
+            print("  %-34s %2d  %s" % (e["object_name"], len(members),
+                                       ", ".join(members[:4]) + ("..." if len(members) > 4 else "")))
+        else:
+            print("  %-34s structure did not close" % e["object_name"])
+    shown = min(len(enums), args.limit)
+    if shown:
+        print()
+        print("  %d of %d shown closed" % (closed, shown))
     return 0
 
 
@@ -981,6 +1068,16 @@ def main():
     p.add_argument("package")
     p.add_argument("name")
     p.set_defaults(func=cmd_chain)
+
+    p = sub.add_parser("enum", help="a UEnum's member names, in declaration order")
+    p.add_argument("package")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_enum)
+
+    p = sub.add_parser("enums", help="every enum a package defines")
+    p.add_argument("package")
+    p.add_argument("--limit", type=int, default=40)
+    p.set_defaults(func=cmd_enums)
 
     p = sub.add_parser("signature",
                        help="a function's parameters in declaration order, with byte offsets")

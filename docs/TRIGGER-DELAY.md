@@ -30,10 +30,32 @@ Detection on these is the classic UE3 trio: **`Touch`, `UnTouch`, `Touched`** �
 in all three games — plus per-game spellings (`Touching` ME1, `TouchingActor` ME2,
 `TouchingCylinder`/`TouchedActor` ME3).
 
-**`EWhoTriggers` exists in all three games.** That is the engine's own enum for *who* is allowed to
-trigger something — the single most relevant identifier found for this problem. Which values it
-has, and whether any of them means "any player", is not established yet; it is an enum, so its
-values are in the package as names and can be read once the export table is parsed.
+**`EWhoTriggers` exists in all three games, and its members are now decoded.**
+
+    ME1, ME2:  0 WT_PlayerOnly   1 WT_PlayerAndSquad   2 WT_Everyone   3 WT_TagList   4 WT_MAX
+    ME3:       0 WT_PlayerOnly   1 WT_PlayerOnlyLocal  2 WT_PlayerAndSquad
+               3 WT_Everyone     4 WT_TagList          5 WT_MAX
+
+Read offline with `python -I tools/melepkg/mele_tables.py enum <Engine.pcc> EWhoTriggers`.
+
+**The answer to the question this document was asking: the engine already has both concepts.** There
+is no need to invent a "both players" trigger - `WT_PlayerAndSquad` already means more than one
+player-side actor, and `WT_PlayerOnly` means exactly the local player.
+
+**And ME3 is not ME2 plus one.** ME3 inserts `WT_PlayerOnlyLocal` at index 1, which shifts every
+later member:
+
+| intent | ME1 / ME2 | ME3 |
+|---|---|---|
+| local player only | 0 | 0 |
+| local player only (new, explicit) | — | 1 |
+| player and squad | 1 | **2** |
+| everyone | 2 | **3** |
+| tag list | 3 | **4** |
+
+So writing ME2's `WT_Everyone` (2) into a ME3 trigger selects `WT_PlayerAndSquad`, and ME2's
+`WT_PlayerAndSquad` (1) selects `WT_PlayerOnlyLocal`. A delay that "looks right" on LE2 and is
+copied to LE3 changes who can set it off. This is rule 31 with a byte-level consequence.
 
 ### 2. The Kismet action — what the event does
 
@@ -130,7 +152,7 @@ detection trio `Touch` / `UnTouch` / `Touched`.
 
 | Identifier | Games | Why it matters |
 |---|---|---|
-| `EWhoTriggers` | all three | the engine's own enum for **who is allowed to trigger** something. If it already has a "player" value, the hook is a filter rather than an invention |
+| `EWhoTriggers` | all three | the engine's own enum for **who is allowed to trigger** something. **Decoded**: `WT_PlayerOnly`, `WT_PlayerOnlyLocal` (ME3 only), `WT_PlayerAndSquad`, `WT_Everyone`, `WT_TagList`. The engine already has the policy this feature needs, but the numbering differs on ME3 |
 | `m_bInstigatorIsPlayer` | ME1 (verified) | a boolean on the instigator: **this tells you whether the thing that touched the trigger was a player**. This is the natural discriminator for "was it my player or not" |
 
 `m_bInstigatorIsPlayer` is the single most useful name for this feature. It means the engine already
@@ -176,9 +198,9 @@ and it is the thing to prototype first.
 
 ## What to measure next, in order
 
-1. **`EWhoTriggers` values.** It exists in all three games and is literally the engine's answer to
-   "who triggers this". Its enum names should be in the package; reading them tells us whether the
-   engine already has a "both players" concept worth using instead of inventing one.
+1. ~~**`EWhoTriggers` values.**~~ **Done** - see above. `WT_PlayerOnly`, `WT_PlayerOnlyLocal`
+   (ME3 only), `WT_PlayerAndSquad`, `WT_Everyone`, `WT_TagList`, `WT_MAX`, with a per-build
+   numbering shift. The engine already has every policy this feature needs.
 2. **Which class a level actually instantiates for a given trigger.** `BioTriggerVolume` vs
    `TriggerVolume` vs `BioTrigger` are all present; which one a level uses decides which `Touch`
    implementation matters. Needs the export table, or a live read of level actors.
