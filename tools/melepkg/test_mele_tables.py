@@ -465,6 +465,70 @@ def t_level_package():
         len(t["imports"]), len(t["exports"]))
 
 
+@case("AddLocalPlayer is a GameViewportClient function on every build")
+def t_addlocalplayer_owner():
+    """This is the fact the ME2 second-player plan rests on, and it was previously unknown.
+
+    `AddLocalPlayer` was established as *present* from the identifier table, but not *which object
+    declares it* - and the obvious guess (the game info object, which owns `CreatePlayer` in the
+    campaign's login path) is wrong. It is a `GameViewportClient` method, so a dispatch aimed at
+    the game info goes nowhere.
+    """
+    found, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game, "Engine")
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        hit = [e for e in t["exports"] if e["object_name"] == "AddLocalPlayer"]
+        if not hit:
+            return "fail", "%s: Engine.pcc has no AddLocalPlayer export" % game
+        e = hit[0]
+        cls = mele_tables.describe_index(e["class_index"], t["exports"], t["imports"])
+        out = e["outer_index"]
+        if out > 0:
+            owner = t["exports"][out - 1]["object_name"]
+        elif out < 0:
+            owner = t["imports"][-out - 1]["object_name"]
+        else:
+            owner = None
+        if cls != "Core.Function":
+            return "fail", "%s: class is %r, expected Core.Function" % (game, cls)
+        if owner != "GameViewportClient":
+            return "fail", "%s: outer is %r, expected GameViewportClient" % (game, owner)
+        found[game] = e["index"]
+    if not found:
+        return "skip", "no Engine.pcc found (%s)" % ", ".join(skipped)
+    return "ok", "GameViewportClient on %s" % ", ".join(
+        "%s #%d" % (g, i) for g, i in sorted(found.items()))
+
+
+@case("the viewport owns the whole local-player surface")
+def t_viewport_owns_split_screen():
+    """`CreatePlayer`, `RemovePlayer`, `LayoutPlayers` are viewport methods too - which is why
+    aiming them at a player object in the command suite was a role bug when it shipped."""
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    want = ("AddLocalPlayer", "CreatePlayer", "RemovePlayer", "LayoutPlayers")
+    bad = {}
+    for name in want:
+        hit = [e for e in t["exports"] if e["object_name"] == name]
+        if not hit:
+            bad[name] = "absent"
+            continue
+        e = hit[0]
+        out = e["outer_index"]
+        owner = t["exports"][out - 1]["object_name"] if out > 0 else None
+        if owner != "GameViewportClient":
+            bad[name] = owner
+    if bad:
+        return "fail", "%s are not viewport methods" % bad
+    return "ok", "all %d are GameViewportClient methods" % len(want)
+
+
 def main():
     failures = 0
     skips = 0

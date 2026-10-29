@@ -61,9 +61,9 @@ the inner body did not.
 
 1. **Read, do not dispatch.** `ue3_level_pawns.py` and `ue3_check_chain.py` establish the live state:
    `LocalPlayer.Actor`, `Controller.Pawn`, and whether `Engine.GamePlayers` count is 1.
-2. **Resolve `AddLocalPlayer` on the live object graph.** `ue3_script_map.py` gives the owning class
-   and the parameter block. That is the input `CreatePlayer` could not supply and the reason its
-   crash was unattributable.
+2. **`AddLocalPlayer` is `GameViewportClient.AddLocalPlayer`** — settled offline from `Engine.pcc`'s
+   export table on all three builds, no game needed. The live step is only to confirm the viewport
+   object exists and to read its `AddLocalPlayer` params, not to discover the owner.
 3. **Compare ME2's `Engine.pcc` against ME3's.** Both have the function; ME3's registration path
    works. The difference between them is a concrete disassembly target, and it is the one comparison
    that has not been made.
@@ -72,8 +72,7 @@ the inner body did not.
 ## What the import table added
 
 `tools/melepkg/mele_tables.py` parses the import table, which says **which package an object comes
-from and what kind of object it is** — the thing an identifier list cannot say. Verified per game,
-with the column order measured rather than assumed:
+from and what kind of object it is** — the thing an identifier list cannot say:
 
 | | imports | layout (`type`/`obj`/`outer`/`src`) | type-column share | dominant source |
 |---|---|---|---|---|
@@ -81,10 +80,11 @@ with the column order measured rather than assumed:
 | ME2 `SFXGame.pcc` | 1,909 | `1 / 4 / 3 / 6` | 91% | `Core` 1,764 |
 | ME3 `SFXGame.pcc` | 4,189 | **`5 / 1 / 0 / 3`** | 94% | `Core` 4,021 |
 
-**Three of the four columns move between ME1/ME2 and ME3**, so ME3 is not "ME1 with two columns
-swapped". Two earlier guesses passed a range check and produced function names where objects
-belong; what separated them was the fraction of the type column resolving to engine types (88-94%
-correct, 0% wrong) plus the object column reading as an alphabetical object list.
+**Correction:** the layout row above is wrong. There is ONE layout on all three builds, the standard
+UE3 `FObjectImport` `ClassPackage(0) ClassName(2) Outer(4) ObjectName(5)`. The apparent ME3 rotation
+was an artefact of reading the table 142 bytes past its real start — every entry straddled two real
+entries. See CONTAINER-FORMAT.md and rule 34. The share and source columns happened to survive the
+shift because they were measured on different columns; the *layout* claim did not.
 
 That gives a directly useful answer for all three builds — the kind of thing, and where from:
 
@@ -96,6 +96,13 @@ That gives a directly useful answer for all three builds — the kind of thing, 
 | `Pawn` | `Class` | `Core` | yes | yes | yes |
 | `LocalPlayerControllers` | `Function` | `Core` | — | yes | yes |
 | `SpawnPlayerController` | `Function` | `Core` | — | — | yes |
+
+The `—` marks mean **absent from that build's `SFXGame.pcc` imports**, not absent from the build.
+That distinction matters and the export table now settles it: all six, plus `AddLocalPlayer`,
+`CreatePlayer`, `RemovePlayer`, `LayoutPlayers` and `InitInputSystem`, are **exports of
+`Engine.pcc` on all three builds**, and `AddLocalPlayer` is a `Core.Function` whose outer is
+`GameViewportClient` everywhere. So ME1 does have `LocalPlayerControllers` and ME2 does have
+`SpawnPlayerController` — SFXGame simply does not import what Engine defines.
 
 **The export table is now parsed**, so class attribution is available offline. Rule 33's retraction
 turned out to be one symptom of a coordinate-space error: header offsets index the serialized
@@ -129,4 +136,5 @@ So the class the client's controller must be is `BioPlayerController` (engine-si
 | Import and export tables parse on all three builds | **proven** — four closures, 587/587 sampled packages, 896,562 export records |
 | `SFXPlayerController : BioPlayerController : Core.PlayerController` | **proven** — export table, both builds |
 | `AddLocalPlayer` would work in ME2 | **unknown** — present, never dispatched |
+| `AddLocalPlayer` is `GameViewportClient.AddLocalPlayer` on all three builds | **proven** — `Engine.pcc` export table, class `Core.Function`, outer `GameViewportClient` |
 | Two panes need a second `LocalPlayer` | **derived**, not proven |

@@ -65,10 +65,24 @@ Measured from each build's `Engine.pcc` identifier table. The earlier conclusion
 one package per game, which answers a narrower question than "does the build contain this". See
 [SECOND-PLAYER-ME2.md](SECOND-PLAYER-ME2.md).
 
+**Upgraded 2026-10-29 from identifier-present to declared.** The export table now parses, so these
+are no longer just *names that exist somewhere in the package* — they are **definitions** with a
+class and an owner:
+
+| Fact | Evidence |
+|---|---|
+| All of the above are **exports** of `Engine.pcc` on all three builds | export walk, four closures passing |
+| `AddLocalPlayer` is a `Core.Function` whose **outer is `GameViewportClient`** | `Engine.pcc` export #15595 (ME2), outer `export:GameViewportClient`, all three builds |
+| `CreatePlayer`, `RemovePlayer`, `LayoutPlayers` are `GameViewportClient` functions too | same (ME2 `LayoutPlayers` is export #15489) |
+
+That last point is the one that unblocked the ME2 plan: `AddLocalPlayer` is not a `SFXGame` function
+to be looked for, it is a viewport method. Aiming it at the game info object — which is what an
+identifier-only search would suggest — dispatches to nothing.
+
 **What still stands:** dispatching `CreatePlayer` crashed LE1 and LE2 three ways with every input
 verified, so having the function is not the same as the call succeeding. What changes is the next
-thing to try — `AddLocalPlayer` is the step `CreatePlayer` itself delegates to, and it has never
-been dispatched.
+thing to try — `AddLocalPlayer` is the step `CreatePlayer` itself delegates to, it has never been
+dispatched, and its owner is now known rather than guessed.
 
 **Fail point A2 — a standalone controller is not viable.** `Actor.Spawn(BioPlayerController)`
 with the measured `0x50` parms layout **succeeds** and then the engine faults on a later
