@@ -846,6 +846,73 @@ def t_refs_reports_baseline():
     return "ok", "%d hits, %.1f%% chance baseline reported" % (len(refs), baseline * 100)
 
 
+@case("the split-screen pane geometry is fully specified offline")
+def t_splitscreen_structs():
+    """`GameViewportClient`'s direct children include the two structs that define pane layout, and
+    a `UScriptStruct` has no native base class, so its field offsets are exact:
+
+        PerPlayerSplitscreenData { SizeX, SizeY, OriginX, OriginY : float }   (0x00, 0x04, 0x08, 0x0C)
+        SplitscreenData          { PlayerData : TArray<PerPlayerSplitscreenData> }
+
+    That is the geometry a split-screen implementation has to write, recovered with no game
+    running. It is also why "add a second view instead of a player" was wrong: the pane data is
+    indexed by local player, as `SPLITSCREEN-PLAN.md` already records.
+    """
+    want = {"PerPlayerSplitscreenData": [("SizeX", 0x00), ("SizeY", 0x04),
+                                         ("OriginX", 0x08), ("OriginY", 0x0C)],
+            "SplitscreenData": [("PlayerData", 0x00)]}
+    results, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game, "Engine")
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        for sname, fields in want.items():
+            hit = [e for e in t["exports"] if e["object_name"] == sname]
+            if not hit:
+                return "fail", "%s: no %s export" % (game, sname)
+            got = [(f[0], f[3]) for f in mele_tables.struct_fields(t, t["buf"], hit[0])]
+            if got != fields:
+                return "fail", "%s %s: %s, expected %s" % (game, sname, got, fields)
+        results[game] = len(want)
+    if not results:
+        return "skip", "no Engine.pcc found (%s)" % ", ".join(skipped)
+    return "ok", "4 float offsets + 1 array on %s" % ", ".join(sorted(results))
+
+
+@case("a class's field NAMES include inherited ones, but its offsets are declared unverified")
+def t_class_fields_hedged():
+    """Rule 13: a walker that ignores `SuperStruct` cannot prove a field is absent. `Pawn` is
+    declared on `Controller`, not `PlayerController`, so the direct-children walk finds 493 fields
+    and no `Pawn`.
+
+    The offsets must NOT be presented as usable. Measured against live memory they are wrong by
+    different amounts at different points - ME3 needs +0x44 for `Pawn` and +0x90 for `myHUD` - so a
+    single anchor cannot rebase them, and `how` says `offsets-unverified`.
+    """
+    p = package("ME3", "Engine")
+    if not p:
+        return "skip", "no ME3 Engine.pcc"
+    t = mele_tables.build(p)
+    hit = [e for e in t["exports"] if e["object_name"] == "PlayerController"]
+    if not hit:
+        return "fail", "no PlayerController"
+    rows, how = mele_tables.class_fields(t, t["buf"], hit[0])
+    names = [r[1] for r in rows]
+    if "Pawn" not in names:
+        return "fail", "Pawn is absent; the super chain is not being walked"
+    owner = [r[0] for r in rows if r[1] == "Pawn"][0]
+    if owner == "PlayerController":
+        return "fail", "Pawn reported as declared on PlayerController; it is on Controller"
+    if how != "offsets-unverified":
+        return "fail", "how=%r; class offsets must be flagged, not trusted" % (how,)
+    if len(rows) < 1000:
+        return "fail", "only %d fields; inheritance is not accumulated" % len(rows)
+    return "ok", "%d fields, Pawn declared on %s, offsets flagged unverified" % (
+        len(rows), owner)
+
+
 def main():
     failures = 0
     skips = 0

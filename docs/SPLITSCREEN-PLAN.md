@@ -22,12 +22,31 @@ Three fail points. They were expensive to find and cheap to state.
 |---|---|---|
 | **A1** | No `AddLocalPlayer`, no `JoinSplitscreen`, no `CreateLocalPlayer` anywhere in LE1's object graph. `GameViewportClient.CreatePlayer` is the *only* scripted entry. | proven |
 | **A2** | `Actor.Spawn(BioPlayerController)` **succeeds**, then the engine faults at `call qword ptr [rax+0x6D0]` with `rax = 0`. `+0x6D0` is the new controller's `PlayerInput`. A controller with no `LocalPlayer` has no input object. | proven |
-| **A3** | Each `LocalPlayer` owns its own `ViewState`, and `SplitscreenInfo` / `PerPlayerSplitscreenData` is indexed **by local player**. One `LocalPlayer` means one view. | **derived** |
+| **A3** | Each `LocalPlayer` owns its own `ViewState`, and `SplitscreenInfo` / `PerPlayerSplitscreenData` is indexed **by local player**. One `LocalPlayer` means one view. | **derived**; the struct layout now confirms it is an array of panes (`SplitscreenData.PlayerData: TArray<PerPlayerSplitscreenData>`), but the index binding is unproven |
 
 A3 is the one that matters for split screen, and it is *derived*, not proven — deliberately. It
 says "splitting one player gives you one view", and the experiment that would prove it requires
 a second `LocalPlayer`, which is the thing that crashes. **So the plan does not rest on A3.** It
 rests on A1 and A2, which are proven, plus the crash table below.
+
+*(**A1 is superseded** — see [SECOND-PLAYER-ME2.md](SECOND-PLAYER-ME2.md). `AddLocalPlayer` is
+present in `Engine.pcc` on all three builds and is a `GameViewportClient` method; "no
+`AddLocalPlayer` anywhere" came from scanning only `SFXGame.pcc`. A2 and A3 stand.)*
+
+### A3's structure, now read offline
+
+`PerPlayerSplitscreenData` and `SplitscreenData` are direct children of `GameViewportClient`, and a
+`UScriptStruct` has no native base class, so its field offsets are exact:
+
+    PerPlayerSplitscreenData  { SizeX: float @0x00, SizeY @0x04, OriginX @0x08, OriginY @0x0C }
+    SplitscreenData           { PlayerData: TArray<PerPlayerSplitscreenData> }
+
+    python -I tools/melepkg/mele_tables.py fields <Engine.pcc> PerPlayerSplitscreenData
+
+Identical on ME1, ME2 and ME3. `SplitscreenData.PlayerData` being an **array** is what makes A3's
+"indexed by local player" reading the natural one — an array of pane rectangles, one per player.
+That raises A3 from *derived* to *structurally supported* but does not prove it: the index binding
+still needs a live read.
 
 ### The crash table, which is what actually settles it
 

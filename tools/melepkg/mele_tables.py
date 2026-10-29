@@ -747,8 +747,119 @@ def _align(n, a):
     return (n + a - 1) // a * a
 
 
-def param_order(table, buf, func_export):
-    """A function's parameters in DECLARATION order, which is what the parms block uses.
+def class_fields(table, buf, class_export):
+    """A class's full field list in declaration order, INCLUDING inherited fields.
+
+    Rule 13 of this project: a property walker that ignores `SuperStruct` cannot prove a field is
+    absent. It bit this function on the first run - `PlayerController` reports 493 direct children
+    and none of them is `Pawn`, because `Pawn` is declared on `Controller` further up the chain.
+
+    **The NAMES, TYPES, DECLARATION ORDER and OWNER are exact.** The byte OFFSETS are not, and the
+    measured evidence says so:
+
+        PlayerController.Pawn, computed vs live-measured
+            ME1  0x3A0  vs 0x3DC     ME2  0x2C0  vs 0x294     ME3  0x378  vs 0x3BC
+        PlayerController.myHUD, computed vs live-measured
+            ME3  0x640  vs 0x6D0
+
+    The gap is not a constant - ME3 needs +0x44 to fix `Pawn` and +0x90 to fix `myHUD` - so a single
+    rebase against one live anchor cannot repair the rest. A linear sum of `PROPERTY_SIZE` with 4/8
+    alignment is too simple for a real UE3 class: native class boundaries insert padding, and
+    `FName`/`TArray` members inside a class are laid out per the engine's own rules rather than by
+    the sizes used for a function's parms block.
+
+    So `how` reports `"offsets-unverified"` for any class with a base chain, and callers must not
+    use these offsets to address memory. `struct_fields` (a `UScriptStruct` with only floats) IS
+    exact and verified - see that function.
+
+    Returns ([(owner, name, type, size, offset), ...], how).
+    """
+    chain, exact = [], True
+    cur = class_export
+    seen = set()
+    while cur is not None and cur["index"] not in seen:
+        seen.add(cur["index"])
+        fields, level_how = _fields_of(table, buf, cur)
+        if fields:
+            if level_how != "next-chain":
+                exact = False
+            chain.append((cur["object_name"], fields))
+        s = cur["super_index"]
+        cur = table["exports"][s - 1] if s > 0 and s - 1 < len(table["exports"]) else None
+    rows, off = [], 0
+    for owner, fields in reversed(chain):
+        for f in fields:
+            t = describe_index(f["class_index"], table["exports"], table["imports"]).split(".")[-1]
+            size = PROPERTY_SIZE.get(t, 0)
+            off = _align(off, PROPERTY_ALIGN.get(t, 4))
+            rows.append((owner, f["object_name"], t, size, off))
+            off += size
+    how = "next-chain" if exact else "partial"
+    if len(chain) > 1:
+        how = "offsets-unverified"
+    return rows, how
+
+
+def struct_fields(table, buf, struct_export):
+    """A `UScriptStruct`'s fields in DECLARATION order, with byte offsets.
+
+    Unlike `class_fields`, these offsets ARE exact, because a `UScriptStruct` has no native base
+    class to introduce padding and `PerPlayerSplitscreenData` is four 4-byte floats:
+
+        +0x00 SizeX   +0x04 SizeY   +0x08 OriginX   +0x0C OriginY
+
+    A `UScriptStruct` has an empty super chain, so this shares `class_fields`' walk and simply
+    reports without hedging. `Engine.SplitscreenData` is `{ PlayerData: TArray }` - the array of
+    those, which is the pane layout.
+
+    Returns [(name, type, size, offset), ...], empty when the chain does not resolve.
+    """
+    rows, _how = class_fields(table, buf, struct_export)
+    if not rows:
+        return []
+    return [(r[1], r[2], r[3], r[4]) for r in rows if r[2] != "Function"]
+
+
+def _fields_of(table, buf, owner_export):
+    """The child exports of `owner_export`, in DECLARATION order via `UProperty.Next`.
+
+    Returns (children, how) where `how` is `"next-chain"` when the chain resolved cleanly and
+    `"export-order"` otherwise. Shared by function parameters and struct fields, because both are
+    `UProperty` lists with the same ordering problem.
+    """
+    kids = [e for e in table["exports"] if e["outer_index"] == owner_export["index"] + 1]
+    if not kids:
+        return [], "empty"
+    disp = buffer_base(table["header"])
+    by_index = {p["index"]: p for p in kids}
+    successor = {}
+    for p in kids:
+        if p["serial_size"] < UPROPERTY_NEXT + 4:
+            continue
+        at = p["serial_offset"] - disp + UPROPERTY_NEXT
+        if at < 0 or at + 4 > len(buf):
+            continue
+        v = struct.unpack_from("<i", buf, at)[0]
+        if v > 0 and (v - 1) in by_index and (v - 1) != p["index"]:
+            successor[p["index"]] = v - 1
+    if not successor:
+        return kids, "export-order"
+    pointed = set(successor.values())
+    heads = [p for p in kids if p["index"] not in pointed]
+    if len(heads) != 1:
+        return kids, "export-order"
+    order, cur, seen = [], heads[0], set()
+    while cur is not None and cur["index"] not in seen:
+        seen.add(cur["index"])
+        order.append(cur)
+        cur = by_index.get(successor.get(cur["index"]))
+    if len(order) != len(kids):
+        return kids, "export-order"
+    return order, "next-chain"
+
+
+
+    """A function's parameters (or a struct's fields) in DECLARATION order.
 
     The export table alone cannot give this. A function's parameters are its child exports, but
     exports are stored in name order, so `CreatePlayer` parses on ME2 as
@@ -760,39 +871,11 @@ def param_order(table, buf, func_export):
     dispatch with swapped arguments: a crash inside the engine with a plausible stack, which is
     the failure mode this project has spent the most time on.
 
-    The real order is the `UProperty.Next` chain. Walking it from the parameter nothing else points
-    at gives declaration order. Returns (params, how) where `how` is `"next-chain"` or
-    `"export-order"`, so a caller can tell whether it got the proven answer.
+    The real order is the `UProperty.Next` chain - see `_fields_of`, which is shared with
+    `struct_fields` because a `UScriptStruct`'s fields are ordered by exactly the same mechanism.
+    Returns (params, how) so a caller can tell whether it got the proven answer.
     """
-    params = [e for e in table["exports"] if e["outer_index"] == func_export["index"] + 1]
-    if not params:
-        return [], "empty"
-    disp = buffer_base(table["header"])
-    by_index = {p["index"]: p for p in params}
-    successor = {}
-    for p in params:
-        if p["serial_size"] < UPROPERTY_NEXT + 4:
-            continue
-        at = p["serial_offset"] - disp + UPROPERTY_NEXT
-        if at < 0 or at + 4 > len(buf):
-            continue
-        v = struct.unpack_from("<i", buf, at)[0]
-        if v > 0 and (v - 1) in by_index and (v - 1) != p["index"]:
-            successor[p["index"]] = v - 1
-    if not successor:
-        return params, "export-order"
-    pointed = set(successor.values())
-    heads = [p for p in params if p["index"] not in pointed]
-    if len(heads) != 1:
-        return params, "export-order"
-    order, cur, seen = [], heads[0], set()
-    while cur is not None and cur["index"] not in seen:
-        seen.add(cur["index"])
-        order.append(cur)
-        cur = by_index.get(successor.get(cur["index"]))
-    if len(order) != len(params):
-        return params, "export-order"
-    return order, "next-chain"
+    return _fields_of(table, buf, func_export)
 
 
 def enum_members(table, buf, enum_export):
@@ -833,6 +916,26 @@ def enum_members(table, buf, enum_export):
         idx = struct.unpack_from("<i", buf, at + 24 + 8 * i)[0]
         out.append(names[idx] if 0 <= idx < len(names) else "<%d>" % idx)
     return out
+
+
+def param_order(table, buf, func_export):
+    """A function's parameters (or a struct's fields) in DECLARATION order.
+
+    The export table alone cannot give this. A function's parameters are its child exports, but
+    exports are stored in name order, so `CreatePlayer` parses on ME2 as
+
+        InsertIndex, NewPlayer, ReturnValue, bSpawnActor, OutError, ControllerId
+
+    - correct here only by luck of the alphabet. Relying on that would be a latent bug that fires
+    on the first function whose parameters are not alphabetical, and the symptom would be a
+    dispatch with swapped arguments: a crash inside the engine with a plausible stack, which is
+    the failure mode this project has spent the most time on.
+
+    The real order is the `UProperty.Next` chain - see `_fields_of`, which is shared with
+    `struct_fields` because a `UScriptStruct`'s fields are ordered by exactly the same mechanism.
+    Returns (params, how) so a caller can tell whether it got the proven answer.
+    """
+    return _fields_of(table, buf, func_export)
 
 
 def signature(table, buf, func_export):
@@ -999,6 +1102,29 @@ def cmd_refs(args):
     return 0
 
 
+def cmd_fields(args):
+    """A class's field layout with byte offsets, including inherited fields."""
+    t = build(args.package)
+    hits = [e for e in t["exports"]
+            if e["object_name"] == args.name and e["class_index"] == 0]
+    if not hits:
+        print("%s: no class named %r" % (t["package"], args.name))
+        return 1
+    rows, how = class_fields(t, t["buf"], hits[0])
+    print("%s::%s: %d fields (with inheritance), order %s" % (t["package"], args.name,
+                                                             len(rows), how))
+    if args.grep:
+        rows = [r for r in rows if args.grep.lower() in r[1].lower()]
+        print("  filtered to %d matching %r" % (len(rows), args.grep))
+    for owner, name, typ, size, off in rows[:args.limit]:
+        print("  +0x%-4X %-28s %-18s %2d  (declared on %s)" % (off, name, typ, size, owner))
+    if how != "next-chain":
+        print()
+        print("  WARNING: at least one level of the chain fell back to export (alphabetical) order,")
+        print("  so these offsets are NOT reliable. Do not use them for a dispatch.")
+    return 0
+
+
 def cmd_enum(args):
     """Print a UEnum's members, in declaration order."""
     t = build(args.package)
@@ -1149,6 +1275,14 @@ def main():
     p.add_argument("package")
     p.add_argument("name")
     p.set_defaults(func=cmd_enum)
+
+    p = sub.add_parser("fields",
+                       help="a class's field offsets, including inherited fields")
+    p.add_argument("package")
+    p.add_argument("name")
+    p.add_argument("--grep", help="only fields whose name contains this")
+    p.add_argument("--limit", type=int, default=40)
+    p.set_defaults(func=cmd_fields)
 
     p = sub.add_parser("refs",
                        help="property references in a function's bytecode (heuristic)")

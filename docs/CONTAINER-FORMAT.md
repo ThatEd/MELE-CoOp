@@ -246,9 +246,33 @@ the full sweep is the population.
     python -I tools/melepkg/mele_tables.py enum    <pkg> <EWhoTriggers>
     python -I tools/melepkg/mele_tables.py enums   <pkg>
     python -I tools/melepkg/mele_tables.py refs    <pkg> <function>
+    python -I tools/melepkg/mele_tables.py fields  <pkg> <Class> [--grep PAWN]
     python -I tools/melepkg/mele_tables.py objects <pkg> [name]
     python -I tools/melepkg/ue3_bytecode.py survey <pkg>
     python -I tools/melepkg/ue3_bytecode.py strings <pkg> <function>
+
+## Class and struct fields
+
+`fields` walks the `SuperStruct` chain, so a class's field list includes what it inherits:
+
+    python -I tools/melepkg/mele_tables.py fields <Engine.pcc> PlayerController --grep Pawn
+
+    +0x3A0 Pawn   ObjectProperty  (declared on Controller)
+
+Without the super walk `Pawn` looks **absent** from `PlayerController` - it is declared on
+`Controller`, 493 direct children away. That is rule 13 of this project, and it caught this
+function on its first run.
+
+**Field NAMES, TYPES, DECLARATION ORDER and OWNER are exact. The byte offsets are not.** Measured
+against live memory, `PlayerController.Pawn` computes as 0x3A0 / 0x2C0 / 0x378 on ME1 / ME2 / ME3
+against real 0x3DC / 0x294 / 0x3BC, and `myHUD` needs a different correction again. A single live
+anchor cannot rebase them, so `class_fields` reports `offsets-unverified` and the command prints a
+warning. Do not use these to address memory.
+
+A `UScriptStruct` is different: no native base, so offsets are exact.
+`PerPlayerSplitscreenData` is `{SizeX @0x00, SizeY @0x04, OriginX @0x08, OriginY @0x0C}` and
+`SplitscreenData` is `{PlayerData: TArray<PerPlayerSplitscreenData>}` - the split-screen pane
+geometry, identical on all three builds.
 
 ## Bytecode property references (heuristic)
 
