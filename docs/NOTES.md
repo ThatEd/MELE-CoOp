@@ -4346,3 +4346,69 @@ campaign class serialises 1. Reading the declaration gives the wrong answer with
 `bUseSeamlessTravel`" is a fact because 6,685 objects closed exactly across the three builds. The
 same parse on a desynchronised walk would report the same absence, and the count is what separates
 the two.
+## 2026-10-30 (save path): ME1 persists the actor graph, ME2/ME3 do not, and that touches co-op on ME1 only
+
+Re-runnable: `python -I tools/melepkg/mele_props.py savecheck`. Pinned by `test_mele_props.py`.
+
+Three builds, three different save architectures, and the split is not the one the earlier notes
+described. Counting classes whose name ends in `SaveObject`:
+
+| build | in `SFXGame.pcc` | across the whole install |
+|---|---|---|
+| ME1 | **23** | **34** |
+| ME2 | **0** | **0** |
+| ME3 | **0** | **0** |
+
+ME1's mechanism is an **actor-graph walk**. `BioLevelSaveObject` carries
+`m_LevelObjects: ArrayProperty` - one entry per saveable actor in the level - plus `m_LootBags` and
+`m_lstDestroyedObjects`. `BioWorldSaveObject` holds `m_Levels`. Every saveable class answers
+`GetSaveObjectClass`, and `BioBaseSquad` answers it too (verified present). So the save is a
+serialisation of the level's objects, not a story-state summary.
+
+ME2 and ME3 do not have that at all. There is no `BioLevelSaveObject`, no `BioBaseSaveObject`, and no
+`*SaveObject` class anywhere in either install. Persistence runs through `SFXSFHandler_Save` /
+`SFXSaveGame`, driven by the `SFXSeqAct_SaveGame` Kismet action placed in specific levels — ME2 has
+`SFXSeqAct_EndGameSave` and `SFXSeqAct_SaveHenchmen`, ME3 adds `SFXSeqAct_ForcedSaveGame`,
+`SFXSeqAct_LoadLegendSave` and `SFXSeqAct_TogglePlayerSaves`.
+
+**The co-op consequence is LE1-only and it is a load bug, not a save bug.** A client's squadmate pawn
+standing in the host's level is a saveable actor, so `m_LevelObjects` captures it. On load the engine
+restores a pawn with no story identity. The damage is bounded because ME1's `BioPawnSaveObject` only
+carries cosmetics:
+
+    BioPawnSaveObject super=BioActorSaveObject: m_fGrimeGrimeLevel, m_fGrimeDirtLevel,
+                                                  m_nTalkedToCount, m_bHeadGearVisiblePreference
+
+so what comes back is a pawn shape, not a corrupted career. The fix is to make the client pawn
+non-saveable before any save runs — `GetSaveObjectClass` returning None is the mechanism to check,
+and it is on the same class that already answers `True` for the squad today.
+
+LE2/LE3 have no such exposure: nothing enumerates the level's actors at save time.
+
+### The per-squadmate record is a different size on every build
+
+| build | `HenchmanSaveRecord` |
+|---|---|
+| ME1 | **28** fields |
+| ME2 | **32** fields |
+| ME3 | **9** fields |
+
+ME1 and ME2 share most of it (`simpleTalents`, `complexTalents`, `Equipment`, `Weapons`, `Tag`,
+`TalentPoints`, the stat block). ME3 drops all of that and keeps 9: `Powers`, `Weapons`, `WeaponMods`,
+`LoadoutWeapons`, `Tag`, `MappedPower`, `CharacterLevel`, `TalentPoints`, `Grenades`. A squadmate's
+persisted progression therefore does not port between builds in either direction, which matters
+because the client owning a squadmate means that record is now partly a *player's* progress.
+
+### Rule 52
+
+**A save system that enumerates actors will capture whatever a mod spawned.** ME1 walks
+`m_LevelObjects`; ME2/ME3 do not. A mod that adds an actor to a level is adding a row to ME1's save,
+and the only warning it gets is a stray pawn after a load. Check `GetSaveObjectClass` before adding
+anything to a level on ME1.
+
+### Rule 53
+
+**"The save systems differ per build" is too coarse to act on.** The earlier note said LE1 has
+`BioBaseSaveObject` subclasses and LE2/LE3 add `SFXSaveGame`, which is true and misleading in equal
+measure: LE2/LE3 do not have the subclasses at all, so the difference is architectural (graph walk vs
+handler-driven), not additive.

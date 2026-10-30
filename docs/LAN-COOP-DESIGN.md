@@ -254,9 +254,22 @@ is three different edits, and ME3's is the simplest because there is no orders s
 
 ### 3.3 Save, and what happens when the client leaves
 
-The save systems are **structurally different per build** (measured): LE1 has `BioBaseSaveObject`
-subclasses only; LE2/LE3 add `SFXSaveGame`; LE3 adds `SFXOnlineSaveGameMP`. The host's save is the
-career. The client keeps no campaign state at all — it is a controller attached to the host's world.
+The save systems are **structurally different per build** (measured, `savecheck`): LE1 writes the
+level as `BioLevelSaveObject.m_LevelObjects`, **one entry per saveable actor**, and defines 23
+`*SaveObject` classes in `SFXGame.pcc` (34 across the install). LE2 and LE3 define **zero**
+`*SaveObject` classes anywhere — persistence moved behind `SFXSFHandler_Save` / `SFXSaveGame` and the
+`SFXSeqAct_SaveGame` Kismet action, so the world is not enumerated actor-by-actor.
+
+**That asymmetry has a direct co-op consequence on LE1 only.** A client's squadmate pawn standing in
+the host's level is a saveable actor, so `m_LevelObjects` will capture it and restore it on load —
+even though it has no story identity. LE1's `BioPawnSaveObject` carries only cosmetic fields (grime
+levels, "talked to" count, headgear preference), so the damage is bounded rather than catastrophic,
+but it is real and it is a *load* bug, not a save bug: it would surface as a stray pawn after
+reloading. LE2/LE3 do not have the problem. The mitigation on LE1 is to make the client pawn
+non-saveable before any save runs; the mechanism to check is `GetSaveObjectClass` returning None.
+
+The host's save is the career. The client keeps no campaign state at all — it is a controller
+attached to the host's world.
 
 A client drop is therefore a **non-event for the career**: the host removes the puppet, the
 squadmate reverts to the host's AI (S2/S3) or the slot returns to host control (S1). This is the
@@ -331,7 +344,9 @@ memory.
 | `BioSeqAct_ResurrectHenchman` | yes | yes | yes | shared, but it is a *Kismet* action, not a per-player revive |
 | `SFXCameraMode_SplitScreenCombat` | – | – | yes | LE3-only |
 | galaxy map handler | `BioSFHandler_GalaxyMap` | + `BioSFHandler_PCGalaxyMap` | + `BioSFHandler_PCGalaxyMap` | LE2/LE3 have a PC-specific handler |
-| save classes | `BioBaseSaveObject` tree | + `SFXSaveGame` | + `SFXSaveGame`, `SFXOnlineSaveGameMP` | structurally different per build |
+| save classes | `BioBaseSaveObject` tree, **23 in `SFXGame.pcc`** | **0** | **0** | structurally different per build |
+| how a level is persisted | `BioLevelSaveObject.m_LevelObjects`, one entry **per saveable actor** | behind `SFXSFHandler_Save` | behind `SFXSFHandler_Save` | **LE1 will capture a client pawn in the save** |
+| `HenchmanSaveRecord` fields | 28 | 32 | 9 | per-squadmate records do not port between builds |
 
 ### The three holes this table exposes
 

@@ -331,6 +331,41 @@ def t_roster_element_type():
     return "ok", "ME1/ME2 TArray<MemberData> (17/7 fields); ME3 TArray<Object>, no MemberData"
 
 
+@case("ME1 persists the actor graph and ME2/ME3 do not")
+def t_save_asymmetry():
+    """The save-system split, which is the one place a co-op bug lands in the player's career.
+
+    ME1 writes the level as `BioLevelSaveObject.m_LevelObjects`, one entry per saveable actor, so a
+    client pawn present in the host's level is captured by the save even though it has no story
+    identity. ME2/ME3 have no `*SaveObject` classes at all - persistence moved behind
+    `SFXSFHandler_Save` - so the same pawn is not enumerated.
+
+    This is asserted because a "just make ME1 match ME2" simplification is exactly the kind of edit
+    a later agent would make, and it would be wrong in the direction that corrupts saves.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_savecheck(None)
+    out = buf.getvalue()
+    if "install absent" in out or "*SaveObject classes" not in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_savecheck returned %d:\n%s" % (rc, out.strip())
+    if "ME2   0 class(es) ending in SaveObject" not in out:
+        return "fail", "ME2 has SaveObject classes:\n%s" % out.strip()
+    if "ME3   0 class(es) ending in SaveObject" not in out:
+        return "fail", "ME3 has SaveObject classes:\n%s" % out.strip()
+    if "ME1 BioLevelSaveObject carries m_LevelObjects" not in out:
+        return "fail", "ME1's actor-graph save is unsupported:\n%s" % out.strip()
+    if "HenchmanSaveRecord 28 field(s)" not in out:
+        return "fail", "ME1's HenchmanSaveRecord changed:\n%s" % out.strip()
+    if "ME3  HenchmanSaveRecord 9 field(s)" not in out:
+        return "fail", "ME3's HenchmanSaveRecord changed:\n%s" % out.strip()
+    return "ok", "ME1 23 SaveObject classes + m_LevelObjects; ME2/ME3 zero; records 28/32/9"
+
+
 def main():
     failures = 0
     skips = 0

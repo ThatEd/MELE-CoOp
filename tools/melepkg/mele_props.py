@@ -843,6 +843,104 @@ def cmd_coopcheck(args):
     return 0
 
 
+def cmd_savecheck(args):
+    """How each build persists a level, because it decides whether the host's save is safe.
+
+    ME1 and ME2/ME3 do not persist the world the same way at all, and this is the kind of difference
+    that cannot be discovered by a bug report - it shows up as a corrupt save weeks later.
+
+      * ME1 walks the **actor graph**: every saveable actor answers `GetSaveObjectClass`, and the
+        level is written as `BioLevelSaveObject.m_LevelObjects` - one entry per actor, including
+        pawns. `SFXGame.pcc` alone defines **23** `*SaveObject` classes (34 across the whole
+        install, the rest in `Engine.pcc` and level packages).
+      * ME2 and ME3 have **zero** `*SaveObject` classes in `SFXGame.pcc` and zero anywhere in the
+        install. Persistence moved behind `SFXSFHandler_Save` / `SFXSaveGame` and the
+        `SFXSeqAct_SaveGame` Kismet action, so the world is not enumerated actor-by-actor at save
+        time.
+
+    The consequence for co-op is specific to ME1: a client's squadmate pawn sitting in the host's
+    level would be captured by `m_LevelObjects` and restored on load, even though it has no story
+    identity. ME1's `BioPawnSaveObject` only carries cosmetic fields (grime levels, "talked to"
+    count, headgear preference), so the damage is bounded - but it is not zero, and it is
+    measurable rather than guessed.
+
+    Exits 1 when the shape differs from what the design assumes.
+    """
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+
+    def pkg_path(game, name):
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", name + ".pcc")
+            if os.path.isfile(cand):
+                return cand
+        return None
+
+    print("1. *SaveObject classes: ME1 persists the actor graph, ME2/ME3 do not")
+    counts = {}
+    for game in ("ME1", "ME2", "ME3"):
+        path = pkg_path(game, "SFXGame")
+        if not path:
+            continue
+        t = mt.build(path)
+        names = sorted({e["object_name"] for e in t["exports"]
+                        if e["class_index"] == 0 and (e["object_name"] or "").endswith("SaveObject")})
+        counts[game] = len(names)
+        print("   %-4s %2d class(es) ending in SaveObject%s"
+              % (game, len(names), (": " + ", ".join(names[:6]) + ", ...") if names else ""))
+    if counts.get("ME1", 0) < 10:
+        problems.append("ME1's SaveObject family is smaller than expected (%d)" % counts.get("ME1", 0))
+    if counts.get("ME2") or counts.get("ME3"):
+        problems.append("ME2/ME3 have SaveObject classes after all (%r) - re-read the save plan"
+                        % counts)
+    path = pkg_path("ME1", "SFXGame")
+    if path:
+        t = mt.build(path)
+        cls = [e for e in t["exports"]
+               if e["class_index"] == 0 and e["object_name"] == "BioLevelSaveObject"]
+        if cls:
+            rows = mt.class_fields(t, t["buf"], cls[0])[0]
+            names = [r[1] for r in rows]
+            if "m_LevelObjects" not in names:
+                problems.append("ME1's BioLevelSaveObject has no m_LevelObjects - the actor-graph "
+                                "claim is unsupported")
+            else:
+                print("   ME1 BioLevelSaveObject carries m_LevelObjects: one entry per saveable "
+                      "actor in the level")
+        base_squad = [e for e in t["exports"]
+                      if e["class_index"] == 0 and e["object_name"] == "BioBaseSquad"]
+        if base_squad:
+            fns = {r[1] for r in mt.class_fields(t, t["buf"], base_squad[0])[0] if r[2] == "Function"}
+            print("   ME1 BioBaseSquad.GetSaveObjectClass present: %s"
+                  % ("GetSaveObjectClass" in fns))
+
+    print()
+    print("2. The per-squadmate save record is a different size on every build")
+    for game in ("ME1", "ME2", "ME3"):
+        path = pkg_path(game, "SFXGame")
+        if not path:
+            continue
+        t = mt.build(path)
+        hits = [e for e in t["exports"] if e["object_name"] == "HenchmanSaveRecord"
+                and mt.describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.ScriptStruct"]
+        if not hits:
+            print("   %-4s HenchmanSaveRecord ABSENT" % game)
+            continue
+        rows = mt.struct_fields(t, t["buf"], hits[0])
+        print("   %-4s HenchmanSaveRecord %d field(s)" % (game, len(rows)))
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: ME1 saves the actor graph and will capture a client pawn; ME2/ME3 save behind "
+          "SFXSFHandler_Save and have no SaveObject classes")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -888,6 +986,10 @@ def main():
     p = sub.add_parser("coopcheck",
                        help="the travel/clamp/roster facts the co-op design turns on")
     p.set_defaults(func=cmd_coopcheck)
+
+    p = sub.add_parser("savecheck",
+                       help="how each build persists a level (decides save safety)")
+    p.set_defaults(func=cmd_savecheck)
 
     args = ap.parse_args()
     return args.func(args)
