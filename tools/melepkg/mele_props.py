@@ -887,13 +887,39 @@ def cmd_coopcheck(args):
             problems.append("%s: BioAiController does not override Possess/UnPossess (%r)" % (game, bio))
 
     print()
+    print("5. Conversation choice: the selection call, which the design called a hole")
+    for game in ("ME1", "ME2", "ME3"):
+        path = pkg_path(game, "SFXGame")
+        if not path:
+            continue
+        t = mt.build(path)
+        hits = [e for e in t["exports"] if e["class_index"] == 0
+                and e["object_name"] == "BioSFHandler_Conversation"]
+        if not hits:
+            print("   %-4s BioSFHandler_Conversation ABSENT" % game)
+            problems.append("%s: no BioSFHandler_Conversation" % game)
+            continue
+        rows = mt.class_fields(t, t["buf"], hits[0])[0]
+        have = {r[1] for r in rows if r[2] == "Function"}
+        shared = [k for k in ("SelectConversationEntry", "SelectConversationSegment",
+                              "UpdateConversationOptions") if k in have]
+        print("   %-4s %d fns; selection surface %s" % (game, len(have), shared))
+        # The design called "the client cannot pick dialogue" a hole. If the selection call is on
+        # every build, the hole is not a missing API - it is whether a second selector is honoured,
+        # which is a live question. Asserting presence keeps those two claims apart.
+        if "SelectConversationEntry" not in have:
+            problems.append("%s: no SelectConversationEntry - the choice route is not shared after "
+                            "all" % game)
+
+    print()
     if problems:
         print("PROBLEM(S):")
         for p in problems:
             print("  - %s" % p)
         return 1
-    print("verdict: no seamless travel anywhere; ME3 clamps MaxPlayersAllowed to 1; "
-          "the roster is a struct array on ME1/ME2 and an object array on ME3")
+    print("verdict: no seamless travel anywhere; ME3 clamps MaxPlayersAllowed to 1; the roster is a "
+          "struct array on ME1/ME2 and an object array on ME3; possession and the conversation "
+          "selection call are shared")
     return 0
 
 

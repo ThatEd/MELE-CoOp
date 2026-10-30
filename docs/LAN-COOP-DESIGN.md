@@ -303,7 +303,7 @@ the client's pawn does not survive it — it must be destroyed and re-created on
 | **aim/fire** | input state, fire requests | projectile spawn (host spawns, replicates) | shots appear late or not at all |
 | **powers** | target + power id request; host resolves | cooldown timers (host owns) | double-fire or no fire |
 | **enemies** | host only | client never simulates AI | client sees enemies as puppets; acceptable |
-| **conversation** | host drives `BioConversation`; client receives camera + node | client choices (unless host's turn) | client cannot pick dialogue — **acceptable for S2, a hole for S3** |
+| **conversation** | host drives `BioConversation`; client receives camera + node | who *owns* a choice when both could pick | client sees the conversation; picking is a **contention** question, not a missing call — see below |
 | **map events / triggers** | host drives; client receives state | client never fires Kismet | client walking through a trigger does nothing — this is the **deliberate** design, see `TRIGGER-DELAY.md` |
 | **galaxy map / travel** | host only; client follows | client never starts a jump | client is frozen or in a stale level if the host travels — and the pawn **is** destroyed, see below |
 | **saves** | host only | client has none | client crash costs nothing |
@@ -312,8 +312,13 @@ the client's pawn does not survive it — it must be destroyed and re-created on
 
 Three rows are the holes, and they are stated as such:
 
-* **conversation choices.** In S2 the client is a passenger in every conversation. That is honest but
-  thin; a full career has hundreds of them and the client would never choose anything.
+* **conversation choices.** `BioSFHandler_Conversation.SelectConversationEntry`,
+  `SelectConversationSegment` and `UpdateConversationOptions` are present on **all three builds**
+  (measured), so a client picking a dialogue option is an existing call, not a missing API. What is
+  genuinely unknown is whether the campaign honours a **second selector** while the host is also
+  driving the conversation — a contention question, and a different one from "the function does not
+  exist". The two need different fixes: a missing API means writing one; a contended selector means
+  arbitrating who owns the conversation. Do not treat this row as unimplementable.
 * **galaxy map travel.** The host jumping systems is a level transition for the client too — and it is
   a **hard reload**, not seamless: `bUseSeamlessTravel` is False on every build (§4), so no
   `GetSeamlessTravelActorList` is consulted and nothing is carried. The client's puppet is destroyed
@@ -578,10 +583,11 @@ this page:
 
 The remaining holes are real: the downed-*player* state has to be supplied on all three builds (the
 revive radius and health values exist; the state does not); LE1 has no `SFXPawn_Henchman`; ME3
-re-parents the squadmate pawn and renumbers the trigger enum; conversation and galaxy-map travel are
-passenger experiences in the S2 design. None of those is fatal to the architecture, and all of them
-are the kind of thing that kills a project *after* someone has written a thousand lines assuming
-otherwise.
+re-parents the squadmate pawn and renumbers the trigger enum; galaxy-map travel is a passenger
+experience in the S2 design. Conversation choices are *not* in that list any more — the selection call
+is shared on all three, so the client picking dialogue is contention to arbitrate, not an API to
+write. None of the remaining holes is fatal to the architecture, and all of them are the kind of thing
+that kills a project *after* someone has written a thousand lines assuming otherwise.
 
 **One thing is shared and should be written once:** `Controller.Possess` / `UnPossess` are declared on
 the base `Controller` in all three builds and `BioAiController` overrides both, so taking a squadmate

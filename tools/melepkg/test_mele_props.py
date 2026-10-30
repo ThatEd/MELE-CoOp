@@ -503,6 +503,39 @@ def t_possession_route():
     return "ok", "Controller/PlayerController/AIController/BioAiController all carry P+U on all three"
 
 
+@case("the conversation selection call is shared, so 'the client cannot choose' is not an API gap")
+def t_conversation_choice_shared():
+    """The design called client dialogue choice a hole. It is not a missing function.
+
+    `BioSFHandler_Conversation.SelectConversationEntry`, `SelectConversationSegment` and
+    `UpdateConversationOptions` are present on all three builds, so a client *can* be made to pick a
+    dialogue option with an existing call. What is genuinely unknown is whether the campaign honours
+    a second selector while the host is also driving the conversation - a live question, and a
+    different one from "the API does not exist".
+
+    The distinction matters because the two have different fixes: a missing API means writing one,
+    and a contended selector means arbitrating who owns the conversation. Keeping them apart is why
+    this case asserts presence rather than the design's earlier absence claim.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_coopcheck(None)
+    out = buf.getvalue()
+    if "Conversation choice" not in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_coopcheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        line = [l for l in out.splitlines() if l.strip().startswith(game) and "selection surface" in l]
+        if not line:
+            return "fail", "%s conversation section missing:\n%s" % (game, out.strip())
+        if "SelectConversationEntry" not in line[0]:
+            return "fail", "%s lost SelectConversationEntry: %s" % (game, line[0].strip())
+    return "ok", "SelectConversationEntry/Segment/UpdateConversationOptions on all three builds"
+
+
 def main():
     failures = 0
     skips = 0

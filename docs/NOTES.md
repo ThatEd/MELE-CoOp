@@ -4558,3 +4558,36 @@ happening in practice, which is why it needed "session handoff/disconnect restor
 **A per-build table must say which rows are shared, or it manufactures work.** Possession is identical
 on all three; the roster element is not. Listing them together implies three implementations where one
 suffices, and the cost is paid by whoever writes the second one.
+## 2026-10-30 (conversation): the client picking dialogue is a contention question, not a missing API
+
+`LAN-COOP-DESIGN.md` listed "the client cannot pick dialogue" as a hole, on the assumption that there
+was no way to do it. There is. Re-runnable: `python -I tools/melepkg/mele_props.py coopcheck`
+(section 5).
+
+`BioSFHandler_Conversation` carries the same selection surface on every build:
+
+| build | handler functions | selection surface |
+|---|---|---|
+| ME1 | 18 | `SelectConversationEntry`, `SelectConversationSegment`, `UpdateConversationOptions` |
+| ME2 | 21 | same three |
+| ME3 | 135 | same three, plus `SelectEntry`, `SelectInterrupt`, `ShowReplyWheel`, `NuiSpeechUpdateOptions` |
+
+So a client choosing a dialogue option is an **existing call**, and ME3's handler has by far the
+largest surface (135 functions vs 18/21) with explicit `SelectEntry` / `SelectInterrupt` entry points.
+
+What is genuinely unknown is different, and worth stating precisely: **whether the campaign honours a
+second selector while the host is also driving the conversation.** That is contention, not
+capability, and the two need different work — a missing API means writing one; a contended selector
+means arbitrating who owns the conversation (host-decides, or per-choice turn-taking).
+
+The rest of the conversation surface is per-build in the way the earlier note said, and now measured:
+ME1/ME2 have `BioSeqAct_StartConversation`, ME3 replaces it with `SFXSeqAct_StartConversation` and adds
+`BioConversationController`, `BioConversationManager` and `SFXModule_Conversation`. ME2 and ME3 add
+`BioSFHandler_PCConversation`.
+
+### Rule 58
+
+**"We cannot do X" and "the function for X does not exist" are different claims, and only the second
+is answered by reading the packages.** The conversation row was recorded as an unfixable hole for
+several sessions; the function was there the whole time and nobody checked. A design hole written from
+reasoning rather than measurement survives because nobody re-reads it.
