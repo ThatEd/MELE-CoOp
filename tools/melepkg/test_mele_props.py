@@ -235,6 +235,8 @@ def t_no_scripted_net_driver():
         return "skip", "install absent"
     if "net driver classes as script exports" not in out:
         return "fail", "the transport check did not run:\n%s" % out.strip()
+    if "skipped: no package index" in out:
+        return "skip", "no package index (the driver check needs every package; set MELE_INDEX_DIR)"
     if "no build scripts a net driver" not in out:
         return "fail", ("a build scripts a net driver class after all - the transport plan needs "
                         "re-checking:\n%s" % out.strip())
@@ -425,15 +427,23 @@ def t_maplist_is_structural():
 
     The counts are asserted because they are the scope claim: if a build's map count changes, the
     statement "the campaign works" covers a different set of levels.
+
+    **Skips unless a package index exists.** Without one, `maplist` walks the install and parses all
+    19,430 packages - correct, and several minutes per build. A test suite should not silently take
+    fifteen minutes because a cache is absent, and the count it would produce is the same either way,
+    so the honest thing is to skip and say why rather than to slow the suite down for everyone.
     """
     import io
     import contextlib
+    index = os.path.join(mp._index_dir(), "ME1.json")
+    if not os.path.isfile(index):
+        return "skip", "no package index (maplist would parse 19,430 packages; set MELE_INDEX_DIR)"
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        mp.cmd_maplist(type("A", (), {"game": None})())
+        rc = mp.cmd_maplist(type("A", (), {"game": None})())
     out = buf.getvalue()
-    if "index missing" in out or "map(s) with a PersistentLevel" not in out:
-        return "skip", "index absent"
+    if "map(s) with a PersistentLevel" not in out:
+        return "skip", "maplist produced no counts"
     for want in ("ME1: 1811 map", "ME2: 2156 map", "ME3: 2677 map", "6644 map(s) total"):
         if want not in out:
             return "fail", "missing %r in:\n%s" % (want, out.strip())

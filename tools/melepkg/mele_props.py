@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 """Read the tagged property stream inside a UObject - the values, not just the field names.
 
 ## Why this was the blocker
@@ -72,6 +72,7 @@ Usage:
     python -I tools/melepkg/mele_props.py coopcheck                    # travel/clamp/roster
     python -I tools/melepkg/mele_props.py savecheck                    # how each build saves
     python -I tools/melepkg/mele_props.py maplist                      # how many maps to cover
+    python -I tools/melepkg/mele_props.py squadadd                     # how the campaign recruits
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -84,7 +85,7 @@ This reader is correct on `Default__X` exports and is **not** usable on an actor
 
 A spawned actor's serial block is not a plain property tag stream, so no tag walk over it means
 anything. The failure is quiet rather than loud - a level query returns a handful of plausible tags
-and then desynchronises - so `test_mele_props.py` pins both halves: CDOs must stay at 100%, and a
+and then desynchronises - so the test suite pins both halves: CDOs must stay at 100%, and a
 live level must stay below. Do not read `GameTypesSupportedOnThisMap` (or anything else) out of a
 level package with this tool; the answer will look like a measurement.
 """
@@ -579,6 +580,24 @@ def cmd_mapinfo(args):
     return 0 if exact else 2
 
 
+def _require_install(games=("ME1", "ME2", "ME3")):
+    """True when at least one build's `Engine.pcc` can be found.
+
+    Without this, a missing install does not fail - it produces a report full of zeroes
+    ("declared=False, 0 CDOs closed exactly"), which reads as a measurement of an absent property
+    rather than of an absent install. That is the `0 of 10 declare it` failure in another shape, so
+    the check that guards it has to run before any package is touched.
+    """
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    for game in games:
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                return True
+    return False
+
+
 def cmd_routing(args):
     """Reproduce the game-class routing findings for all three installs in one command.
 
@@ -682,6 +701,12 @@ def cmd_routing(args):
     print("net driver classes as script exports (absent => native only)")
     drivers = ("TcpNetDriver", "UdpNetDriver", "DemoRecDriver", "NetDriver",
                "SFXOnlineNetDriver", "IpNetDriver")
+    # This half needs a package index. Without one it would have to parse all 19,430 packages, which
+    # is minutes of work for a single negative; say so instead of either stalling or reporting a
+    # fabricated zero.
+    if not os.path.isfile(os.path.join(_index_dir(), "ME1.json")):
+        print("  skipped: no package index (set MELE_INDEX_DIR); this check needs every package")
+        return 1 if bad else 0
     found = {}
     for game in ("ME1", "ME2", "ME3"):
         hits = []
@@ -705,31 +730,53 @@ def _struct_rows(mt, t, export):
 
 
 def _iter_index(game):
-    """Stream a build's index records without loading all three builds at once."""
-    path = os.path.join(_scratch_index_dir(), "%s.json" % game)
-    if not os.path.isfile(path):
+    """Stream one build's package records, from a cached index if present or from the install.
+
+    The cached index is a speed-up, not a requirement. `maplist` only needs to know which packages
+    carry a `PersistentLevel`, so walking the install is correct and merely slow. Requiring the index
+    would make this module print "index missing" on any checkout without one, which reads as a
+    measurement failure rather than a missing convenience.
+
+    Yields `(game, relative_key, record)` where the record holds `exports` as
+    `[name, class, super, outer]` rows.
+    """
+    path = os.path.join(_index_dir(), "%s.json" % game)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        for rel, rec in data.get("packages", {}).items():
+            if "error" not in rec:
+                yield game, rel, rec
         return
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    for rel, rec in data.get("packages", {}).items():
-        if "error" not in rec:
-            yield game, rel, rec
+
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    for base in pkg.game_dirs():
+        root = os.path.join(base, "Game")
+        for dirpath, _dirnames, filenames in os.walk(os.path.join(root, game, "BioGame")):
+            for name in sorted(filenames):
+                if not name.lower().endswith(".pcc"):
+                    continue
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, root)
+                try:
+                    t = mt.build(full)
+                except Exception:
+                    continue
+                rows = [[e["object_name"],
+                         mt.describe_index(e["class_index"], t["exports"], t["imports"]),
+                         mt.describe_index(e["super_index"], t["exports"], t["imports"]),
+                         mt.describe_index(e["outer_index"], t["exports"], t["imports"])]
+                        for e in t["exports"]]
+                yield game, rel, {"exports": rows}
 
 
-def _scratch_index_dir():
-    """Where `mele_index.py` writes its JSON, resolved the same way that tool does."""
-    mele_index = None
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "mele_index", os.path.join(HERE, "mele_index.py"))
-        mele_index = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mele_index)
-    except Exception:
-        return os.path.join(HERE, "..", "..", "local", "MELE", "index")
-    try:
-        return mele_index.index_dir()
-    except Exception:
-        return os.path.join(HERE, "..", "..", "local", "MELE", "index")
+def _index_dir():
+    """Where an optional pre-built package index would live. Absent is fine."""
+    env = os.environ.get("MELE_INDEX_DIR")
+    if env:
+        return env
+    return os.path.join(HERE, "..", "..", "local", "MELE", "index")
 
 
 def cmd_coopcheck(args):
@@ -754,8 +801,12 @@ def cmd_coopcheck(args):
         both, so taking a squadmate away from its AI and handing it to a player is a first-class
         engine operation rather than an invented one.
 
-    Exits 1 when a measurement contradicts what the design assumes.
+    Exits 1 when a measurement contradicts what the design assumes, and 2 when no install is present
+    (which is a skip, not a finding).
     """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (this is a skip, not a result)")
+        return 2
     mt = load_tables()
     pkg = mt.load_pkg()
     problems = []
@@ -940,6 +991,9 @@ def cmd_maplist(args):
     produced by a tool that had no chance of finding it.
     """
     games = [args.game] if getattr(args, "game", None) else ["ME1", "ME2", "ME3"]
+    if not _require_install(games):
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
     grand = 0
     for game in games:
         maps = []
@@ -948,16 +1002,19 @@ def cmd_maplist(args):
                 maps.append(rel)
         print("=== %s: %d map(s) with a PersistentLevel ===" % (game, len(maps)))
         if not maps:
-            print("   (index missing - run mele_index.py build)")
+            print("   (no packages found for this build - is the install present?)")
             continue
-        base = [m for m in maps if "\\DLC\\" not in m]
-        dlc = [m for m in maps if "\\DLC\\" in m]
+        base = [m for m in maps if "\\DLC\\" not in m and "/DLC/" not in m]
+        dlc = [m for m in maps if "\\DLC\\" in m or "/DLC/" in m]
         print("   base %d, DLC %d" % (len(base), len(dlc)))
         loc = [m for m in maps if "_LOC_" in m]
         if loc:
             print("   %d are localisation packages, not visitable levels" % len(loc))
         grand += len(maps)
     print()
+    if not grand:
+        print("no map found - is the install readable? (skip, not a result)")
+        return 2
     print("%d map(s) total across the selected builds" % grand)
     return 0
 
@@ -983,6 +1040,9 @@ def cmd_squadadd(args):
     same scan finds zero `Bio2DA` members in ME1's body and a coherent accessor family in ME2's and
     ME3's, which is a pattern no noise produces.
     """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
     mt = load_tables()
     pkg = mt.load_pkg()
     problems = []
@@ -1063,6 +1123,9 @@ def cmd_savecheck(args):
 
     Exits 1 when the shape differs from what the design assumes.
     """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
     mt = load_tables()
     pkg = mt.load_pkg()
     problems = []

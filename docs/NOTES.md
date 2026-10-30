@@ -4656,3 +4656,65 @@ reads as a fact. A doc folder should be checkable the way a closure is.
 
 **When a check fails, verify the check before believing the failure.** Three of this guard's failures
 were the guard's fault, and one of them would have been "fixed" by deleting a correct citation.
+## 2026-10-30 (fork): the findings moved into ME3SquadCoop's own structure
+
+The hub is a design record. The findings that a live hook project can act on are now upstream-shaped,
+on branch `research/mele-offline-invariants` in `ThatEd/ME3SquadCoop`, based on that project's
+`dev/campaign-coop` as its `CONTRIBUTING.md` requires.
+
+### What travelled, and why it is different from a copy
+
+| in the fork | how it differs from here |
+|---|---|
+| `tools/melepkg/` (3 modules) | **byte-identical** to the hub's, after two fixes below |
+| `docs/CAMPAIGN-INVARIANTS.md` | rewritten in that project's `observed`/`derived`/`hypothesis` vocabulary, framed around its own open items |
+| `docs/OFFLINE-PACKAGE-READER.md` | new: how to run it and what it cannot read |
+| `tests/test_mele_invariants.py` | new: nine `unittest` cases, `skipUnless` an install is present |
+| `docs/VALIDATION.md` | a new "Offline package evidence" section separating file facts from running-world facts |
+
+Keeping the modules byte-identical was a deliberate choice: two copies of the same 160 KB of parsing
+code is exactly the drift that `check_bundle_sync.py` exists to catch in this hub. Every change made
+while porting went into the hub first and was then copied across, and a hash comparison is the check.
+
+### Two real defects the port exposed, both fixed at the source
+
+1. **The invariant commands reported a measurement when there was no install.** With `MELE_GAME_DIR`
+   pointed at nothing, `coopcheck` printed `declared=False 0 CDOs closed exactly` and exited 1 - a
+   report full of zeroes from a tool that had read nothing, which is the `0 of 10 declare it` failure
+   wearing different clothes. A `_require_install()` guard now runs before any package is touched and
+   exits **2 with "skip, not a result"**, so a caller can distinguish absent evidence from a negative
+   finding. `maplist` had the same shape and got the same guard.
+
+2. **`maplist` needed a sibling tool that was not shipped.** It streamed a pre-built index from
+   `mele_index.py` and printed "index missing - run mele_index.py build" otherwise, which is a dead
+   citation in the one place a reader looks for a count. `_iter_index` now falls back to walking the
+   install and parsing each package: slower, correct, and no hidden dependency. The index is still
+   used when present.
+
+Two smaller ones: seven `open(...).read()` calls left file handles to the GC (visible as
+`ResourceWarning`s under `python -m unittest -v`, which is how that project runs its suite), and
+`mele_props.py` carried a UTF-8 BOM that made `ast.parse` fail on line 1.
+
+### What that project should take from this, in its own terms
+
+Its `docs/VALIDATION.md` lists "sustained mission travel" as not established. Section 1 makes that
+item different from what it looks like: **no build enables seamless travel** (0 of 6,685 CDOs), so
+`GetSeamlessTravelActorList` is never called and a level change destroys the guest's possessed pawn.
+The remaining work is re-creating and re-possessing the pawn in the new world, not making a hook fire.
+
+Its capacity lease raises `MaxPlayers`/`MaxAllowed`; section 2 names the exact pair and the exact
+asymmetry - LE3's `Default__SFXGame` serialises `MaxPlayersAllowed=1` while the base class allows 32,
+and LE1/LE2 set neither.
+
+### Rule 61
+
+**A finding that cannot be re-run in the place it will be acted on is not finished.** Every claim in
+this session was reproducible here; it became useful only when the command, the doc and a test that
+skips without an install travelled with it. A design record that says "measured" and hands over no way
+to re-measure puts the next person back where the last one started.
+
+### Rule 62
+
+**Two copies of parsing code is a drift bug waiting to be filed.** The ported modules are byte-
+identical by hash, not by intent, and the two fixes it surfaced were made in the original rather than
+the copy.

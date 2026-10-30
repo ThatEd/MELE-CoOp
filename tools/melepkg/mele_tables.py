@@ -539,7 +539,8 @@ def _empty_package(package, game, data, chunks, pkg):
 
 def build(package, limit=None):
     pkg = load_pkg()
-    data = open(package, "rb").read()
+    with open(package, "rb") as stream:
+        data = stream.read()
     dll = pkg.find_oodle()
     if not dll:
         raise SystemExit("no oo2core*.dll found. Set MELE_ODLE_DLL or $MELE_GAME_DIR.")

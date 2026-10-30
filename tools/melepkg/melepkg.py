@@ -470,7 +470,8 @@ def identifiers(buf):
 
 
 def cmd_info(args):
-    data = open(args.package, "rb").read()
+    with open(args.package, "rb") as stream:
+        data = stream.read()
     print("file            : %s" % os.path.basename(args.package))
     print("size on disk    : %d" % len(data))
     if len(data) >= 16:
@@ -492,7 +493,8 @@ def cmd_info(args):
 
 
 def cmd_blocks(args):
-    data = open(args.package, "rb").read()
+    with open(args.package, "rb") as stream:
+        data = stream.read()
     chunks = find_chunks(data)
     if not chunks:
         print("no valid chunk found")
@@ -512,7 +514,8 @@ def cmd_blocks(args):
 
 
 def cmd_decompress(args):
-    data = open(args.package, "rb").read()
+    with open(args.package, "rb") as stream:
+        data = stream.read()
     dll = find_oodle(args.oodle)
     if not dll:
         raise PackageError("no oo2core*.dll found; pass --oodle")
@@ -612,7 +615,8 @@ def validate_header(vals, image_size=0):
 
 
 def cmd_header(args):
-    data = open(args.package, "rb").read()
+    with open(args.package, "rb") as stream:
+        data = stream.read()
     chunks = find_chunks(data)
     if not chunks:
         raise PackageError("no valid chunk found")
@@ -659,7 +663,8 @@ def cmd_header(args):
 
 
 def cmd_nametable(args):
-    data = open(args.package, "rb").read()
+    with open(args.package, "rb") as stream:
+        data = stream.read()
     dll = find_oodle(args.oodle)
     if not dll:
         raise PackageError("no oo2core*.dll found; pass --oodle")
@@ -679,7 +684,8 @@ def cmd_nametable(args):
 
 
 def cmd_names(args):
-    data = open(args.package, "rb").read()
+    with open(args.package, "rb") as stream:
+        data = stream.read()
     dll = find_oodle(args.oodle)
     if not dll:
         raise PackageError("no oo2core*.dll found; pass --oodle")

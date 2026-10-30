@@ -597,3 +597,28 @@ around it is per-build; that is not.
 That is what this page is for. Reproduce every claim in §1, §5, §5b and §5c with
 `python -I tools/melepkg/mele_props.py routing`, `... coopcheck`, `... savecheck`, `... squadadd` and
 `... maplist`.
+
+## 10. Where this now lives
+
+This document is the hub's design record. The parts of it that a maintainer of a live hook project can
+act on have been moved into an upstream-shaped contribution so they can be reviewed, tested and land
+where the code is:
+
+**Branch `research/mele-offline-invariants` on [ThatEd/ME3SquadCoop](https://github.com/ThatEd/ME3SquadCoop)**,
+based on that project's `dev/campaign-coop` as its `CONTRIBUTING.md` requires. It carries:
+
+| in the fork | what it is |
+|---|---|
+| `tools/melepkg/` | the offline reader - container, tables, signatures, class default objects. Identical to `tools/melepkg/` here. |
+| `docs/CAMPAIGN-INVARIANTS.md` | the measurements from §1, §5 and §5c, labelled in that project's own `observed`/`derived`/`hypothesis` vocabulary, with the consequences for its guest work |
+| `docs/OFFLINE-PACKAGE-READER.md` | how to run the reader, and its measured scope limit (100% of CDOs, 22.5% / 0% of live level actors) |
+| `tests/test_mele_invariants.py` | nine `unittest` cases that skip without an install |
+| `docs/VALIDATION.md` | a new "Offline package evidence" section drawing the boundary between file facts and running-world facts |
+
+The two findings that most affect that project are that **no build enables seamless travel** (so the
+`sustained mission travel` item in its own validation list is not a missing hook) and that **LE3 clamps
+`MaxPlayersAllowed` to 1** on its campaign game class (which names the field pair its capacity lease
+raises).
+
+No pull request has been opened against upstream: that project's `AGENTS.md` says not to publish
+issues or PRs until the owner asks. The branch is pushed and ready for the owner to review and open.
