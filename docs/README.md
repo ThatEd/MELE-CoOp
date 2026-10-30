@@ -82,10 +82,11 @@ Two supporting pages:
   order with byte offsets**, **enum members**, **class and struct field layouts**, and **function
   bytecode extents**. Verified on all 12,704 packages in the three installs, with the four closures
   that prove it and the coordinate-space error that hid them for a session.
-- [TARGETS.generated.md](./TARGETS.generated.md) - **generated from the packages, not written by
-  hand**: every call co-op needs, per build, with its declaring class, parameters in declaration
-  order, parms size and bytecode size, plus the enums on the same code path. Regenerating it is how
-  you see a change in the game's own data.
+- A generated **target map** is deliberately NOT shipped here: it lists function names, declaring
+  classes, parameter orders and parms byte counts derived from the game's packages, which makes it
+  extracted game data rather than documentation. Regenerate it against your own install:
+  python -I tools/melepkg/coop_targets.py --out TARGETS.generated.md. The hub keeps the copy for
+  this game's write-up.
 - [COMMAND-SUITE.md](./COMMAND-SUITE.md) - the **test area**: 156 command mechanisms in 20
   categories with presence measured per game, arranged into 23 ordered phases, each stating what
   it proves and what would make it wrong. Also the per-game capability differences it measured
