@@ -1,3 +1,7 @@
+
+# Work moved to https://github.com/ThatEd/ME3SquadCoop
+
+
 # MELE Co-Op Mod
 
 Campaign co-op for **Mass Effect Legendary Edition** — the host keeps Shepard, the client takes a
