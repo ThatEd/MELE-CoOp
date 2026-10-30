@@ -4610,3 +4610,49 @@ ME1/ME2 have `BioSeqAct_StartConversation`, ME3 replaces it with `SFXSeqAct_Star
 is answered by reading the packages.** The conversation row was recorded as an unfixable hole for
 several sessions; the function was there the whole time and nobody checked. A design hole written from
 reasoning rather than measurement survives because nobody re-reads it.
+## 2026-10-30 (docs audit): fifty-six tool citations checked, and seven of them pointed nowhere
+
+A guard now exists: `test_mele_props.py` walks `games/mass-effect-legendary-edition/` for `tools/...`
+mentions and fails when the path is not on disk. It found more dead references than the two already
+known.
+
+| what was cited | what was true |
+|---|---|
+| `tools/binkproxy/` and the inject script (both covered by the provenance note above) | built in the mod checkout, **not here** |
+| `tools/ue3live/ue3_check_chain.py`, `ue3_discover_external.py`, `ue3_find_engine_global.py`, `ue3_playerchain.py`, `ue3_props.py`, `ue3_reader.py`, `ue3_verify_offsets.py` | **these exist and always did** — they are under `tools/ue3live/`, and every citation was one directory too high |
+| the split-player sources (`le2p2.c`, `p2-levels.json`, `splitplayer.asi`), the offset discoverer, the LE2 dumper and the local-player reader | built in the mod checkout, **not here**, marked at each site |
+
+The `ue3live` group matters most: those scripts are the live-process readers and they were cited at a
+path that does not exist, so anyone following `NOTES.md` to `tools/ue3live/ue3_verify_offsets.py`
+would have found nothing and concluded the tool was lost rather than relocated. They were moved into
+`tools/ue3live/` (where `mele_paths.py` also lives) and the citations were repointed.
+
+The rest are a **provenance** problem, not a path problem: they were built in the MELE-CoOp mod
+checkout, whose `tools/` is a different tree. `NOTES.md` now says so once at the top, and each site is
+marked. Keeping the mentions is deliberate — the record of what was built and what it proved is worth
+more than the dead link costs.
+
+### The guard took three iterations, and both failures were false positives
+
+1. It flagged `local/tools/zig-x86_64-windows-0.15.2/` as a missing `tools/` path. `local/` is the
+   owner's private state and is git-ignored on purpose, so it is out of scope.
+2. It treated `masseffect-le-{me1,me2,me3}.json` as one filename, and reported the brace expression
+   as missing — while all three real files exist. Brace lists are now expanded and each member checked.
+3. It only read the current line, so a document-level provenance note did not count and eleven
+   individually-marked sites still failed. The window is now the line plus the two above it, plus a
+   document-level marker if the file's first 40 lines say where the tools came from.
+
+All three are the same mistake in different clothes: a check that reports a problem in the *checker*
+as a problem in the *thing checked*. The `+0` layout rival and the `0 of 10 declare it` counter were
+the same shape.
+
+### Rule 59
+
+**A citation is a claim, and it needs the same evidence as any other.** The offset verifier was cited
+for sessions at a path that did not exist; nobody noticed because a path in backticks
+reads as a fact. A doc folder should be checkable the way a closure is.
+
+### Rule 60
+
+**When a check fails, verify the check before believing the failure.** Three of this guard's failures
+were the guard's fault, and one of them would have been "fixed" by deleting a correct citation.

@@ -560,7 +560,7 @@ def t_cited_tools_exist():
     if not os.path.isdir(docdir):
         return "skip", "no games/mass-effect-legendary-edition folder"
     MARKED = re.compile(r"not in this repo|absent|missing|git-ignored|cannot exist|stale|does not "
-                        r"exist|neither the hub|NOT in|Provenance of", re.I)
+                        r"exist|neither the hub|NOT in|Provenance of|not here", re.I)
     pat = re.compile(r"`(tools/[A-Za-z0-9_./@{},-]+)`")
     missing = []
     checked = 0
