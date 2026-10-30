@@ -366,6 +366,80 @@ def t_save_asymmetry():
     return "ok", "ME1 23 SaveObject classes + m_LevelObjects; ME2/ME3 zero; records 28/32/9"
 
 
+@case("the reader works on class default objects and NOT on live level actors")
+def t_reader_scope():
+    """The limit of the whole tool, pinned so nobody reads a value out of a level package.
+
+    `probe` closes 100% of objects in a CDO-rich package and a small fraction in a live level. That
+    is not a bug to fix by tuning the layout: a spawned actor's serial block is not a plain property
+    tag stream, so no tag walk over it is meaningful. The danger is specific and quiet - a query
+    against a level returns *some* tags before desynchronising, and the first few look plausible.
+
+    Both halves are asserted. If a future change makes level actors close too, this fails and the
+    docstring has to be updated deliberately rather than the tool silently gaining authority it was
+    never given.
+    """
+    cdos = None
+    for game in ("ME3",):
+        t, _mt, why = loaded(game)
+        if t is None:
+            return "skip", why
+        objs = mp._candidates(t, 40)
+        best, results = mp.pick_layout(t, t["buf"], objs)
+        exact, tried, _e = results["start=+4 (measured)"]
+        cdos = (exact, tried)
+        if tried != exact:
+            return "fail", "CDO package closed %d/%d, expected 100%%" % (exact, tried)
+
+    mt = mp.load_tables()
+    pkg = mt.load_pkg()
+    level = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "BioA_Cat002.pcc")
+        if os.path.isfile(cand):
+            level = cand
+            break
+    if level is None:
+        return "skip", "no ME3 level package"
+    t = mt.build(level)
+    objs = mp._candidates(t, 40)
+    best, results = mp.pick_layout(t, t["buf"], objs)
+    lexact, ltried, _e = results["start=+4 (measured)"]
+    if ltried and lexact == ltried:
+        return "fail", ("a live level now closes 100%% (%d/%d) - the scope limit is stale, "
+                        "re-read the docstring" % (lexact, ltried))
+    if not ltried:
+        return "fail", "no candidate objects in the level package"
+    return "ok", ("CDOs %d/%d exact, live level %d/%d - level actors are NOT readable"
+                  % (cdos[0], cdos[1], lexact, ltried))
+
+
+@case("the map count is structural, and BIOG_ content packages are not maps")
+def t_maplist_is_structural():
+    """The denominator for "a full campaign works in co-op", and the trap in computing it.
+
+    Counting `.pcc` files per build gives ~5,000 and is meaningless: most are meshes, binks,
+    localisation and streaming geometry. A map is a package with a `PersistentLevel` export. The
+    naming convention gives the wrong answer - `BIOG_HMF_ARM_*` are armour meshes, and a regex on
+    level prefixes counts them as `BIOG_` roots.
+
+    The counts are asserted because they are the scope claim: if a build's map count changes, the
+    statement "the campaign works" covers a different set of levels.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mp.cmd_maplist(type("A", (), {"game": None})())
+    out = buf.getvalue()
+    if "index missing" in out or "map(s) with a PersistentLevel" not in out:
+        return "skip", "index absent"
+    for want in ("ME1: 1811 map", "ME2: 2156 map", "ME3: 2677 map", "6644 map(s) total"):
+        if want not in out:
+            return "fail", "missing %r in:\n%s" % (want, out.strip())
+    return "ok", "1811 / 2156 / 2677 = 6644 maps, counted by PersistentLevel"
+
+
 def main():
     failures = 0
     skips = 0

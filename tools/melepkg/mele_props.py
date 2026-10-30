@@ -51,8 +51,7 @@ garbage rather than an error - which is exactly why the closure test exists.
   Reading from +0 made every path name resolve to a real but unrelated name-table entry - which is
   why the first attempt "worked" and produced nonsense.
 
-`closure()` is the proof: the walk must land on the exact end of the object's serial data. The
-parser is not asserted correct by construction, it is required to close, and the `+0` rival start
+`closure()` is the proof: the walk must land on the exact end of the object's serial data. Theparser is not asserted correct by construction, it is required to close, and the `+0` rival start
 offset must fail on the same objects (`probe` reports both, so the test has a control).
 
 ## What is decoded, and what is only bounded
@@ -70,6 +69,24 @@ Usage:
     python -I tools/melepkg/mele_props.py cdo <package> <class>        # read Default__<class>
     python -I tools/melepkg/mele_props.py mapgame <package>            # map prefix -> game class
     python -I tools/melepkg/mele_props.py routing                      # all three installs
+    python -I tools/melepkg/mele_props.py coopcheck                    # travel/clamp/roster
+    python -I tools/melepkg/mele_props.py savecheck                    # how each build saves
+    python -I tools/melepkg/mele_props.py maplist                      # how many maps to cover
+
+## SCOPE LIMIT: class default objects only, not live level actors
+
+This reader is correct on `Default__X` exports and is **not** usable on an actor spawned in a level.
+`probe` measures the difference and it is not subtle:
+
+    ME3/SFXGame.pcc        40/40 objects close exactly   (100%)
+    ME3/BioA_Cat002.pcc     9/40                         ( 22.5%)
+    ME2/BioA_BchLmL.pcc     0/40                         (  0%)
+
+A spawned actor's serial block is not a plain property tag stream, so no tag walk over it means
+anything. The failure is quiet rather than loud - a level query returns a handful of plausible tags
+and then desynchronises - so `test_mele_props.py` pins both halves: CDOs must stay at 100%, and a
+live level must stay below. Do not read `GameTypesSupportedOnThisMap` (or anything else) out of a
+level package with this tool; the answer will look like a measurement.
 """
 import argparse
 import importlib.util
@@ -843,6 +860,45 @@ def cmd_coopcheck(args):
     return 0
 
 
+def cmd_maplist(args):
+    """Every loadable map in each build, counted structurally.
+
+    "Ensure the campaign works in co-op" needs a denominator. Counting `.pcc` files is wrong: a
+    build ships ~5,000 packages but most are content, localisation or streaming geometry. A **map**
+    is a package containing a `PersistentLevel` export, which is a structural test rather than a
+    naming convention - the naming convention gives a wrong answer, because `BIOG_HMF_ARM_*` mesh
+    packages parse as `BIOG_` level roots and are not levels at all.
+
+    **This deliberately does NOT report `GameTypesSupportedOnThisMap`.** It was going to, and the
+    measurement says it cannot: `probe` closes 100% of objects in a CDO-rich package like
+    `SFXGame.pcc` but only 22.5% in `ME3/BioA_Cat002.pcc` and 0% in `ME2/BioA_BchLmL.pcc`. A live
+    level's actors do not carry a plain property tag stream, so reading one out of a level package
+    is not supported by this reader - and a "0 of 10 declare it" line would be a wrong answer
+    produced by a tool that had no chance of finding it.
+    """
+    games = [args.game] if getattr(args, "game", None) else ["ME1", "ME2", "ME3"]
+    grand = 0
+    for game in games:
+        maps = []
+        for _g, rel, rec in _iter_index(game):
+            if any(row[0] == "PersistentLevel" for row in rec.get("exports", [])):
+                maps.append(rel)
+        print("=== %s: %d map(s) with a PersistentLevel ===" % (game, len(maps)))
+        if not maps:
+            print("   (index missing - run mele_index.py build)")
+            continue
+        base = [m for m in maps if "\\DLC\\" not in m]
+        dlc = [m for m in maps if "\\DLC\\" in m]
+        print("   base %d, DLC %d" % (len(base), len(dlc)))
+        loc = [m for m in maps if "_LOC_" in m]
+        if loc:
+            print("   %d are localisation packages, not visitable levels" % len(loc))
+        grand += len(maps)
+    print()
+    print("%d map(s) total across the selected builds" % grand)
+    return 0
+
+
 def cmd_savecheck(args):
     """How each build persists a level, because it decides whether the host's save is safe.
 
@@ -990,6 +1046,11 @@ def main():
     p = sub.add_parser("savecheck",
                        help="how each build persists a level (decides save safety)")
     p.set_defaults(func=cmd_savecheck)
+
+    p = sub.add_parser("maplist",
+                       help="every loadable map per build, counted structurally")
+    p.add_argument("--game", choices=["ME1", "ME2", "ME3"])
+    p.set_defaults(func=cmd_maplist)
 
     args = ap.parse_args()
     return args.func(args)

@@ -4412,3 +4412,68 @@ anything to a level on ME1.
 `BioBaseSaveObject` subclasses and LE2/LE3 add `SFXSaveGame`, which is true and misleading in equal
 measure: LE2/LE3 do not have the subclasses at all, so the difference is architectural (graph walk vs
 handler-driven), not additive.
+## 2026-10-30 (tool scope): the reader works on CDOs and NOT on live level actors, and the campaign has 6,644 maps
+
+Two results, one a limit and one a denominator.
+
+### The limit, measured three ways
+
+`mele_props.py` closes **100%** of objects in a CDO-rich package and almost none in a live level:
+
+| package | objects closing exactly with the measured layout |
+|---|---|
+| `ME3/SFXGame.pcc` | **40/40** (100%) |
+| `ME3/BioA_Cat002.pcc` | **9/40** (22.5%) |
+| `ME2/BioA_BchLmL.pcc` | **0/40** (0%) |
+| `ME3/BioA_Cat002.pcc` (WorldInfo specifically) | parses 0 tags, `FName index -81 out of range` |
+
+A spawned actor's serial block is not a plain property tag stream. So the tool is a **CDO reader**,
+and the honest description of what it can answer is "what is this class default set to", not "what is
+this object in a level set to".
+
+This was found by trying to read `WorldInfo.GameTypesSupportedOnThisMap` out of campaign maps to see
+which ones declare multiplayer support. The first version of that query printed
+**"0 of 10 declare it"** - a wrong answer produced by a tool that never had a chance of finding the
+value. The counter that would have said "10 keys did not resolve" never fired, because the path
+resolution bug and the parse limitation produced the same output. `maplist` now refuses to report
+that column at all, and `test_mele_props.py` asserts *both* halves: CDOs stay at 100%, and a live
+level stays below it.
+
+The distinction matters beyond this tool: every value in this session's other findings came from a
+`Default__X` export, which is exactly why they close. Anything anybody wants to know about a
+*spawned* object has to come from a live process, and ME3SquadCoop's and LEMP's probes are the only
+route to those.
+
+### The denominator: 6,644 maps
+
+"Ensure the campaign works in co-op" needs a count, and counting `.pcc` files is not it - a build
+ships thousands of meshes, binks, localisation and streaming-geometry packages. A **map** is a package
+that contains a `PersistentLevel` export, which is structural and does not depend on a naming
+convention. The convention is actively wrong here: `BIOG_HMF_ARM_*` are armour meshes, and a regex on
+`BIOG_`/`BIOA_`/`BioA_` prefixes counts them as levels.
+
+| build | maps | base | DLC |
+|---|---|---|---|
+| ME1 | **1,811** | 1,811 | **0** (ME1 ships no DLC folder) |
+| ME2 | **2,156** | 1,278 | 878 |
+| ME3 | **2,677** | 1,442 | 1,235 |
+| **total** | **6,644** | 4,531 | 2,113 |
+
+Reproduce with `python -I tools/melepkg/mele_props.py maplist`.
+
+That is the real size of the claim. A career does not visit all 6,644 - many are streaming children of
+a hub, `BIOG_UIWorld`, combat arenas and MP remnants - but "the campaign works" has to be scoped
+against a set this size, not against "the missions".
+
+### Rule 54
+
+**A zero from a tool that could not have found the value is not a measurement.** "0 of 10 maps declare
+`GameTypesSupportedOnThisMap`" was true of the output and false about the game: the tool parsed no
+tags in those packages at all. The distinguishing evidence was already available - `probe` on the same
+file reports 22.5% - and the query never consulted it.
+
+### Rule 55
+
+**Count the population structurally, not by name.** `BIOG_HMF_ARM_CTH_R` is an armour mesh and
+`BIOG_UIWorld` is a map; both match a `^BIOG_` level regex. Requiring a `PersistentLevel` export
+separates them without a single name rule.
