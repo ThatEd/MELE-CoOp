@@ -536,6 +536,72 @@ def t_conversation_choice_shared():
     return "ok", "SelectConversationEntry/Segment/UpdateConversationOptions on all three builds"
 
 
+@case("every tools/ path cited in the game docs exists or is marked absent")
+def t_cited_tools_exist():
+    """A doc that points at a file nobody can open is a wrong answer that looks like a record.
+
+    `NOTES.md` and `README.md` cited `tools/binkproxy/` and `tools/inject_plugin.py` for several
+    sessions; both are absent from the hub and the published bundle (audited 2026-10-30). The cost is
+    not the missing file, it is that a reader plans around a build step that cannot be run and
+    concludes the work is further along than it is.
+
+    Three exclusions, each for a reason learned while writing this case:
+
+      * a path under `local/` is the owner's private state, which is git-ignored on purpose;
+      * a brace list like `masseffect-le-{me1,me2,me3}.json` is a set of files, not one path;
+      * a mention whose line says it is absent is *deliberately* kept - deleting the record of what
+        was built would lose more than the dead link costs.
+    """
+    import bisect
+    import glob
+    import re
+    hub = os.path.abspath(os.path.join(HERE, "..", ".."))
+    docdir = os.path.join(hub, "games", "mass-effect-legendary-edition")
+    if not os.path.isdir(docdir):
+        return "skip", "no games/mass-effect-legendary-edition folder"
+    MARKED = re.compile(r"not in this repo|absent|missing|git-ignored|cannot exist|stale|does not "
+                        r"exist|neither the hub|NOT in|Provenance of", re.I)
+    pat = re.compile(r"`(tools/[A-Za-z0-9_./@{},-]+)`")
+    missing = []
+    checked = 0
+    for path in glob.glob(os.path.join(docdir, "*.md")):
+        text = open(path, encoding="utf-8").read()
+        lines = text.split("\n")
+        # Offset of each line, so a hit can look back for a document-level provenance note.
+        offs = []
+        acc = 0
+        for ln in lines:
+            offs.append(acc)
+            acc += len(ln) + 1
+        for m in pat.finditer(text):
+            cited = m.group(1).rstrip(".")
+            # `local/tools/...` is the owner's private state.
+            if text[max(0, m.start() - 6):m.start()] == "local/":
+                continue
+            ln_no = bisect.bisect_right(offs, m.start()) - 1
+            window = "\n".join(lines[max(0, ln_no - 2):ln_no + 1])
+            if MARKED.search(window):
+                continue
+            # A document-level provenance note counts for the whole file, because listing every
+            # mention individually is noise when one paragraph already says where they came from.
+            head = "\n".join(lines[:40])
+            if "Provenance of" in head and re.search(
+                    re.escape("`%s`" % cited.rstrip("/")), head):
+                continue
+            brace = re.search(r"\{([^}]*)\}", cited)
+            candidates = ([cited] if not brace
+                          else [cited[:brace.start()] + part + cited[brace.end():]
+                                for part in brace.group(1).split(",")])
+            for cand in candidates:
+                checked += 1
+                target = os.path.join(hub, *cand.rstrip("/").split("/"))
+                if not os.path.exists(target):
+                    missing.append("%s: %s" % (os.path.basename(path), cand))
+    if missing:
+        return "fail", "cited but absent (and not marked as such): %s" % sorted(set(missing))[:8]
+    return "ok", "%d tools/ citation(s) checked, all present or explicitly marked absent" % checked
+
+
 def main():
     failures = 0
     skips = 0

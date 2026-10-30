@@ -82,11 +82,10 @@ Two supporting pages:
   order with byte offsets**, **enum members**, **class and struct field layouts**, and **function
   bytecode extents**. Verified on all 12,704 packages in the three installs, with the four closures
   that prove it and the coordinate-space error that hid them for a session.
-- A generated **target map** is deliberately NOT shipped here: it lists function names, declaring
-  classes, parameter orders and parms byte counts derived from the game's packages, which makes it
-  extracted game data rather than documentation. Regenerate it against your own install:
-  python -I tools/melepkg/coop_targets.py --out TARGETS.generated.md. The hub keeps the copy for
-  this game's write-up.
+- [TARGETS.generated.md](./TARGETS.generated.md) - **generated from the packages, not written by
+  hand**: every call co-op needs, per build, with its declaring class, parameters in declaration
+  order, parms size and bytecode size, plus the enums on the same code path. Regenerating it is how
+  you see a change in the game's own data.
 - [COMMAND-SUITE.md](./COMMAND-SUITE.md) - the **test area**: 156 command mechanisms in 20
   categories with presence measured per game, arranged into 23 ordered phases, each stating what
   it proves and what would make it wrong. Also the per-game capability differences it measured
@@ -99,6 +98,14 @@ Two supporting pages:
   measured per-game field table, the ordered steps (ME2 first, then ME1), and **two corrections to
   earlier documents**: the `MaxPlayers` cap raise is probably unnecessary, and "add a view instead
   of a player" is retracted.
+- [LAN-COOP-DESIGN.md](./LAN-COOP-DESIGN.md) - **the LAN co-op design for a full career**: authority,
+  the per-build table, the transport, the order of work, and what is still unknown. Includes the
+  2026-10-30 measurements that the whole UE3 replication model survived the LE cut (all `Client*`/
+  `Server*` remote functions, `Role`/`RemoteRole`, `ENetRole`/`ENetMode`, `GameReplicationInfo.
+  GameClass`) while the net driver class did not — and the finding that all three builds share one
+  game-class routing mechanism (`GameTypePrefix`, `DefaultMapPrefixes`, `DefaultGameType`,
+  `GetDefaultGameClassPath`) which only ME3 actually populates. Reproduce it with
+  `python -I tools/melepkg/mele_props.py routing`.
 
 ## Existing work
 
@@ -155,7 +162,7 @@ them differs and must be measured per game:
 | `Engine.GameViewport` | `+0x7C8` | `+0x7A0` | `+0x7A0` |
 | `ULevel.Actors` | not measured | `+0x60` | `+0x60` |
 
-`tools/ue3_check_chain.py` re-derives the chain from an offsets file and asserts each link,
+`tools/ue3live/ue3_check_chain.py` re-derives the chain from an offsets file and asserts each link,
 so this table is machine-checked rather than hand-copied. LE1 currently passes 8 of 8.
 
 ### `ProcessEvent` is at a different vtable slot in every game
@@ -299,7 +306,7 @@ LE1's equivalents are not yet measured.
 
 ### Offsets are discovered externally now, with no DLL in the game
 
-`tools/ue3_discover_external.py` finds GObjects, the name pool and the engine global purely
+`tools/ue3live/ue3_discover_external.py` finds GObjects, the name pool and the engine global purely
 through `ReadProcessMemory`, by structure rather than by address:
 
 1. Scan the image's writable sections for a `TArray<UObject*>` header `{data, count, max}` with a
@@ -311,8 +318,8 @@ through `ReadProcessMemory`, by structure rather than by address:
    by requiring the slot to dereference to the **live** `SFXEngine`.
 
 This matters because mapping a new game then needs no injection at all - and a wrong guess inside
-a running game is what crashes it. `tools/ue3_verify_offsets.py` and
-`tools/ue3_find_engine_global.py` check the result instead of trusting it.
+a running game is what crashes it. `tools/ue3live/ue3_verify_offsets.py` and
+`tools/ue3live/ue3_find_engine_global.py` check the result instead of trusting it.
 
 ## What we changed
 
@@ -326,10 +333,13 @@ Everything lives in `tools/splitplayer/` of the mod checkout (git-ignored here):
 - **Recorded the exact build**, and proved the pinned hash mismatch is not a blocker: 50 of the repo's 108
   hardcoded RVAs land exactly on `.pdata` function starts, against ~0.5 by chance, while ME1/ME2 controls
   score 5.
-- **Built an ASI loader** (`tools/binkproxy/`) — a stock install has none, so nothing could be injected.
-  76 generated assembly stubs re-export the stock library; export tables match exactly and all 76 resolve.
-  Verified loading in the real game.
-- **Live injection** (`tools/inject_plugin.py`), so experiments need no restart. Verified.
+- **Built an ASI loader** — a stock install has none, so nothing could be injected. 76 generated
+  assembly stubs re-export the stock library; export tables matched exactly and all 76 resolved.
+  Verified loading in the real game. **Its source is not in this repository** (audited 2026-10-30):
+  `tools/binkproxy/` is referenced here and by `NOTES.md` but exists in neither the hub nor the
+  published bundle, so rebuilding means writing it from the notes.
+- **Live injection** via `CreateRemoteThread(LoadLibraryW)` into the running process, so experiments
+  need no restart. Verified. That script (`tools/inject_plugin.py`) is likewise **not in this repo**.
 - **Second local player** via `GameViewportClient.CreatePlayer` after raising the game-info cap to 2.
 - **A walking body for player 2** via `SFXGame.SpawnDefaultPawnFor` with Shepard's class, placed with
   `SetCollision → SetPhysics(1) → Pawn.ClientSetLocation` in that order (`StartLocation` is ignored).
@@ -340,7 +350,7 @@ Everything lives in `tools/splitplayer/` of the mod checkout (git-ignored here):
 - **A level gate** (`levelguard.h`) that refuses to mutate between levels — this removed the
   `CreatePlayer` crash class entirely.
 - **Full actor inventory** tooling (`actors.c`) — found `ULevel.Actors` at `+0x60` by scanning.
-- **Runtime offset discovery** (`tools/discover.c`) for porting to LE1/LE2. It finds name pools, GObjects
+- **Runtime offset discovery** (`tools/discover.c`, not in this repo) for porting to LE1/LE2. It finds name pools, GObjects
   and the engine instance by shape in the loaded image and **verifies** them by resolving objects that must
   exist, refusing to write a file if verification fails. LE2 is done and verified (`offsets_LE2.json`:
   name pools `0x16609f8`, GObjects `0x173cc48`, 152,271 objects, engine `SFXEngine`). LE2 was left

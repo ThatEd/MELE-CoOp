@@ -1,5 +1,14 @@
 # Mass Effect Legendary Edition — session notes
 
+> **Provenance of `tools/` mentions below.** Several paths named here and in `README.md`
+> (`tools/splitplayer/`, `tools/discover.c`, `tools/le2_dump.py`,
+> `tools/read_local_players.py`, `tools/binkproxy/`, `tools/inject_plugin.py`) were built in
+> the MELE-CoOp mod checkout and are **not in this repository** or the published bundle -
+> audited 2026-10-30. They are kept as a record of what was run. The tool folders that DO live
+> here are `tools/ue3live/`, `tools/melepkg/`, `tools/gamepool/`, `tools/bridge/` and
+> `tools/saverestore/`.
+
+
 Scope from the owner: campaign co-op in **LE3 first, then LE2, then LE1**. The client controls an
 existing squadmate (host keeps Shepard). Split screen wanted as a cheap local test harness.
 
@@ -39,7 +48,7 @@ list**; if a section disagrees, this wins.
 13. **A property walker that ignores `SuperStruct` cannot prove a field is absent.** Reading only
     `UClass.Children` reported 6 fields for `BioSPGame` (really 368) and no `Controller` on `BioPawn`
     (declared on `Pawn`). That produced a confident, wrong "LE2 has no player controller". Use
-    `tools/ue3_props.py`, and match classes by pointer or lineage, never by decoded name.
+    `tools/ue3live/ue3_props.py`, and match classes by pointer or lineage, never by decoded name.
 14. **Read the callee before calling it.** A vtable slot resolving to `.text` is not evidence of a
     signature - LE2's `+0x230` is a wrapper that reorders arguments, and calling it like ME3's faulted.
     Disassemble the target and check which register the parms arrive in.
@@ -379,10 +388,12 @@ What makes this worth writing down rather than just apologising for:
 State after the incident, verified: no game process running; `bink2w64.dll` still the EA original
 (`653247e3…`); `ASI` still named `ASI_off`; `bink2w64_original.dll` absent. The install is stock.
 
-## ASI loader: built and load-tested (not yet run in-game)
+## ASI loader: described here, source NOT in this repository
 
-A stock ME3 install has **no plugin loader**, so nothing can be injected at all. That was the real
-first blocker, not the missing config. Built one at `tools/binkproxy/`:
+A stock ME3 install has **no plugin loader**, so nothing can be injected at all. One was built and
+load-tested against the real game, and **its source is not in this repository or the published
+bundle** — an audit on 2026-10-30 found `tools/binkproxy/` and `tools/inject_plugin.py` referenced by
+these notes and by `README.md` but present in neither tree. What the notes record about it:
 
 - `binkproxy.c` — loads `<module dir>\ASI\*.asi` in `DllMain`, best-effort, logs failures and never
   aborts start-up. Resolves the stock library once via `INIT_ONCE`.
@@ -407,7 +418,7 @@ that run happened (see incident above). Do not describe this loader as working.
 ## Split screen: FIRST LIVE DATA (2026-10-28 18:02, read-only)
 
 Read from the owner's **running** ME3 (PID 51268) without installing, injecting or restarting
-anything: `tools/read_local_players.py` opens the process with `PROCESS_VM_READ |
+anything: `tools/read_local_players.py` (not in this repo) opens the process with `PROCESS_VM_READ |
 PROCESS_QUERY_INFORMATION` only. Output saved at `local/MELE/refs/splitscreen-live-2026-10-28.json`.
 
 Module base `0x7ff78fcc0000`, engine global `+0x18b31d0` → `0x23e59fd8700`.
@@ -462,7 +473,7 @@ wide-char `MODULEENTRY32W`; the ANSI variant silently matches nothing (1080-byte
 - Compiles clean into `ME3SquadCoopProbe.asi`; strings present in the binary.
 
 Honest status: the injected probe has not executed. It is superseded for the first question by
-`tools/read_local_players.py`, which answered it from the live process (see the section above).
+`tools/read_local_players.py` (not in this repo), which answered it from the live process (see the section above).
 
 
 
@@ -572,7 +583,7 @@ method that already located 50 function starts on this build.
 The first staged run timed out (`waiting`, "no local pawn yet") because a cold load to gameplay
 takes longer than the 120 s the plugin waited. The wait is now 30 min with progress rows, and the
 owner loaded a save. What happened next, then verified independently by
-`tools/read_local_players.py` against the live process:
+`tools/read_local_players.py` (not in this repo) against the live process:
 
     {"splitplayer":"ready",  "detail":"local player has a pawn; attempting second player"}
     {"splitplayer":"candidate","detail":"GameViewportClient.CreatePlayer:resolved"}
@@ -647,7 +658,7 @@ which case the answer is "replace the game info class", which is a much larger c
 
 ### v3 ready (built 18:34, not yet installed)
 
-`tools/splitplayer/splitplayer.asi` (147,968 bytes) now raises `MaxPlayers`/`MaxAllowed` to 2 **before**
+`tools/splitplayer/splitplayer.asi` (not in this repo; 147,968 bytes) now raises `MaxPlayers`/`MaxAllowed` to 2 **before**
 calling `CreatePlayer`, and reports the before/after values so the change cannot be assumed:
 
     game-info   SFXGameInfoSP max=1 allowed=1
@@ -721,11 +732,19 @@ caught by the code refusing to call (`create-aborted`, `parms layout size mismat
 reading a diff. The working version is a `#pragma pack(1)` struct with `sizeof == 0x2c`. Verify edits
 landed in the compiled binary; do not trust that a replace applied.
 
-## Live injection: works (verified)
+## Live injection: the technique works (script MISSING from this repo)
 
-`tools/inject_plugin.py` loads a DLL into the running game via `CreateRemoteThread(LoadLibraryW)`, the
-standard mechanism, so experiments no longer cost a restart. Verified end to end: a harmless canary
-wrote `canary attached pid=45692` into the live process and the game kept running.
+`tools/inject_plugin.py` was used to load a DLL into the running game via
+`CreateRemoteThread(LoadLibraryW)`, the standard mechanism, so experiments no longer cost a restart.
+Verified end to end: a harmless canary wrote `canary attached pid=45692` into the live process and the
+game kept running.
+
+**That script is not in this repository** — audited 2026-10-30, along with `tools/binkproxy/`, and
+both are absent from the hub and the bundle. The technique is two calls
+(`OpenProcess` → `VirtualAllocEx`/`WriteProcessMemory` for the DLL path →
+`CreateRemoteThread` on `LoadLibraryW`), so re-writing it is cheaper than fighting a dead path; the
+stale `python tools/inject_plugin.py` invocations in this file are kept as a record of what was run,
+not as a working command.
 
 Two real bugs it exposed, both now fixed:
 
@@ -868,7 +887,7 @@ On this build that chain yields **`Biop_ProEar`**, so a level table can key on t
 
 ### Config, read live by the plugin
 
-`tools/splitplayer/p2-levels.json`, copied next to the game exe. Edit it; no rebuild, no restart.
+`tools/splitplayer/p2-levels.json` (not in this repo), copied next to the game exe. Edit it; no rebuild, no restart.
 
     {"match": "proear", "character": "James",
      "source": "owner instruction 2026-10-28: this level, P2 should be James"}
@@ -1348,7 +1367,7 @@ thread dump of the hung process, not another spawn attempt.
 ## ME2 / ME1 groundwork: runtime offset discovery (2026-10-28 20:17)
 
 Purpose: every plugin so far hardcoded ME3 RVAs, so LE1/LE2 needed their own. Rather than hand-reverse
-two more builds, `tools/discover.c` finds a game's UE3 offsets **at runtime** and verifies them.
+two more builds, `tools/discover.c` (not in this repo) finds a game's UE3 offsets **at runtime** and verifies them.
 
 ### How it works
 
@@ -1467,7 +1486,7 @@ launcher shim and the game share an executable name.
 ### ME2 groundwork that IS valid (read-only, no dispatch)
 
 Before the crash, and again read-only afterwards, the discovered offsets were used to enumerate ME2's
-object graph with a corrected name decoder (`tools/ue3_reader.py`). That decoder matters: with **one**
+object graph with a corrected name decoder (`tools/ue3live/ue3_reader.py`). That decoder matters: with **one**
 name pool, an index with high bits set made `pools[index >> 29]` read adjacent memory as a pool pointer,
 and the garbage name then passed "is this the class I want" checks. After the fix, ME2 shows **615
 distinct classes, 0 malformed**, which is the sanity check the earlier scripts lacked.
@@ -1506,7 +1525,7 @@ The effect is not subtle: it reported **6 fields for `BioSPGame`** (a `GameInfo`
 has **368**) and **no `Controller` field on `BioPawn`** (the field is declared on `Pawn`, not
 `BioPawn`). Every "this build does not have that field" conclusion drawn from it was unsound.
 
-Fixed in `tools/ue3_props.py`: walk the `SuperStruct` chain and aggregate, de-duplicating by
+Fixed in `tools/ue3live/ue3_props.py`: walk the `SuperStruct` chain and aggregate, de-duplicating by
 `(name, kind)`. Property offsets are already absolute for the instance, so no rebasing is needed.
 
 A second blind spot compounded it: **~31,000 of 132,000 objects have class names that fail to
@@ -1746,7 +1765,7 @@ is the thing to fix before spending another attempt:
 
 - No `MassEffect2.exe` / `MassEffect3.exe` / `MassEffect1.exe` running.
 - `bink2w64.dll` = `653247E35DB8D645...`, i.e. **stock**; no `.asi` in ME2's `Win64`.
-- Nothing is armed. `le2p2_*.dll` live only under `tools/splitplayer/` and are injected
+- Nothing is armed. `le2p2_*.dll` live only under `tools/splitplayer/` (not in this repo) and are injected
   by explicit path, never auto-loaded.
 
 ## CRASH 10 root cause, from the crash dump (2026-10-28 21:19)
@@ -1825,10 +1844,10 @@ so probably cloud-only or elsewhere). **Find that before any further LE2 attempt
 
 ### Tools added, worth keeping
 
-- `tools/le2_dump.py`, `le2_identify.py`, `ue3_props.py` etc. - the corrected read-only
+- `tools/le2_dump.py`, `le2_identify.py` (not in this repo), `ue3_props.py` etc. - the corrected read-only
   readers, including the `SuperStruct`-aware property walk that fixed the false "LE2 has
   no player controller" conclusion.
-- `tools/splitplayer/le2p2.c` with the **two-build split** (`le2p2_check.dll` /
+- `tools/splitplayer/le2p2.c` (not in this repo) with the **two-build split** (`le2p2_check.dll` /
   `le2p2_dispatch.dll`). This pattern is the most valuable thing to come out of the
   session and should be the default for every risky experiment:
 
@@ -1849,7 +1868,7 @@ The owner opened LE1, so this was done entirely from outside the process.
 Every earlier discovery attempt put a DLL inside the game. Even a read-only probe needs a
 `LoadLibrary`, and a bad one costs a long cutscene. But nothing discovery needs requires
 code in the target: GObjects, the name pool and the engine global are plain data readable
-through `ReadProcessMemory`. So `tools/ue3_discover_external.py` finds them structurally:
+through `ReadProcessMemory`. So `tools/ue3live/ue3_discover_external.py` finds them structurally:
 
 1. A `TArray<UObject*>` is `{data, count, max}`. Scan the image's writable sections for
    those three fields with a plausible `count` and `max >= count`.
@@ -1900,9 +1919,9 @@ calling it.
 
 ### New tools (all outside-the-process, read-only)
 
-- `tools/ue3_discover_external.py` - structural discovery: GObjects, name pool, engine global.
-- `tools/ue3_verify_offsets.py` - checks class membership, name decoding, engine resolution.
-- `tools/ue3_find_engine_global.py` - verifies a candidate slot by dereference.
+- `tools/ue3live/ue3_discover_external.py` - structural discovery: GObjects, name pool, engine global.
+- `tools/ue3live/ue3_verify_offsets.py` - checks class membership, name decoding, engine resolution.
+- `tools/ue3live/ue3_find_engine_global.py` - verifies a candidate slot by dereference.
 
 ## LE1 player chain MEASURED 2026-10-28 21:45 (read-only, in-game)
 
@@ -1959,7 +1978,7 @@ exactly the kind of thing that must be read, not assumed.
 
 Follow-up to the chain measurement. LE1 is now mapped as far as read-only inspection can
 take it, and the results are asserted by a script rather than eyeballed:
-`tools/ue3_check_chain.py` re-derives the whole chain from `offsets_LE1.json` and reports
+`tools/ue3live/ue3_check_chain.py` re-derives the whole chain from `offsets_LE1.json` and reports
 PASS/FAIL per link. Current run: **8 of 8 structural checks pass.**
 
 ### LE1 splitscreen surface exists
@@ -2030,7 +2049,7 @@ Two consequences worth keeping:
 
 ### Tools, and the bug found by using them on a second game
 
-`tools/ue3_playerchain.py` originally walked only the object the engine global points at.
+`tools/ue3live/ue3_playerchain.py` originally walked only the object the engine global points at.
 On LE1 that is `SFXEngine`, which does **not** own `GamePlayers`, so the tool reported "no
 candidates" - a false negative that looks exactly like "not in game yet". Fixed to
 enumerate **every** live `*Engine` object and probe each for the array. It now finds
@@ -2152,7 +2171,7 @@ crash seen three times cannot occur.
 - No `MassEffect1/2/3` process running.
 - All three installs still stock (`bink2w64` unchanged where untouched; ME3 keeps only the
   proxy with no `.asi`). Nothing auto-loads.
-- `le1kaidan_check2.dll` and `le1kaidan_dispatch2.dll` exist under `tools/splitplayer/`
+- `le1kaidan_check2.dll` and `le1kaidan_dispatch2.dll` exist under `tools/splitplayer/` (not in this repo)
   only; they are injected by explicit path and never armed.
 
 ## The one untested variant: `bSpawnActor = 0` (prepared 2026-10-28 21:50, NOT run)
