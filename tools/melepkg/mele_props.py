@@ -750,6 +750,9 @@ def cmd_coopcheck(args):
       * the squad roster is `TArray<MemberData>` on ME1/ME2 and `TArray<Object>` on ME3, and the
         struct `MemberData` is **absent** from ME3 entirely. So "add a third member" is a different
         edit per build, and no declaration caps the roster at two.
+      * `Controller.Possess` / `UnPossess` exist on all three builds and `BioAiController` overrides
+        both, so taking a squadmate away from its AI and handing it to a player is a first-class
+        engine operation rather than an invented one.
 
     Exits 1 when a measurement contradicts what the design assumes.
     """
@@ -848,6 +851,40 @@ def cmd_coopcheck(args):
             problems.append("%s: Members holds a struct but MemberData is absent" % game)
         if inner.endswith("StructProperty") and md and not nfields:
             problems.append("%s: Members holds a struct and MemberData has no readable fields" % game)
+
+    print()
+    print("4. Taking a squadmate away from its AI: Possess/UnPossess on Controller")
+    for game in ("ME1", "ME2", "ME3"):
+        path = pkg_path(game, "Engine")
+        if not path:
+            continue
+        t = mt.build(path)
+        found = {}
+        for cls in ("Controller", "PlayerController", "AIController", "Pawn"):
+            hits = [e for e in t["exports"] if e["class_index"] == 0 and e["object_name"] == cls]
+            if not hits:
+                found[cls] = "ABSENT"
+                continue
+            rows = mt.class_fields(t, t["buf"], hits[0])[0]
+            have = {r[1] for r in rows if r[2] == "Function"}
+            found[cls] = "".join(k[0] for k in ("Possess", "UnPossess") if k in have) or "-"
+        sfxpath = pkg_path(game, "SFXGame")
+        bio = "-"
+        if sfxpath:
+            t2 = mt.build(sfxpath)
+            hits = [e for e in t2["exports"] if e["class_index"] == 0 and e["object_name"] == "BioAiController"]
+            if hits:
+                rows = mt.class_fields(t2, t2["buf"], hits[0])[0]
+                have = {r[1] for r in rows if r[2] == "Function"}
+                bio = "".join(k[0] for k in ("Possess", "UnPossess") if k in have) or "-"
+        print("   %-4s Controller=%s PlayerController=%s AIController=%s BioAiController=%s"
+              % (game, found.get("Controller"), found.get("PlayerController"),
+                 found.get("AIController"), bio))
+        if found.get("Controller") != "PU":
+            problems.append("%s: Controller lacks Possess/UnPossess (%r) - the transfer route is "
+                            "not available" % (game, found.get("Controller")))
+        if bio != "PU":
+            problems.append("%s: BioAiController does not override Possess/UnPossess (%r)" % (game, bio))
 
     print()
     if problems:

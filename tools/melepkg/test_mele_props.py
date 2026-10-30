@@ -473,6 +473,36 @@ def t_squad_recruitment_path():
     return "ok", "ME1 direct (0 table refs); ME2 5 refs + GetSquadSize; ME3 3 refs"
 
 
+@case("Possess/UnPossess exist on every build, and BioAiController overrides both")
+def t_possession_route():
+    """The mechanism for giving a client a squadmate, present on all three builds.
+
+    Taking a squadmate away from its AI is `Controller.UnPossess` on the AI controller and
+    `PlayerController.Possess` on the client's controller - both are declared on the base
+    `Controller` in every build, and `BioAiController` overrides both. So the operation is a
+    first-class engine one, not something a mod has to invent.
+
+    This is asserted because it is the one part of the squad plan that does NOT differ per build, and
+    a per-build table that lists it as divergent would send someone writing three
+    implementations of a shared thing.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_coopcheck(None)
+    out = buf.getvalue()
+    if "Possess" not in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_coopcheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        want = ("%s  Controller=PU PlayerController=PU AIController=PU BioAiController=PU" % game)
+        if want not in out:
+            return "fail", "%s possession route changed:\n%s" % (game, out.strip())
+    return "ok", "Controller/PlayerController/AIController/BioAiController all carry P+U on all three"
+
+
 def main():
     failures = 0
     skips = 0

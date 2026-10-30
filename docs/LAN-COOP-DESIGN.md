@@ -340,6 +340,8 @@ memory.
 | `MemberData` struct | 17 fields | 7 fields | **absent** | ME1's per-member order state has no ME3 counterpart |
 | `BioPlayerSquad` / `BioBaseSquad` | yes | yes | yes | squad container is shared |
 | squadmate pawn | *(none)* | `SFXPawn_Henchman : SFXPawn` | `SFXPawn_Henchman : SFXPawn_PlayerParty` | **per-build**, and ME3 re-parents it |
+| **possession route** (`Controller.Possess`/`UnPossess`, `BioAiController` override) | **all carry both** | **all carry both** | **all carry both** | **SHARED — write it once** |
+| `GetSquadSize` / `GetNumberOfLiveMembers` | both | both | **both absent** | ME3 dropped the roster-size API |
 | henchman AI | `BioAI_Henchman : BioAI_Core` | `SFXAI_Henchman : SFXAI_Core` | `SFXAI_Henchman : SFXAI_Cover` | **per-build**, different name *and* ancestor |
 | `SFXPawn_Player` parent | `BioPawn` | `SFXPawn` | `SFXPawn_PlayerParty` | player pawn ancestry differs on every build |
 | `SFXPlayerController` | **absent** | yes | yes | LE1 has no such class at all |
@@ -581,5 +583,11 @@ passenger experiences in the S2 design. None of those is fatal to the architectu
 are the kind of thing that kills a project *after* someone has written a thousand lines assuming
 otherwise.
 
+**One thing is shared and should be written once:** `Controller.Possess` / `UnPossess` are declared on
+the base `Controller` in all three builds and `BioAiController` overrides both, so taking a squadmate
+from its AI and handing it to the client is a first-class engine operation on every build. Everything
+around it is per-build; that is not.
+
 That is what this page is for. Reproduce every claim in §1, §5, §5b and §5c with
-`python -I tools/melepkg/mele_props.py routing` and `... coopcheck`.
+`python -I tools/melepkg/mele_props.py routing`, `... coopcheck`, `... savecheck`, `... squadadd` and
+`... maplist`.

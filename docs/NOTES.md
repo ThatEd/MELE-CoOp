@@ -4525,3 +4525,36 @@ What is measured: the recursion path, and that it is table-driven on ME2/ME3 and
 action per build and it is not an array append on two of the three. A mod that writes the array
 directly produces a squadmate the AI does not fully know about, and the symptom will be defaulted
 order state rather than an error.
+## 2026-10-30 (possession): taking a squadmate from its AI is a first-class engine operation on all three builds
+
+The one part of the squad plan that does **not** differ per build. Re-runnable:
+`python -I tools/melepkg/mele_props.py coopcheck` (section 4).
+
+| build | `Controller` | `PlayerController` | `AIController` | `BioAiController` |
+|---|---|---|---|---|
+| ME1 | Possess + UnPossess | Possess + UnPossess | Possess + UnPossess | Possess + UnPossess |
+| ME2 | same | same | same | same |
+| ME3 | same | same | same | same |
+
+So the operation a client needs — `UnPossess` the squadmate's `BioAiController`, `Possess` the pawn
+from the client's `PlayerController` — is declared on the base `Controller` in every build, and
+`BioAiController` overrides both. Nothing has to be invented, and nothing has to be written three
+times.
+
+This matters because the rest of the squad plan *is* per-build: the roster element is a `MemberData`
+struct on ME1/ME2 and a bare `Object` on ME3; `MemberData` is absent from ME3; `GetSquadSize` and
+`GetNumberOfLiveMembers` are absent from ME3's `BioBaseSquad`; and the campaign's own recruitment
+action runs through a `Bio2DA` table on ME2/ME3 and not on ME1. A per-build table that also listed
+possession as divergent would send someone writing three implementations of the one thing that is
+already shared.
+
+**What this does not settle:** whether a possessed squadmate *stays* possessed through a level change
+(no, because there is no seamless travel — the pawn is destroyed), and whether the campaign's AI
+re-possesses the pawn behind the client's back. ME3SquadCoop's `PROGRESS.md` records the second
+happening in practice, which is why it needed "session handoff/disconnect restore" work.
+
+### Rule 57
+
+**A per-build table must say which rows are shared, or it manufactures work.** Possession is identical
+on all three; the roster element is not. Listing them together implies three implementations where one
+suffices, and the cost is paid by whoever writes the second one.
