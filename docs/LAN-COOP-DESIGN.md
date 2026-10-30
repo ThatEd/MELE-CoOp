@@ -249,8 +249,17 @@ so nothing in the file structure forbids a third entry. What differs is the **el
 fields on ME1 and 7 on ME2) versus `TArray<Object>` on ME3, where `MemberData` does not exist. So S2
 is three different edits, and ME3's is the simplest because there is no orders struct to fill in.
 
-*Label:* the container shapes are **measured**. Whether a third entry is **tolerated** at runtime is
-**unknown** and is the top thing to test once a client can move at all.
+**And none of them should be an array edit at all.** The campaign's own recruitment action,
+`BioSeqAct_AddToParty.Activated`, runs through a `Bio2DA` numbered-row table on ME2 (5 table members
+plus `GetSquadSize`) and ME3 (3 table members), and touches no table on ME1. Appending to `Members`
+by hand therefore skips bookkeeping the campaign relies on, and the symptom is defaulted per-member
+order state rather than an error. **The safe route is to make the campaign recruit the client** —
+fire `BioSeqAct_AddToParty` (or the per-build equivalent) — which is the same call on all three
+builds and keeps each build's own logic. Reproduce with
+`python -I tools/melepkg/mele_props.py squadadd`.
+
+*Label:* the container shapes and the recruitment path are **measured**. Whether a third entry is
+**tolerated** at runtime is **unknown** and is the top thing to test once a client can move at all.
 
 ### 3.3 Save, and what happens when the client leaves
 

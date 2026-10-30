@@ -4477,3 +4477,51 @@ file reports 22.5% - and the query never consulted it.
 **Count the population structurally, not by name.** `BIOG_HMF_ARM_CTH_R` is an armour mesh and
 `BIOG_UIWorld` is a map; both match a `^BIOG_` level regex. Requiring a `PersistentLevel` export
 separates them without a single name rule.
+## 2026-10-30 (recruitment path): the campaign adds a squad member through a data table on ME2/ME3 and directly on ME1
+
+The obvious way to give a client a squadmate is to append to `BioBaseSquad.Members`. The campaign does
+not do that on two of the three builds. Re-runnable: `python -I tools/melepkg/mele_props.py squadadd`.
+
+`BioSeqAct_AddToParty` is the campaign's own recruitment action — the Kismet node a level places when
+a companion joins. Its `Activated` body differs:
+
+| build | `Activated` size | `Bio2DA` members referenced |
+|---|---|---|
+| ME1 | 842 bytes | **0** |
+| ME2 | 1,195 bytes | **5** — `GetNumColumns`, `GetStringEntryNumI`, `GetStringEntryNumN`, `GetFloatEntryII`, `nDataType_NATIVE_MIRROR` |
+| ME3 | 1,186 bytes | **3** — `GetRowNames`, `GetNameEntryIN`, `nDataType_NATIVE_MIRROR` |
+
+ME2's body also references **`BioBaseSquad.GetSquadSize`**, so the campaign consults the current size
+during recruitment rather than appending blindly. `GetSquadSize` is absent from ME3's `BioBaseSquad`
+entirely, along with `GetNumberOfLiveMembers` — ME3 dropped that API.
+
+ME1's body instead references `BioAiController.PushFollowSquadLeader` and `BioBaseAppearance.GetModelByName`,
+i.e. it drives the AI and the appearance directly with no table in between.
+
+**Why this matters for the design:** on ME2/ME3 a direct `Members` append skips the table-driven
+bookkeeping the campaign relies on. The roster element is a rich `MemberData` struct on ME1/ME2
+(17/7 fields: `SquadMember`, `vMoveLocation`, `vHoldPosition`, `vTarget`, `stCoverToUse`, `eAction`,
+`eSwitchWeapon`, `eFormation`, …) — so an append that fills only `SquadMember` leaves the AI reading
+defaulted order state. On ME3 the element is a bare `Object`, so there is no struct to fill *and* no
+`MemberData` to fill it *with*.
+
+The honest conclusion: **the safe way to give a client a squadmate is to make the campaign do it**, by
+firing a `BioSeqAct_AddToParty` (or the per-build equivalent) rather than by writing the array. That
+keeps the data-table bookkeeping on the builds that have it and is the same call on the build that
+does not. It also means S2/S3 is not an array edit at all.
+
+**Scope caveat, stated because it is the limit of this measurement:** the reference scan is the
+documented dword heuristic (`mele_tables.bytecode_refs`), so it establishes *that* a member is
+referenced, not what the code does with it. The opcode table remains unproven (`ue3_bytecode.py`
+explains at length why a walk that closes proves nothing), and two attempts to decode a virtual call
+followed by an integer constant in this body found nothing — so **the number 2, if it is anywhere in
+this path, was not located.** `Members` may simply be soft-capped by story design.
+
+What is measured: the recursion path, and that it is table-driven on ME2/ME3 and not on ME1.
+
+### Rule 56
+
+**"Add it to the array" is not "add it the way the game does".** The campaign has one recruitment
+action per build and it is not an array append on two of the three. A mod that writes the array
+directly produces a squadmate the AI does not fully know about, and the symptom will be defaulted
+order state rather than an error.

@@ -440,6 +440,39 @@ def t_maplist_is_structural():
     return "ok", "1811 / 2156 / 2677 = 6644 maps, counted by PersistentLevel"
 
 
+@case("the campaign's own squad recruitment goes through a data table on ME2/ME3, not ME1")
+def t_squad_recruitment_path():
+    """How the game adds a squadmate, which decides how co-op should - and it is not the same way.
+
+    Appending to `BioBaseSquad.Members` looks like the obvious way to give a client a squadmate. On
+    ME2 and ME3 it skips the campaign's own bookkeeping: `BioSeqAct_AddToParty.Activated` runs
+    through a `Bio2DA` numbered-row table there, while ME1's version references no `Bio2DA` at all.
+
+    The scan is the documented dword heuristic, so what makes it safe is the contrast: zero
+    `Bio2DA` members in ME1's body and a coherent accessor family in the other two. Noise does not
+    produce `GetNumColumns` + `GetStringEntryNumI` + `GetFloatEntryII` together.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_squadadd(None)
+    out = buf.getvalue()
+    if "install not found" in out or "verdict" not in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_squadadd returned %d:\n%s" % (rc, out.strip())
+    if "ME1  AddToParty.Activated 842 bytes; Bio2DA refs 0" not in out:
+        return "fail", "ME1's recruitment gained a table lookup:\n%s" % out.strip()
+    if "ME2  AddToParty.Activated 1195 bytes; Bio2DA refs 5" not in out:
+        return "fail", "ME2's recruitment path changed:\n%s" % out.strip()
+    if "GetSquadSize" not in out:
+        return "fail", "ME2 no longer consults GetSquadSize:\n%s" % out.strip()
+    if "ME3  AddToParty.Activated 1186 bytes; Bio2DA refs 3" not in out:
+        return "fail", "ME3's recruitment path changed:\n%s" % out.strip()
+    return "ok", "ME1 direct (0 table refs); ME2 5 refs + GetSquadSize; ME3 3 refs"
+
+
 def main():
     failures = 0
     skips = 0

@@ -899,6 +899,84 @@ def cmd_maplist(args):
     return 0
 
 
+def cmd_squadadd(args):
+    """How the campaign itself adds a squad member, per build - which decides how co-op should.
+
+    Appending to `BioBaseSquad.Members` is the obvious way to give a client a squadmate, and on ME2
+    and ME3 it is the wrong one: the campaign's own `BioSeqAct_AddToParty.Activated` runs through a
+    `Bio2DA` data table, and a direct array append skips that bookkeeping.
+
+    This measures the divergence rather than asserting a plan. For each build it reports the size of
+    `AddToParty.Activated` and which `Bio2DA` accessors it references:
+
+      * ME1 - no `Bio2DA` reference at all; the action calls `PushFollowSquadLeader` and appearance
+        lookups directly.
+      * ME2 - the numbered-row accessor family (`GetNumColumns`, `GetStringEntryNumI`,
+        `GetStringEntryNumN`, `GetFloatEntryII`) plus `GetSquadSize`.
+      * ME3 - `GetRowNames` / `GetNameEntryIN`.
+
+    The reference scan is the same dword heuristic `mele_tables.bytecode_refs` documents, so a hit is
+    evidence of a *reference*, not of a decode. What makes it trustworthy here is the contrast: the
+    same scan finds zero `Bio2DA` members in ME1's body and a coherent accessor family in ME2's and
+    ME3's, which is a pattern no noise produces.
+    """
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    for game in ("ME1", "ME2", "ME3"):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "SFXGame.pcc")
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            print("%s: install not found" % game)
+            continue
+        t = mt.build(path)
+        by_index = {e["index"]: e for e in t["exports"]}
+        fns = [e for e in t["exports"] if e["object_name"] == "Activated"
+               and "BioSeqAct_AddToParty" in (mt.describe_index(
+                   e["outer_index"], t["exports"], t["imports"]) or "")]
+        if not fns:
+            problems.append("%s: no BioSeqAct_AddToParty.Activated" % game)
+            print("%s: no BioSeqAct_AddToParty.Activated" % game)
+            continue
+        fn = fns[0]
+        at = fn["serial_offset"] - t["displacement"]
+        length = struct.unpack_from("<i", t["buf"], at + 28)[0]
+        body = t["buf"][at + 32:at + 32 + length]
+        two_da, squad = set(), set()
+        for i in range(len(body) - 4):
+            v = struct.unpack_from("<i", body, i)[0]
+            e = by_index.get(v)
+            if not e:
+                continue
+            outer = mt.describe_index(e["outer_index"], t["exports"], t["imports"]) or ""
+            cls = mt.describe_index(e["class_index"], t["exports"], t["imports"]) or ""
+            if "Bio2DA" in outer or "Bio2DA" in cls:
+                two_da.add(e["object_name"])
+            if "Squad" in outer and e["object_name"]:
+                squad.add(e["object_name"])
+        print("%-4s AddToParty.Activated %d bytes; Bio2DA refs %d %s"
+              % (game, length, len(two_da), sorted(two_da)[:6]))
+        if squad:
+            print("     squad refs: %s" % sorted(squad)[:8])
+        if game == "ME1" and two_da:
+            problems.append("ME1 references Bio2DA in AddToParty - the divergence claim is wrong")
+        if game in ("ME2", "ME3") and not two_da:
+            problems.append("%s does NOT reference Bio2DA - the divergence claim is wrong" % game)
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: ME1's recruitment is direct; ME2/ME3 run it through a Bio2DA table, so appending "
+          "to Members directly skips the campaign's bookkeeping on ME2/ME3")
+    return 0
+
+
 def cmd_savecheck(args):
     """How each build persists a level, because it decides whether the host's save is safe.
 
@@ -1046,6 +1124,10 @@ def main():
     p = sub.add_parser("savecheck",
                        help="how each build persists a level (decides save safety)")
     p.set_defaults(func=cmd_savecheck)
+
+    p = sub.add_parser("squadadd",
+                       help="how the campaign itself adds a squad member, per build")
+    p.set_defaults(func=cmd_squadadd)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")
