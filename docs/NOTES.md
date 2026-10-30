@@ -4173,3 +4173,85 @@ times over, with both `bSpawnActor` settings. This is the mirror image of the ea
 `SECOND-PLAYER-ME2.md`: that one proved a function absent by scanning the wrong package, this one
 would have proved it usable by finding it in the right one. A declaration is a fact about the file; it
 is not a fact about the runtime.
+## 2026-10-30 (live evidence): LEMP already ran the experiment, and it answers three open questions
+
+`local/MELE/refs/lemp-asi` was on disk the whole time and its research probes are the live counterpart
+to everything this session measured offline. Three of this session's "unknown" rows are answered in
+its own comments, and one of this session's conclusions was wrong because of it.
+
+### 1. A listen server works, on all the evidence that matters
+
+`repl_probe.cpp` stage 2a: **`open BioP_MPCer?listen` binds a UDP socket on 3659.** Stage 2b then asks
+whether UE3 replication carries a second instance running `open 127.0.0.1`, with a pass condition
+stated in advance:
+
+> A second NetConnection appearing on the host is the pass condition. A second PlayerReplicationInfo
+> means replication is not merely connected but actually propagating actors, which is the stronger
+> result.
+
+So the driver is created by `open <map>?listen` with **no patching at all** — it is the game's own
+console command and the game's own native driver. This replaces "whether any build will start a
+listen server at all (unknown)" with "yes on ME3, via `?listen`, proven live". ME1/ME2 remain
+untested, but the mechanism is engine-level and shared, so the prior is now much stronger.
+
+### 2. The port is 3659, not 7777, and it is in no config file
+
+ME1's and ME2's `BIOEngine.ini` say `Port=7777` under `[URL]`. The live bind is **3659**. A search of
+all three exes and all the `Coalesced` files for `3659` finds nothing; `7777` appears once, wide, in
+ME1's `Coalesced_INT.bin`. So 3659 is **LEMP's own choice**, passed in the URL — LEMP's lobby code
+uses `?port=3659` throughout (`test_lemp_online.cpp`, `test_lemp_heartbeat.cpp`).
+
+The consequence for us: `Port=` in the ini is not the port a mod should assume, and the URL is where
+the port is decided. Our LAN design should carry the port in the travel URL like LEMP does, not rely
+on config.
+
+### 3. The client-side join blocker is already documented, with the exact instruction
+
+`loadmap_hook.cpp` explains the failure a campaign co-op mod will hit on its first real client, and
+it is not a networking failure:
+
+> With join_patch applied the client's pending level completes without an error —
+> `NotifyReceivedText` processes all 197 packages the server advertises and raises nothing — and then
+> the client sits at the main menu with no net driver and no pending level, while the host still shows
+> the connection as live. No message box, nothing in any log.
+
+The disassembly in that file gives the decision point inside `UGameEngine::Tick` (rva `0x5502c0`):
+
+    550a53  call [this+0x3e8]        ; LoadMap(URL, Pending, Error)
+    550a59  if (result == 0)         -> ?failed, back to the menu
+    550a74  if (Error != "")         -> ?failed, back to the menu
+
+and notes that `LoadMap`'s `Error` out-parameter is **discarded on the way to the menu**, which is why
+the client fails silently. `loadmap_hook` hooks vtable slot `0x3e8` to read that string.
+
+**This is the single most useful thing in the reference copy for our design.** The LAN plan's step 6
+("the same over a LAN socket") will fail at exactly this point on the first attempt, and it will fail
+*silently*. Knowing the slot and the discard is worth days.
+
+### 4. What this says about ME3SquadCoop's route
+
+`repl_probe.cpp`'s symptom list is a co-op bug list, not a networking one: the client pawn has no
+archetype (`ObjectArchetype` unresolved → class default → no mesh → camera orbits the origin), no
+weapon (`InvManager`/`Weapon` null, or `bNoWeaponFiring` set), an unexpanded weapon
+(`SFXWeapon::bWeaponExpanded`), `BioPawn::bCombatPawn` const-gated, and no instanced `AnimTreeTemplate`.
+The comment at `OFF_CAM_VIEWTARGET` records a beautiful near-miss: reading `0x3D8` read `POV.Location`
+as a pointer and reported NONE **on the host, whose camera demonstrably works** — a positive control
+catching a broken measurement before it became a finding.
+
+Those are the rows our per-build table marks "unknown" for ME3, and they are known. Reading this file
+should have come before designing the sync table, not after.
+
+### Rule 48
+
+**Read the reference implementations' probes before designing the thing they probed.** `lemp-asi` was
+cloned into `local/MELE/refs/` sessions ago and referenced in `README.md` only as "a proven UE3
+networking reference". Its four research probes (`repl_probe`, `loadmap_hook`, `socket_probe`,
+`netmode_probe`) answer — with live evidence, offsets and a stated pass condition — three questions
+this session spent a rebuild and several thousand lines of offline parsing re-deriving, and one of them
+(`?listen`) directly refutes a conclusion this session reached.
+
+### Rule 49
+
+**A config value is a default, not the value.** `Port=7777` is in the ini; the socket binds 3659; the
+number comes from the travel URL. Assuming either the ini value or a constant would have been wrong in
+opposite directions, and only a live bind settles it.

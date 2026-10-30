@@ -61,24 +61,43 @@ and the *class* is not in any shipped package — because it is native. Only ME3
 **This does not mean there is no working transport.** LEMP restores ME3's horde wave mode over its own
 master server and P2P, live, and it does so by patching in memory — so **ME3's native
 `SFXOnlineNetDriver` path still works under the LE build** (see `README.md` and `NOTES.md`, which
-records that LEMP's in-memory patches cannot be refuted by the static check that was run). What is
-missing on ME1/ME2 is not proven either way: nobody has driven a listen server on them, and ME1 ships
-no `BIOGame.ini` while both ME1 and ME2 name a `TcpNetDriver` class that is in zero packages.
+records that LEMP's in-memory patches cannot be refuted by the static check that was run).
+
+Better than that: LEMP's own research probe settles the question this page was going to leave open.
+`repl_probe.cpp` stage 2a established that **`open BioP_MPCer?listen` binds a UDP socket on 3659 with
+no patching at all** — it is the game's own console command and the game's own native driver. Stage 2b
+then asks whether UE3 replication carries a second instance running `open 127.0.0.1`, with the pass
+condition stated in advance: *a second `NetConnection` on the host*, and *a second
+`PlayerReplicationInfo`* as the stronger result. So **a listen server is not something co-op has to
+build, on ME3 at least** — it is something co-op has to *start on a campaign map*.
+
+Two details from that file that change this design:
+
+* **The port is 3659, not 7777.** ME1/ME2's `BIOEngine.ini` says `Port=7777`, and nothing in any exe or
+  `Coalesced` file contains `3659` — LEMP passes it in the travel URL (`?port=3659`). So a LAN mod must
+  carry the port in the URL, and must not trust `Port=`.
+* **The client-side join fails silently, at a known instruction.** `loadmap_hook.cpp` documents that
+  after a clean handshake the client's pending level completes, `NotifyReceivedText` accepts all 197
+  advertised packages, and then the client returns to the main menu with no net driver and no pending
+  level while the host still shows the connection live — no message box, nothing in any log, because
+  `UGameEngine::Tick`'s `LoadMap` call at rva `0x5502c0` discards its `Error` out-parameter on the way
+  back to the menu. Step 6 of §7 will hit exactly this, and it will hit it silently.
 
 The honest state of the transport question is therefore **three different answers**, and the design
 must not assume they are the same:
 
 | build | transport state | label |
 |---|---|---|
-| ME3 | native `SFXOnlineNetDriver` present and **known to work** (LEMP, live) | **measured, live** |
+| ME3 | native driver; `open <map>?listen` binds UDP and carries a peer | **measured, live** (LEMP) |
 | ME2 | `NetworkDevice=IpDrv.TcpNetDriver` names a class in no package; native `UTcpNetDriver` is in the exe | **unknown** — never tried |
 | ME1 | same as ME2, plus no `BIOGame.ini` at all | **unknown** — never tried |
 
-Even in ME3, the working path is **wave mode's** — a separate game mode, a separate lobby, its own
-session lifecycle. A *campaign* level never starts a driver, so campaign co-op still needs the driver
-created for a campaign map. That is a much smaller job than writing a transport, and it is why §2's
-`AddMutator`/`BaseMutator` hook plus `CreateNamedNetDriver` on `GameEngine` — a real function with real
-bytecode on all three builds, taking a `NetDriverName` — is the right seam to investigate next.
+Even with ME3's answer, one gap remains: **the proven listen server is wave mode's.** It is started by
+`open BioP_MPCer?listen` on an MP map, with the MP game mode present. A campaign level does not start
+one, so campaign co-op still has to make it happen there. That is a much smaller job than writing a
+transport, and it is why §2's `AddMutator`/`BaseMutator` hook plus `GameEngine.CreateNamedNetDriver` —
+a real function with real bytecode on all three builds, taking a `NetDriverName` — is the right seam to
+investigate next.
 
 **LAN is the right first target** because it removes three problems that are not game problems:
 NAT traversal, matchmaking identity, and trust. Two machines on one switch have a known address
@@ -380,6 +399,20 @@ host → client   SNAPSHOT   (tick, puppet transform + anim state, squadmates, n
 
 * **UDP for snapshots**, unsorted and lossy; a late snapshot is worthless.
 * **TCP for events**, because a missed "level change beginning" strands the client.
+
+**Both of those are wrong for this engine, and LEMP's evidence says so.** The driver that actually
+binds is UDP on port **3659** (`repl_probe.cpp`), and it is created by the game's own
+`open <map>?listen` rather than by anything a mod sets up. ME1/ME2's ini says `Port=7777` and no file
+in any install contains `3659`, so the port comes from the travel URL. So:
+
+* **the transport is the game's own native driver**, carrying UE3 replication. The co-op layer
+  chooses *what* replicates (via `bAlwaysRelevant`, `Role`/`RemoteRole`, and the `Client*` remote
+  functions), not *how* it is carried;
+* **the port and the listen flag live in the travel URL** — `?listen` and `?port=<n>` — because that
+  is where the engine reads them;
+* **UDP-only** is therefore the real constraint, and reliable delivery for events has to be built on
+  top of it (sequence numbers plus re-send), not obtained by switching protocol.
+
 * **The host is the clock.** Every snapshot carries the host's tick, and the client's input carries
   the last tick it saw. There is no clock negotiation on a LAN.
 * **Nothing is trusted from the client.** A shot is a *request*; the host decides.
@@ -408,6 +441,15 @@ Step 5 is the one that separates "works" from "works for a career". A single tra
 luck; five in a row with a checksum cannot. Step 6 is deliberately last among the mechanics: proving
 the transport before the thing it carries is how a project ends up debugging two unknowns at once.
 
+**Step 6 has a known failure mode, already documented, and it is silent.** `loadmap_hook.cpp` records
+that after a clean handshake the client's pending level completes, all 197 advertised packages are
+accepted, and the client then returns to the main menu with no net driver and no pending level while
+the host still shows the connection live — no message box, nothing in any log, because
+`UGameEngine::Tick`'s `LoadMap` call (rva `0x5502c0` on the current ME3 build) discards its `Error`
+out-parameter on the way back to the menu. Anyone attempting step 6 should hook vtable slot `0x3e8` on
+`UGameEngine` and read that string *before* concluding anything about replication. A silent return to
+the menu is not a netcode failure and must not be debugged as one.
+
 ## 8. What is unknown, stated plainly
 
 * **Which squadmate model the campaign tolerates** (S2 vs S3). Top unknown.
@@ -418,10 +460,10 @@ the transport before the thing it carries is how a project ends up debugging two
   no live capture has shown it firing.
 * **Where ME1 selects its game class in native code.** The *fact* that it does is measured (no
   config key anywhere, no script function that resolves the name pair); the call site is not.
-* **Whether any of the three builds will start a listen server at all.** ME3's native driver is known
-  to work *in wave mode* (LEMP, live), which is not the same as working on a campaign map. ME1/ME2 have
-  never been tried, and both name a `TcpNetDriver` class that is in zero of the 12,704 packages. The
-  next experiment is `CreateNamedNetDriver` on a campaign map, not a new transport.
+* **Whether any of the three builds will start a listen server on a CAMPAIGN map.** ME3's driver is
+  proven live in wave mode (`open BioP_MPCer?listen` binds UDP 3659 and carries a peer), which is a
+  different question from whether a campaign level creates one. ME1/ME2 have never been tried, and
+  both name a `TcpNetDriver` class that is in zero of the 12,704 packages.
 * **Conversation participation** for the client.
 * **Nothing here has been run.** Every row in §5, §5b and §5c is read from files; none is a live
   result.
@@ -435,13 +477,12 @@ makes the client disposable and the career safe.
 The 2026-10-30 measurements moved two questions from *unknown* to *answered*, and both answers
 changed the plan:
 
-1. **The UE3 replication model survived the LE cut intact; the transport did not.** All the
-   `Client*`/`Server*` remote functions, `Role`/`RemoteRole`, `ENetRole`/`ENetMode` and
-   `GameReplicationInfo.GameClass` are present on all three builds, and the replication runtime's
-   own diagnostic strings are still in all three exes. What is missing is a `NetDriver` — which is
-   native on all three, and which ME3 points at a custom native subclass. Co-op can sit *under*
-   UE3 replication instead of replacing it. This is good news for LAN and says nothing about the
-   single-machine case.
+1. **The UE3 replication model survived the LE cut intact.** All the `Client*`/`Server*` remote
+   functions, `Role`/`RemoteRole`, `ENetRole`/`ENetMode` and `GameReplicationInfo.GameClass` are
+   present on all three builds, and the replication runtime's own diagnostic strings are still in all
+   three exes. The driver *class* is gone from the packages — it is native — but the driver itself
+   works: `open <map>?listen` binds UDP 3659 with no patching, proven live by LEMP's probe. What a
+   campaign co-op mod has to do is start it and choose what replicates, not write a transport.
 2. **The game-class routing mechanism is shared by all three builds and only ME3 uses it.** The
    `GameTypePrefix` struct, `DefaultMapPrefixes`, `DefaultGameType` and
    `GetDefaultGameClassPath` are byte-identical across ME1/ME2/ME3, but ME1/ME2's CDOs leave the

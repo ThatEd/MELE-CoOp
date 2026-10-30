@@ -68,6 +68,8 @@ Usage:
     python -I tools/melepkg/mele_props.py value <package> <object> <property> 
     python -I tools/melepkg/mele_props.py probe <package> [--count N]
     python -I tools/melepkg/mele_props.py cdo <package> <class>        # read Default__<class>
+    python -I tools/melepkg/mele_props.py mapgame <package>            # map prefix -> game class
+    python -I tools/melepkg/mele_props.py routing                      # all three installs
 """
 import argparse
 import importlib.util
