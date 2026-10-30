@@ -3976,3 +3976,200 @@ for the type by guessing the name returns nothing, which is what happened before
 and its AI controller is not, and both facts came from the same query. A port that assumes a
 sibling class exists because its parent does will look right in two builds and fail in the third -
 and the failure surfaces as a null class lookup at spawn time, not as a compile error.
+
+## 2026-10-30 (replication + game-class routing): the netcode survived the cut, the transport did not
+
+Two sessions of "where does ME1's game class come from" are now closed, and closing it exposed
+something bigger. Both results are re-runnable: `python -I tools/melepkg/mele_props.py routing`
+prints the game-class half, and `test_mele_props.py` pins it.
+
+### The whole UE3 replication model is still in the packages
+
+This is the finding that changes the size of the co-op job. It was measured on all three builds, and
+the closure rule applies: each row is an export that exists, not a name that appears in a string
+table.
+
+| what | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| `Actor.Role`, `Actor.RemoteRole` | `ByteProperty` | `ByteProperty` | `ByteProperty` |
+| `Actor.NetPriority`, `Actor.NetUpdateFrequency` | `FloatProperty` | `FloatProperty` | `FloatProperty` |
+| `Actor.bNetTemporary`/`bNetInitial`/`bNetOwner`/`bAlwaysRelevant`/`bOnlyRelevantToOwner`/`bReplicateMovement`/`bTearOff`/`NetTag` | all present | all present | all present |
+| `ENetRole` enum (`ROLE_SimulatedProxy`, `ROLE_AutonomousProxy`, `ROLE_Authority`, ...) | present, 5 members | present, 5 members | **absent** (native) |
+| `ENetMode` enum (`NM_Standalone`, `NM_ListenServer`, `NM_Client`, ...) | present, 5 | present, 5 | present, 5 |
+| `PlayerController` net-named functions | **117** | **113** | **113** |
+| `Client*` remote events on `PlayerController` | full family | full family | full family |
+| `ServerMove`, `ClientUpdatePosition`, `ServerChangeTeam`, `ServerSuicide` | present | present | present |
+| listen-server admin on `GameInfo` (`Login`, `PostLogin`, `PreLogin`, `Logout`, `SpawnPlayerController`, `RestartPlayer`, `SetGameType`, `InitGame`, `StartMatch`, `ChangeTeam`, `InitGameReplicationInfo`, `HandleSeamlessTravelPlayer`) | all present | all present | all present |
+| `GameReplicationInfo.GameClass` | present | present | present |
+| `GameInfo.GetSeamlessTravelActorList` | present | present | present |
+
+`bReplicates` is absent from `Actor` on all three, which is not a contradiction: in this engine
+version replication is not opt-in per actor, it is decided by `RemoteRole` plus relevance.
+
+### ...but the exe still knows it, too
+
+The replication *runtime* is compiled in. Its own diagnostic strings are in all three exes verbatim:
+
+    "Attempt to replicate property '%s.%s' in C++ but class '%s' is not a replicated class"
+    "Attempt to replicate function"
+    UNetDriver::LowLevelSend / LowLevelGetRemoteAddress / LowLevelDescribe / LowLevelDestroy
+    UNetConnection::LowLevelSend / LowLevelDescribe / LowLevelGetRemoteAddress
+    UChildConnection, UPendingLevel, UGuidCache, UDemoRecDriver
+
+and the driver's own UPROPERTY names are there as wide strings on all three:
+`NetServerMaxTickRate`, `MaxClientRate`, `MaxInternetClientRate`, `MaxTickRate`, `ConnectionTimeout`,
+`InitialConnectTimeout`, `KeepAliveTime`, `SpawnPrioritySeconds`, `RelevantTimeout`, `MaxDownloadSize`,
+`AllowPlayerPortUnreach`, `LogPortUnreach`.
+
+### What is actually gone: the driver *class*, and ME3 substitutes its own
+
+`TcpNetDriver`, `UdpNetDriver` and `DemoRecDriver` do **not exist as script exports anywhere in the
+12,704 packages** (checked against the rebuilt index, all three builds). They exist only as native
+C++ classes — `UTcpNetDriver` and `UDemoRecDriver` are in the exes as wide strings.
+
+`IpDrv.pcc` still ships 23/23/22 classes, but they are all the *online subsystem* family
+(`OnlineGameInterfaceImpl`, `OnlineSubsystemCommonImpl`, `PartyBeacon*`, `MeshBeacon*`, `TcpLink`,
+`WebServer`). The driver classes are gone from it.
+
+ME1's and ME2's `BIOEngine.ini` still set `NetworkDevice=IpDrv.TcpNetDriver` — naming a class that no
+longer exists in any package. **ME3 ships no `BIOEngine.ini` at all** (only `GamerSettings.ini`), so
+its `NetworkDevice` key is unset, yet its exe contains the string
+
+    SFXOnlineFoundation.SFXOnlineNetDriver
+
+and `SFXOnlineFoundation.pcc` contains **no such class** (the export is absent). So ME3 replaced its
+default driver with a custom native subclass that is likewise native.
+
+The only ini keys any of the three exes reads through the `engine-ini:`/`game-ini:` mechanism are:
+
+    engine-ini:Engine.Engine.Client            engine-ini:Engine.Engine.GameEngine
+    engine-ini:Engine.Engine.DefaultMaterialName
+    engine-ini:Engine.Engine.DemoRecordingDevice
+    engine-ini:Engine.Engine.NetworkDevice
+    game-ini:Engine.GameInfo.DefaultGame       game-ini:Engine.GameInfo.DefaultServerGame
+
+That the same seven keys appear in all three exes is itself the evidence that this is one shared code
+path, not three forks.
+
+#### Correction: "the driver class is gone" is not "the transport is gone"
+
+The first draft of this section concluded "the co-op transport therefore has to be added, not
+redirected". That overreached, and an existing document contradicted it: **LEMP restores ME3's horde
+wave mode over its own master server and P2P, live.** So ME3's native `SFXOnlineNetDriver` path
+*works* under the LE build. `README.md` already says so and `NOTES.md` line ~286 already records that
+LEMP's patches are in-memory, so the static check that was run could not refute it.
+
+The corrected state is three different answers, and the design must not flatten them:
+
+| build | transport | label |
+|---|---|---|
+| ME3 | native `SFXOnlineNetDriver` present, **known to work in wave mode** | measured, live |
+| ME2 | config names a class in zero packages; native `UTcpNetDriver` is in the exe | **unknown**, never tried |
+| ME1 | same as ME2, and no `BIOGame.ini` at all | **unknown**, never tried |
+
+And even the ME3 answer is narrower than it looks: **wave mode is a separate game mode with its own
+lobby and session lifecycle**, so it proves the driver can be created and can carry traffic — it does
+not prove a *campaign* map ever creates one. The campaign does not, which is why campaign co-op still
+has to make it happen. That is a far smaller job than writing a transport, and it points at
+`GameEngine.CreateNamedNetDriver(NetDriverName)` — real functions with real bytecode on all three
+builds — as the seam to try next.
+
+### The game-class routing mechanism is shared; only ME3 uses it
+
+`GameTypePrefix` is a real script struct on all three, declared on `Engine.GameInfo`, with
+
+    ME1, ME2 (5):  Prefix, GameType, AdditionalGameTypes, ForcedObjects, bUsesCommonPackage
+    ME3 (7):       + OverrideCommonPackage, bIsMultiplayer
+
+byte-identical field order. `GameInfo.GetDefaultGameClassPath(MapName, Options, Portal)` is a 19-byte
+`EX_LocalVirtualFunction` stub whose body is identical on all three, and it is declared on **exactly
+one class in the entire install**: `Engine.GameInfo`. Nothing overrides it. Same for
+`GetSupportedGameTypes` and `SetGameType`.
+
+Both of the two functions that name a game class (`CreateNamedNetDriver`, `SetGameType`) take a
+**package index**, proven because each one's operand equals its own export index — so neither of them
+resolves `Engine.GameInfo` + `DefaultGame` as an FName pair. That concatenation does not occur in any
+name table. So the config lookup is native.
+
+Then the asymmetry:
+
+    ME1  declares DefaultMapPrefixes, DefaultGameType, GameInfoClassAliases, GameTypePrefix
+         CDO sets (none)
+    ME2  declares the same four
+         CDO sets (none)
+    ME3  declares the same four
+         CDO sets DefaultGameType='SFXGameContent.SFXGameInfoSP', GameInfoClassAliases (SP alias),
+         DefaultMapPrefixes (3 rows: EntryMenu, BIOG_UIWorld, Bio)
+
+with the CDO closing EXACTLY on all three, so "absent" on ME1/ME2 is a genuine absence and not a
+truncated walk. And ME1 ships **no `BIOGame.ini`** at all while ME2's `[Engine.GameInfo]` sets
+`DefaultGame=SFXGame.BioSPGame` — yet ME1 runs. So ME1 picks its game class in native code.
+
+The campaign game class per build:
+
+    ME1  BioSPGame   : Core.GameInfo
+    ME2  BioSPGame   : Core.SFXGame  (SFXGame is absent on ME1)
+    ME3  SFXGameInfoSP : Core.SFXGame   (in BIO_COMMON.pcc)
+
+### Why this is the right answer for the design and the wrong one to use
+
+`DefaultMapPrefixes` and `GameInfoClassAliases` look like the natural injection point for co-op, and
+they are the wrong one:
+
+1. They are consulted only when a map change has no explicit game class, and ME3's table maps every
+   gameplay level to `SFXGameInfoSP`, a *subclass* of `SFXGame` — not a replacement.
+2. ME1's lookup is native and takes a package index, so nothing here is redirectable by setting a
+   property.
+3. `DefaultMapPrefixes` sits at **+0x354 (ME3) / +0x370 (ME1, ME2)** inside the CDO tag stream, below
+   `DefaultGameType` and `DefaultPawnClass`. Writing it means rewriting an object's serial data, not
+   setting a config value.
+
+The hook that *is* identical on all three — `AddMutator`/`BaseMutator`, parms `0x2c`, 32 hooks — was
+already the design's foundation and stays that way. The per-build part is a three-row class-name
+table, not a mechanism.
+
+### Where the client goes, and why split-screen comes first
+
+`GameViewportClient` declares `AddLocalPlayer`, `RemoveLocalPlayer`, `CreatePlayer`,
+`CreateInitialPlayer`, `LayoutPlayers`, `NotifyPlayerAdded`, `RemovePlayer` on all three;
+`SFXGameViewportClient` overrides none of them. `GameEngine.IsSplitScreen()` exists on all three.
+**So a second local player needs no transport at all** — both players are local, both authoritative —
+and that is the only configuration this project can test without a second machine. LAN is second.
+
+### Rule 43
+
+**A class name in a config file is not evidence the class exists.** ME1 and ME2 ship
+`NetworkDevice=IpDrv.TcpNetDriver` naming a class that is in zero of the 12,704 packages, and the
+game runs. Every one of those three facts had to be checked separately, and the config file was the
+one that lied.
+
+### Rule 44
+
+**"Absent" needs a closure, or it is indistinguishable from "stopped reading".** ME1/ME2 having no
+`DefaultMapPrefixes` value is only a fact because the same parse consumed all 31 tags exactly. The
+same parse on a truncated walk would report the same absence.
+
+### Rule 45
+
+**A range check is not a layout test.** The docstring said the `+4` preamble "is not a name index
+(174..959)". 174..959 index fine into a 20,433-entry name table, and ME1's `Default__Actor` preamble
+is 1245 — also valid. 60/60 preambles over 60 objects are valid indices. The start offset is decided
+by the closure rate (40/40 vs 0/40) and by nothing else; the original reasoning was wrong and the
+test that caught it stays in the suite.
+### Rule 46
+
+**"The class is gone" and "the feature is gone" are different claims, and the second needs its own
+evidence.** `TcpNetDriver` exists in zero of 12,704 packages, and LEMP still runs ME3 multiplayer
+today. Both are true. The first draft of the entry above concluded a transport had to be written; it
+had to be corrected by an existing document in the same repository. Reading the whole install, and
+reading the project's own prior findings, are separate duties — and a static symbol search only
+answers the first.
+
+### Rule 47
+
+**Declaration is not callability.** `AddLocalPlayer` is declared on `GameViewportClient` in all three
+builds and `SFXGameViewportClient` does not override it — and calling it live faults on LE1/LE2 three
+times over, with both `bSpawnActor` settings. This is the mirror image of the earlier error in
+`SECOND-PLAYER-ME2.md`: that one proved a function absent by scanning the wrong package, this one
+would have proved it usable by finding it in the right one. A declaration is a fact about the file; it
+is not a fact about the runtime.

@@ -22,6 +22,9 @@ SUITES = [
     "test_mele_tables.py",
     # Bytecode extents, and the deliberate absence of a disassembler.
     "test_ue3_bytecode.py",
+    # The property-tag reader: the layout's falsifiable closure gap, the struct-array decoder,
+    # and the game-class routing asymmetry across the three installs.
+    "test_mele_props.py",
     # The install index: compact reference format and its query semantics.
     "test_mele_index.py",
 ]

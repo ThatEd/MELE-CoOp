@@ -1091,6 +1091,72 @@ def t_only_me3_has_split_screen_camera():
         ", ".join(sorted(results)))
 
 
+@case("the Mutator hook surface is identical on every build")
+def t_mutator_surface():
+    """The one engine extension point this game actually wires, and the basis of the LAN design.
+
+    `GameInfo` has no `MutatorList` array - the usual UE3 way - but it DOES have a linked list:
+    `BaseMutator: ObjectProperty` plus `AddMutator`/`RemoveMutator`/`AllowMutator`. `AddMutator`'s
+    parms block is byte-identical on ME1, ME2 and ME3:
+
+        mutname: Str @0x00 (16)   bUserAdded: Bool @0x10   mutClass: Class @0x18 (8)
+        mut: Object @0x20 (8)     I: Int @0x28             total 0x2c
+
+    and `Mutator` declares the same 32 hooks on every build, including the ones co-op needs:
+    `GetSeamlessTravelActorList` (survive a level load), `ModifyPlayer`, `NotifyLogin`,
+    `NotifyLogout`, `CheckReplacement`.
+
+    This is the strongest architectural fact in the file: one implementation can serve all three
+    games at the mutator layer.
+    """
+    want_parms = 0x2c
+    hooks = ("GetSeamlessTravelActorList", "ModifyPlayer", "NotifyLogin", "NotifyLogout",
+             "CheckReplacement", "InitMutator", "PreBeginPlay")
+    got, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game, "Engine")
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        hits = [e for e in t["exports"]
+                if e["object_name"] == "AddMutator"
+                and mele_tables.describe_index(e["class_index"], t["exports"], t["imports"])
+                == "Core.Function"]
+        if not hits:
+            return "fail", "%s: no AddMutator function" % game
+        s = mele_tables.signature(t, t["buf"], hits[0])
+        if s["parms_size"] != want_parms:
+            return "fail", "%s: AddMutator parms 0x%x, expected 0x%x" % (
+                game, s["parms_size"], want_parms)
+        # GameInfo must expose the linked list, not a list array.
+        gi = [e for e in t["exports"]
+              if e["object_name"] == "GameInfo" and e["class_index"] == 0]
+        if not gi:
+            return "fail", "%s: no GameInfo class" % game
+        kids = {x["object_name"] for x in t["exports"]
+                if x["outer_index"] == gi[0]["index"] + 1}
+        for field in ("BaseMutator", "AddMutator", "RemoveMutator", "AllowMutator"):
+            if field not in kids:
+                return "fail", "%s: GameInfo lacks %s" % (game, field)
+        mu = [e for e in t["exports"]
+              if e["object_name"] == "Mutator" and e["class_index"] == 0]
+        if not mu:
+            return "fail", "%s: no Mutator class" % game
+        mkids = {x["object_name"] for x in t["exports"]
+                 if x["outer_index"] == mu[0]["index"] + 1}
+        missing = [h for h in hooks if h not in mkids]
+        if missing:
+            return "fail", "%s: Mutator lacks %s" % (game, missing)
+        got[game] = len(mkids)
+    if not got:
+        return "skip", "no Engine.pcc found (%s)" % ", ".join(skipped)
+    if len(set(got.values())) != 1:
+        return "fail", "hook counts differ per build: %r" % (got,)
+    return "ok", "AddMutator parms 0x2c and %d Mutator hooks, identical on %s" % (
+        list(got.values())[0], ", ".join(sorted(got)))
+
+
 def main():
     failures = 0
     skips = 0

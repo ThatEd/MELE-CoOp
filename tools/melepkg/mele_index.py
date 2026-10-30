@@ -43,7 +43,14 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-INDEX_VERSION = 1
+# Bump this whenever the KEY FORMAT or the record shape changes, not only the record shape.
+# Version 1 was keyed by basename; version 2 is keyed by the path relative to the game's own
+# BioGame folder (so every DLC has a distinct key). A non-`--rebuild` run across that change kept
+# the old basename records and added new relative records beside them, so `stats` reported ME1
+# with 9,892 packages instead of 4,946 - exactly twice the truth, with no error and no warning.
+# `cmd_build` now prunes keys that do not correspond to a file on disk, which makes the index a
+# real mirror of the install instead of an append-only log.
+INDEX_VERSION = 2
 
 
 def load_tables():
@@ -88,13 +95,28 @@ def index_dir():
 
 
 def package_dirs(game):
+    """The base game's CookedPCConsole plus every DLC's, because a career runs through DLC.
+
+    The first version yielded only `<game>/BioGame/CookedPCConsole`, which silently left out
+    2,833 ME2 and 3,893 ME3 packages - every DLC mission. Nothing failed when it did: the index
+    simply did not contain `DLC_EXP_Pack001`, so a query asked inside a DLC wrote "not present in
+    this build", which is a *wrong answer that looks like a measurement*. Rule: a directory that
+    holds packages is part of the population, and the population has to be counted.
+    """
     mt = load_tables()
     pkg = mt.load_pkg()
     rel = os.path.join("Game", game, "BioGame", "CookedPCConsole")
+    dlc_rel = os.path.join("Game", game, "BioGame", "DLC")
     for root in pkg.game_dirs():
         d = os.path.join(root, rel)
         if os.path.isdir(d):
             yield d
+        dlc_root = os.path.join(root, dlc_rel)
+        if os.path.isdir(dlc_root):
+            for sub in sorted(os.listdir(dlc_root)):
+                cand = os.path.join(dlc_root, sub, "CookedPCConsole")
+                if os.path.isdir(cand):
+                    yield cand
 
 
 def index_path(game):
@@ -204,19 +226,46 @@ def cmd_build(args):
             print("%s: install not found" % game)
             continue
         data = {"version": INDEX_VERSION, "game": game, "packages": {}}
-        if not args.rebuild and os.path.isfile(index_path(game)):
+        fresh = not args.rebuild and os.path.isfile(index_path(game))
+        if fresh:
             data = load_index(game)
+            fresh = data.get("version") == INDEX_VERSION
+        if not fresh:
+            # A version mismatch means the keys do not mean the same thing any more, so merging is
+            # not safe. `load_index` already returns empty, but state it here so the reason is local.
+            data = {"version": INDEX_VERSION, "game": game, "packages": {}}
         pkgs = data["packages"]
         files = []
         for d in dirs:
             for name in sorted(os.listdir(d)):
                 if name.lower().endswith(".pcc"):
                     files.append(os.path.join(d, name))
+        # Every key must be unique across the base game AND every DLC, so it is relative to the
+        # game's own BioGame folder. Keying on `dirname(dirs[0])` would have made every DLC's
+        # CookedPCConsole collide with the base game's, silently overwriting base records.
+        game_root = None
+        for d in dirs:
+            up = d
+            for _ in range(3):
+                up = os.path.dirname(up)
+            if game_root is None:
+                game_root = up
+        keys = {}
+        for path in files:
+            rel = os.path.relpath(path, game_root) if game_root else os.path.basename(path)
+            keys[rel] = path
+        # The index is a MIRROR of the install, so a key with no file behind it is stale and must
+        # go. Without this a key-format change silently doubles every count (see INDEX_VERSION).
+        stale = [k for k in pkgs if k not in keys]
+        for k in stale:
+            del pkgs[k]
+        if stale:
+            print("  %s: pruned %d stale key(s) with no file on disk" % (game, len(stale)),
+                  flush=True)
         t0 = time.time()
         done = reused = 0
         errors = 0
-        for i, path in enumerate(files):
-            rel = os.path.relpath(path, os.path.dirname(dirs[0]))
+        for i, (rel, path) in enumerate(keys.items()):
             sig = _sig(path)
             old = pkgs.get(rel)
             if old and old.get("sig") == sig and not args.rebuild:
