@@ -1039,6 +1039,58 @@ def t_squadmate_hierarchy():
         ", ".join("%s:%s" % (g, p) for g, p in sorted(parents.items())))
 
 
+@case("only LE3 defines a split-screen camera mode")
+def t_only_me3_has_split_screen_camera():
+    """The reason `SPLITSCREEN-PLAN.md` orders ME2 first: LE1/LE2 are not merely unproven, they are
+    missing a piece LE3 has.
+
+    The layout machinery is engine-side and present on all three builds (`ESplitScreenType`,
+    `LayoutPlayers`, `PerPlayerSplitscreenData`). What LE3 alone ships is a *camera mode* for two
+    panes:
+
+        ME1  0 split-screen classes
+        ME2  0
+        ME3  1   SFXCameraMode_SplitScreenCombat : SFXCameraMode_Combat   (SFXGame.pcc)
+
+    A count of zero is only meaningful if the package was parsed, so a build with no SFXGame.pcc
+    is a skip rather than a pass.
+    """
+    results, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game)
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        hits = [e for e in t["exports"]
+                if e["class_index"] == 0 and e["object_name"]
+                and "splitscreen" in e["object_name"].lower()]
+        results[game] = sorted(e["object_name"] for e in hits)
+    if not results:
+        return "skip", "no SFXGame.pcc found (%s)" % ", ".join(skipped)
+    if results.get("ME3") != ["SFXCameraMode_SplitScreenCombat"]:
+        return "fail", "ME3 split-screen classes are %r" % (results.get("ME3"),)
+    for game in ("ME1", "ME2"):
+        if game in results and results[game]:
+            return "fail", "%s gained %r; the plan's ordering rationale changed" % (
+                game, results[game])
+    # And the layout machinery must still be present everywhere, or the claim is incoherent.
+    # It lives in Engine.pcc, not SFXGame.pcc - checking the wrong package is exactly the mistake
+    # that produced "there is no AddLocalPlayer" earlier in this project.
+    for game in results:
+        p = package(game, "Engine")
+        if not p:
+            return "skip", "%s has no Engine.pcc" % game
+        t = mele_tables.build(p)
+        names = {e["object_name"] for e in t["exports"]}
+        for want in ("LayoutPlayers", "DesiredSplitscreenType", "PerPlayerSplitscreenData"):
+            if want not in names:
+                return "fail", "%s lacks %s in Engine.pcc; the layout is not universal" % (
+                    game, want)
+    return "ok", "1 camera mode on ME3 only; layout machinery in Engine.pcc on %s" % (
+        ", ".join(sorted(results)))
+
+
 def main():
     failures = 0
     skips = 0
