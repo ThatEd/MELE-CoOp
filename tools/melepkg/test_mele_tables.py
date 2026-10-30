@@ -975,6 +975,70 @@ def t_targets_reproducible():
     return "ok", "byte-identical across runs and matches the committed copy"
 
 
+@case("the squadmate class hierarchy, and it differs on every build")
+def t_squadmate_hierarchy():
+    """The scoped design is "the client takes a squadmate", so this is the class that design needs.
+
+    It is NOT shared, and the way it differs is easy to get wrong:
+
+        ME1  BioAI_Henchman   : BioAI_Core          SFXPawn_Player : BioPawn
+        ME2  SFXAI_Henchman   : SFXAI_Core          SFXPawn_Henchman : SFXPawn
+        ME3  SFXAI_Henchman   : SFXAI_Cover         SFXPawn_Henchman : SFXPawn_PlayerParty
+
+    Two traps. LE1 names the AI `BioAI_*` while LE2/LE3 use `SFXAI_*`, so a name search for
+    "SFX" finds nothing on LE1. And ME3 re-parents `SFXPawn_Henchman` from `SFXPawn` to
+    `SFXPawn_PlayerParty` - the same class name with a different ancestry, so anything that
+    tests `IsA(SFXPawn_Henchman)` for a player-ish check behaves differently on LE3.
+
+    `BioPlayerSquad` IS shared on all three, which is the one part that is.
+    """
+    want = {
+        "ME1": {"SFXPawn_Player": "BioPawn", "BioAI_Henchman": "BioAI_Core",
+                "BioPlayerSquad": "BioBaseSquad"},
+        "ME2": {"SFXPawn_Player": "SFXPawn", "SFXPawn_Henchman": "SFXPawn",
+                "SFXAI_Henchman": "SFXAI_Core", "BioPlayerSquad": "BioBaseSquad"},
+        "ME3": {"SFXPawn_Player": "SFXPawn_PlayerParty",
+                "SFXPawn_Henchman": "SFXPawn_PlayerParty",
+                "SFXAI_Henchman": "SFXAI_Cover", "BioPlayerSquad": "BioBaseSquad"},
+    }
+    got, skipped = {}, []
+    for game in ("ME1", "ME2", "ME3"):
+        p = package(game)
+        if not p:
+            skipped.append(game)
+            continue
+        t = mele_tables.build(p)
+        by_name = {}
+        for e in t["exports"]:
+            if e["class_index"] == 0 and e["object_name"]:
+                by_name[e["object_name"]] = e
+        row = {}
+        for cls, super_want in want[game].items():
+            e = by_name.get(cls)
+            if e is None:
+                return "fail", "%s: %s is not defined in SFXGame.pcc" % (game, cls)
+            sup = e["super_index"]
+            got_sup = "None"
+            if sup > 0:
+                got_sup = t["exports"][sup - 1]["object_name"]
+            elif sup < 0:
+                got_sup = "%s.%s" % (t["imports"][-sup - 1]["source_name"],
+                                     t["imports"][-sup - 1]["object_name"])
+            if got_sup != super_want:
+                return "fail", "%s: %s : %s, expected %s" % (game, cls, got_sup, super_want)
+            row[cls] = got_sup
+        got[game] = row
+    if not got:
+        return "skip", "no SFXGame.pcc found (%s)" % ", ".join(skipped)
+    # The builds must NOT agree on the pawn's parent, or this case stopped discriminating.
+    parents = {g: got[g].get("SFXPawn_Player") for g in got}
+    if len(set(parents.values())) < 2:
+        return "ok but surprising", ("every build parents SFXPawn_Player on %r; the per-build "
+                                     "difference is gone" % parents)
+    return "ok", "3 builds pinned; SFXPawn_Player parent = %s" % (
+        ", ".join("%s:%s" % (g, p) for g, p in sorted(parents.items())))
+
+
 def main():
     failures = 0
     skips = 0

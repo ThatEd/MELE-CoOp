@@ -208,6 +208,14 @@ list**; if a section disagrees, this wins.
     out AND that nothing else does, so it fails if the situation changes in either direction. The
     first version of that case was a SKIP that always skipped - rules 25, 27 and 39 in a new shape.
 
+42. **"Shared" has to be measured, not assumed from the name.** `BioPlayerSquad` is defined in all
+    three builds; its AI controller is `BioAI_Henchman` on LE1 and `SFXAI_Henchman` on LE2/LE3, and
+    that one's superclass differs again on LE3. Both facts came from the same query. A port that
+    assumes a sibling exists because its parent does looks right in two builds and fails in the
+    third, and the failure surfaces as a null class lookup at spawn time rather than a compile
+    error. Measured across the install: 5,911 distinct class names, **1,687 in all three**, 1,809
+    ME3-only, 727 ME1-only.
+
 ## Game identity (verified 2026-10-28)
 
 | | |
@@ -3892,3 +3900,79 @@ hitting (rules 25, 27, 39).
 useful knowledge and worthless as a `skip`. The case here re-runs the propagation and asserts both
 that the two forced lengths come out AND that nothing else does, so it fails if the situation
 changes in either direction.
+
+## 2026-10-30 (class census): the shared surface, and the squad system's per-build classes
+
+The install index makes "does every build have X" a query instead of a search. Across all 12,704
+packages, counting **class definitions** (an export whose own class is null):
+
+| | distinct class names defined |
+|---|---|
+| ME1 | 2,628 |
+| ME2 | 3,366 |
+| ME3 | 4,080 |
+| union | 5,911 |
+| **in all three** | **1,687** |
+| ME3 only | 1,809 |
+| ME1 only | 727 |
+| ME2 only | 899 |
+
+So a port has 1,687 classes that behave the same way everywhere, and 1,809 in ME3 that ME1/ME2 simply
+do not have. Of the shared set, 395 start with `SFX` or `Bio` - that is the surface with the best
+chance of one implementation rather than three.
+
+### The player and trigger classes, per build
+
+| class | ME1 | ME2 | ME3 | note |
+|---|---|---|---|---|
+| `SFXPawn_Player` | yes | yes | yes | the pawn a client would drive |
+| `BioPawn` | yes | yes | yes | its root |
+| `BioPlayerController` | yes | yes | yes | shared controller root |
+| `BioTriggerVolume` | yes | yes | yes | supers `Core.TriggerVolume` everywhere |
+| `SFXPlayerController` | **no** | yes | yes | LE1 has no `SFXPlayerController` at all |
+| `SFXGame` | **no** | yes | yes | LE1's game class is named differently |
+| `SFXPawn` | **no** | yes | yes | LE1 goes `SFXPawn_Player : BioPawn` directly |
+| `SFXGameInfoSP` | no | **no** | yes | the `MaxPlayers` 1/1 that misled an earlier doc |
+
+That last row is the one that cost this project time: `SFXGameInfoSP` exists **only** in ME3, and its
+`MaxPlayers` being 1/1 was written down as a cap on all three builds. It is not a cap on LE1/LE2,
+because LE1/LE2 do not have the class.
+
+### The squad system is class-per-build
+
+The client taking a squadmate is the scoped design, so the squad classes matter more than most. They
+are **not** shared:
+
+| | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| squad root | `BioBaseSquad` | `BioBaseSquad` | `BioBaseSquad` |
+| player squad | `BioPlayerSquad` | `BioPlayerSquad` | `BioPlayerSquad` |
+| henchman AI | **`BioAI_Henchman`** | **`SFXAI_Henchman`** | **`SFXAI_Henchman`** |
+| henchman AI super | `BioAI_Core` | `SFXAI_Core` | `SFXAI_Cover` |
+| **squadmate pawn** | *(none - `SFXPawn_Player` only)* | `SFXPawn_Henchman : SFXPawn` | `SFXPawn_Henchman : SFXPawn_PlayerParty` |
+| `SFXPawn_Player` super | `BioPawn` | `SFXPawn` | `SFXPawn_PlayerParty` |
+
+ME3 re-parents `SFXPawn_Henchman` from `SFXPawn` to `SFXPawn_PlayerParty`: same class name,
+different ancestry. Anything that walks the chain to decide "is this player-controlled" gives a
+different answer on LE3, and the difference is invisible in the name.
+
+Only **one** henchman-related class is in all three builds: `BioSeqAct_ResurrectHenchman`, a Kismet
+action. Every other name in that area is per-build - LE2 adds `SFXPawn_Henchman`,
+`SFXPower_HenchmanPassive`, `SFXSeqAct_HenchmanOrderMove`; LE3 adds 18 more including
+`SFXAICmd_HenchmanInteraction` and `SFXGameEffect_HenchmanArmorBonus_*`.
+
+`BioPlayerSquad` is in all three, so the *container* the client's squadmate goes into is
+consistent. The AI controller driving it is `BioAI_*` on LE1 and `SFXAI_*` on LE2/LE3, and its
+superclass differs again on LE3. Anything that spawns or drives a squadmate has to be per-build at
+the AI layer even though the squad layer is shared.
+
+There is no `BioHenchman`, `SFXHenchman` or `SFXSquadMember` class anywhere - those names belong to
+class *instances* (`BioHench_garrus` in LE2, `SFXHenchImagesEDI` in LE3), not to types. Searching
+for the type by guessing the name returns nothing, which is what happened before this census.
+
+### Rule 42
+
+**"Shared" has to be measured, not assumed from the name.** `BioPlayerSquad` is in all three builds
+and its AI controller is not, and both facts came from the same query. A port that assumes a
+sibling class exists because its parent does will look right in two builds and fail in the third -
+and the failure surfaces as a null class lookup at spawn time, not as a compile error.

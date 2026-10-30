@@ -338,6 +338,66 @@ def cmd_members(args):
     return 1
 
 
+def cmd_census(args):
+    """Class definitions across builds: what is shared, what is per-build.
+
+    "Does every build have X" is the question a port asks first, and counting class definitions -
+    exports whose own class is null - across the whole index answers it without opening a package.
+    """
+    per = {}
+    games = [args.game] if args.game else ["ME1", "ME2", "ME3"]
+    for game in games:
+        counts = {}
+        for _g, _rel, rec in _iter_entries(type("A", (), {"game": game})()):
+            for row in rec["exports"]:
+                if row[1] == "None" and row[0]:
+                    counts[row[0]] = counts.get(row[0], 0) + 1
+        per[game] = counts
+    if not per:
+        print("no index found; run `build` first")
+        return 1
+    print("distinct class names defined, per build:")
+    for game in games:
+        print("  %-4s %6d" % (game, len(per[game])))
+    if len(per) > 1:
+        union = set()
+        for c in per.values():
+            union |= set(c)
+        shared = sum(1 for c in union if all(c in per[g] for g in per))
+        print("  union %d ; in all %d build(s): %d" % (len(union), len(per), shared))
+        for game in games:
+            others = [g for g in per if g != game]
+            only = sum(1 for c in per[game]
+                       if all(c not in per[o] for o in others))
+            print("  %-4s only: %d" % (game, only))
+    if args.names:
+        want = args.names.lower()
+        print()
+        print("names containing %r:" % args.names)
+        for game in games:
+            hits = sorted(c for c in per[game] if want in c.lower())
+            print("  %-4s %d%s" % (game, len(hits),
+                                   (": " + ", ".join(hits[:args.limit])) if hits else ""))
+    if args.shared:
+        union = set()
+        for c in per.values():
+            union |= set(c)
+        shared = sorted(c for c in union if all(c in per[g] for g in per))
+        if args.names:
+            shared = [c for c in shared if args.names.lower() in c.lower()]
+        print()
+        print("classes present in every build (%d):" % len(shared))
+        for c in shared[:args.limit]:
+            print("   %s" % c)
+    if args.json:
+        os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
+        with open(args.json, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(per, f, indent=1)
+        print()
+        print("wrote %s" % args.json)
+    return 0
+
+
 def cmd_stats(args):
     for game in ("ME1", "ME2", "ME3"):
         idx = load_index(game)
@@ -379,6 +439,16 @@ def main():
 
     p = sub.add_parser("stats", help="what the index holds")
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("census",
+                       help="class definitions across builds: shared vs per-build")
+    p.add_argument("--game", choices=["ME1", "ME2", "ME3"])
+    p.add_argument("--names", help="only class names containing this substring")
+    p.add_argument("--shared", action="store_true",
+                   help="list classes present in every build")
+    p.add_argument("--limit", type=int, default=40)
+    p.add_argument("--json", help="write the full per-build class map here")
+    p.set_defaults(func=cmd_census)
 
     args = ap.parse_args()
     return args.func(args)
