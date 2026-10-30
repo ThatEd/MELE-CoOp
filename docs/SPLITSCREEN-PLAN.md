@@ -73,11 +73,28 @@ notes already record the retraction, and this page exists so it is not re-discov
 
 ---
 
+## Only LE3 has a split-screen camera mode
+
+A census of every class in the install turns up exactly **one** split-screen class, and it is in one
+build:
+
+    ME1  0
+    ME2  0
+    ME3  1   SFXCameraMode_SplitScreenCombat : SFXCameraMode_Combat   (SFXGame.pcc)
+
+That does not mean LE1/LE2 cannot do split screen - the *layout* machinery is engine-side and present
+everywhere (`ESplitScreenType`, `LayoutPlayers`, `PerPlayerSplitscreenData`, all confirmed on all
+three builds). What it means is that LE3 shipped a **camera mode** built for it and LE1/LE2 did not,
+so a LE2 split-screen attempt has to work with the engine's generic layout and the game's ordinary
+combat camera, where LE3 has a mode written for two panes.
+
+This is the concrete reason the plan orders ME2 first and treats it as the harder case: it is missing
+a piece LE3 has, not merely missing the proof.
+
 ## The split-screen enum, decoded
 
-`ue3_fields.py` used to say the `ESplitScreenType` member list was "not recoverable offline".
-It is - a `UEnum`'s members are in its serial data - and the list is **identical on ME1, ME2 and
-ME3**:
+`ue3_fields.py` used to say the `ESplitScreenType` member list was "not recoverable offline". It is -
+a `UEnum`'s members are in its serial data - and the list is **identical on ME1, ME2 and ME3**:
 
 | value | member |
 |---|---|
