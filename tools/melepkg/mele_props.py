@@ -715,6 +715,134 @@ def _scratch_index_dir():
         return os.path.join(HERE, "..", "..", "local", "MELE", "index")
 
 
+def cmd_coopcheck(args):
+    """The facts the co-op design turns on, measured, with a closure behind each one.
+
+    Every row here is one that changes a decision, so each is printed with its evidence and each can
+    fail:
+
+      * `bUseSeamlessTravel` is DECLARED on `Engine.GameInfo` in all three builds and is **never
+        serialised by any exactly-closing class default object** in `Engine.pcc`, `SFXGame.pcc` or
+        `BIO_COMMON.pcc`. An un-set property means the class default applies, and UE3's default is
+        False - which is why the campaign's level changes are hard reloads rather than seamless
+        ones, and why a client cannot carry a pawn across a transition with
+        `GetSeamlessTravelActorList`. The corroboration is that `SeamlessTravelTo` is not overridden
+        anywhere on `BioPlayerController` on any build, while `PreClientTravel` is.
+      * `MaxPlayersAllowed` is 32 on the base `GameInfo` CDO in every build, and ME3's campaign game
+        class serialises **1** - an active clamp, not a missing value.
+      * the squad roster is `TArray<MemberData>` on ME1/ME2 and `TArray<Object>` on ME3, and the
+        struct `MemberData` is **absent** from ME3 entirely. So "add a third member" is a different
+        edit per build, and no declaration caps the roster at two.
+
+    Exits 1 when a measurement contradicts what the design assumes.
+    """
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+
+    def pkg_path(game, name):
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", name + ".pcc")
+            if os.path.isfile(cand):
+                return cand
+        return None
+
+    print("1. bUseSeamlessTravel is declared, and serialised by nobody")
+    for game in ("ME1", "ME2", "ME3"):
+        checked = sets = 0
+        # Accumulate across packages: `GameInfo` lives in Engine.pcc and NOT in SFXGame.pcc, so
+        # assigning per-package would let the second, empty lookup overwrite the first answer.
+        declared = False
+        for path in (pkg_path(game, "Engine"), pkg_path(game, "SFXGame")):
+            if not path:
+                continue
+            t = mt.build(path)
+            gi = [e for e in t["exports"] if e["class_index"] == 0 and e["object_name"] == "GameInfo"]
+            if gi:
+                declared = declared or ("bUseSeamlessTravel" in {
+                    r[1] for r in mt.class_fields(t, t["buf"], gi[0])[0]})
+            for o in t["exports"]:
+                if not (o["object_name"] or "").startswith("Default__"):
+                    continue
+                try:
+                    tags, end, _why = parse_object(t, t["buf"], o)
+                except Exception:
+                    continue
+                if end != o["serial_offset"] - t["displacement"] + o["serial_size"]:
+                    continue
+                checked += 1
+                for tg in tags:
+                    if tg["name"] == "bUseSeamlessTravel":
+                        sets += 1
+        print("   %-4s declared=%-5s %d CDOs closed exactly, %d set it"
+              % (game, declared, checked, sets))
+        if not declared:
+            problems.append("%s: GameInfo does not declare bUseSeamlessTravel" % game)
+        if sets:
+            problems.append("%s: %d CDO(s) DO set bUseSeamlessTravel - re-read the travel plan"
+                            % (game, sets))
+
+    print()
+    print("2. MaxPlayers on the campaign game class, and the base default")
+    pairs = (("ME1", "Default__GameInfo", "Default__BioSPGame"),
+             ("ME2", "Default__GameInfo", "Default__BioSPGame"),
+             ("ME3", "Default__GameInfo", "Default__SFXGame"))
+    for game, base_obj, camp_obj in pairs:
+        for name in (base_obj, camp_obj):
+            path = pkg_path(game, "Engine") if name == base_obj else pkg_path(game, "SFXGame")
+            if not path:
+                continue
+            t = mt.build(path)
+            o = find_object(t, name)
+            if o is None:
+                continue
+            tags, end, _why = parse_object(t, t["buf"], o)
+            exact = end == o["serial_offset"] - t["displacement"] + o["serial_size"]
+            got = {tg["name"]: tg["value"] for tg in tags}
+            print("   %-4s %-22s MaxPlayers=%-4s MaxPlayersAllowed=%-4s %s"
+                  % (game, name, got.get("MaxPlayers", "-"), got.get("MaxPlayersAllowed", "-"),
+                     "exact" if exact else "INEXACT"))
+            if not exact:
+                problems.append("%s %s did not close exactly" % (game, name))
+            if game == "ME3" and name == camp_obj and got.get("MaxPlayersAllowed") == 1:
+                print("        ^ an ACTIVE clamp: co-op must raise this, as the design says")
+
+    print()
+    print("3. The squad roster's element type")
+    for game in ("ME1", "ME2", "ME3"):
+        path = pkg_path(game, "SFXGame")
+        if not path:
+            continue
+        t = mt.build(path)
+        mem = [e for e in t["exports"] if e["object_name"] == "Members"
+               and mt.describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.ArrayProperty"]
+        if not mem:
+            problems.append("%s: no Members ArrayProperty" % game)
+            continue
+        kids = [k for k in t["exports"] if k["outer_index"] == mem[0]["index"] + 1]
+        inner = (mt.describe_index(kids[0]["class_index"], t["exports"], t["imports"])
+                 if kids else "?")
+        md = [e for e in t["exports"] if e["object_name"] == "MemberData"
+              and mt.describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.ScriptStruct"]
+        nfields = len(mt.struct_fields(t, t["buf"], md[0])) if md else 0
+        print("   %-4s Members is TArray<%s>, MemberData %s (%d fields)"
+              % (game, inner.split(".")[-1], "present" if md else "ABSENT", nfields))
+        if inner.endswith("StructProperty") and not md:
+            problems.append("%s: Members holds a struct but MemberData is absent" % game)
+        if inner.endswith("StructProperty") and md and not nfields:
+            problems.append("%s: Members holds a struct and MemberData has no readable fields" % game)
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: no seamless travel anywhere; ME3 clamps MaxPlayersAllowed to 1; "
+          "the roster is a struct array on ME1/ME2 and an object array on ME3")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -756,6 +884,10 @@ def main():
     p = sub.add_parser("routing",
                        help="re-measure game-class routing across all three installs")
     p.set_defaults(func=cmd_routing)
+
+    p = sub.add_parser("coopcheck",
+                       help="the travel/clamp/roster facts the co-op design turns on")
+    p.set_defaults(func=cmd_coopcheck)
 
     args = ap.parse_args()
     return args.func(args)

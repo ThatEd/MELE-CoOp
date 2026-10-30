@@ -241,6 +241,96 @@ def t_no_scripted_net_driver():
     return "ok", "0 driver class exports on ME1/ME2/ME3 - the driver is native only"
 
 
+@case("bUseSeamlessTravel is declared on all three builds and serialised by none")
+def t_no_seamless_travel():
+    """The finding that changes the level-transition plan, and the one easiest to disbelieve.
+
+    `bUseSeamlessTravel` is a declared `GameInfo` property on all three builds, so a reader that
+    checked only the declaration would conclude the campaign travels seamlessly. It does not: no
+    class default object in `Engine.pcc` or `SFXGame.pcc` serialises the property, so the engine
+    default (False) applies. The corroboration is structural - `SeamlessTravelTo` is not overridden
+    on `BioPlayerController` on any build, while `PreClientTravel` is.
+
+    A false pass is possible if the closure filter silently drops every object, so the CDO count is
+    asserted too: ~2,150-2,320 objects per build close exactly, and `cdos == 0` would mean the scan
+    saw nothing rather than that nothing set the flag.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_coopcheck(None)
+    out = buf.getvalue()
+    if "install not found" in out or "closed exactly" not in out:
+        return "skip", "install absent"
+    for game in ("ME1", "ME2", "ME3"):
+        line = [l for l in out.splitlines() if l.strip().startswith(game) and "CDOs closed" in l]
+        if not line:
+            return "fail", "%s line missing:\n%s" % (game, out.strip())
+        if "declared=True" not in line[0]:
+            return "fail", "%s does not declare bUseSeamlessTravel: %s" % (game, line[0].strip())
+        if "0 set it" not in line[0]:
+            return "fail", "%s has a CDO setting bUseSeamlessTravel: %s" % (game, line[0].strip())
+        n = int(line[0].split()[2])
+        if n < 1000:
+            return "fail", "%s only closed %d CDOs - the scan is not seeing the package" % (game, n)
+    return "ok", "declared on all three, set by 0 of ~6,700 exactly-closing CDOs"
+
+
+@case("ME3's campaign game class clamps MaxPlayersAllowed to 1")
+def t_me3_capacity_clamp():
+    """An active clamp, not a missing value - and the difference matters.
+
+    The base `GameInfo` CDO allows 32 in every build, so "the engine permits more" is true and
+    useless. ME3's campaign game class serialises `MaxPlayersAllowed = 1`, which is a deliberate
+    restriction that a co-op mod must raise before a second participant can be admitted. ME1/ME2's
+    campaign classes serialise neither field, so they inherit 32/16 and need no clamp raise.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mp.cmd_coopcheck(None)
+    out = buf.getvalue()
+    if "MaxPlayers" not in out:
+        return "skip", "install absent"
+    if "Default__SFXGame       MaxPlayers=-    MaxPlayersAllowed=1" not in out:
+        return "fail", "ME3's campaign clamp is not 1:\n%s" % out.strip()
+    for game, want in (("ME1", "MaxPlayersAllowed=32"), ("ME2", "MaxPlayersAllowed=32")):
+        line = [l for l in out.splitlines() if l.strip().startswith(game) and "Default__GameInfo" in l]
+        if not line or want not in line[0]:
+            return "fail", "%s base MaxPlayersAllowed is not 32: %s" % (game, line)
+    return "ok", "ME3 campaign clamps to 1; ME1/ME2 inherit 32 and need no raise"
+
+
+@case("the squad roster element type differs: struct array (ME1/ME2) vs object array (ME3)")
+def t_roster_element_type():
+    """`Members` is not the same container on ME3, and `MemberData` does not exist there.
+
+    On ME1/ME2 `BioBaseSquad.Members` is a `TArray<MemberData>` - a struct holding `SquadMember`
+    plus per-member order/formation state. On ME3 the same property is a `TArray<Object>` and the
+    struct is gone. So code that adds a roster entry is a different edit per build, and a
+    `MemberData` field offset ported from ME2 to ME3 has nothing to apply to.
+
+    The field counts are asserted as well, because "present but unreadable" would otherwise pass.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mp.cmd_coopcheck(None)
+    out = buf.getvalue()
+    if "roster's element type" not in out:
+        return "skip", "install absent"
+    if "ME1  Members is TArray<StructProperty>, MemberData present (17 fields)" not in out:
+        return "fail", "ME1 roster shape changed:\n%s" % out.strip()
+    if "ME2  Members is TArray<StructProperty>, MemberData present (7 fields)" not in out:
+        return "fail", "ME2 roster shape changed:\n%s" % out.strip()
+    if "ME3  Members is TArray<ObjectProperty>, MemberData ABSENT" not in out:
+        return "fail", "ME3 roster shape changed:\n%s" % out.strip()
+    return "ok", "ME1/ME2 TArray<MemberData> (17/7 fields); ME3 TArray<Object>, no MemberData"
+
+
 def main():
     failures = 0
     skips = 0

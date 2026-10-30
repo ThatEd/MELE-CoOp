@@ -4255,3 +4255,94 @@ this session spent a rebuild and several thousand lines of offline parsing re-de
 **A config value is a default, not the value.** `Port=7777` is in the ini; the socket binds 3659; the
 number comes from the travel URL. Assuming either the ini value or a constant would have been wrong in
 opposite directions, and only a live bind settles it.
+## 2026-10-30 (co-op invariants): no seamless travel, a real capacity clamp, and a roster that changes shape
+
+Three facts the design turned on are now measured, and each is re-runnable:
+`python -I tools/melepkg/mele_props.py coopcheck`. All three are pinned by `test_mele_props.py`.
+
+### 1. `bUseSeamlessTravel` is declared everywhere and set nowhere
+
+`Engine.GameInfo` declares `bUseSeamlessTravel` (BoolProperty) on **all three builds**. Not one class
+default object in `Engine.pcc` or `SFXGame.pcc` serialises it:
+
+| build | CDOs that closed EXACTLY | CDOs that set `bUseSeamlessTravel` |
+|---|---|---|
+| ME1 | 2,154 | **0** |
+| ME2 | 2,211 | **0** |
+| ME3 | 2,320 | **0** |
+
+Un-set means the class default applies, and UE3's `GameInfo` default for `bUseSeamlessTravel` is
+False. So the campaign's level changes are **hard reloads**, not seamless ones — a new `GameInfo` is
+constructed for each map, which is why `DefaultMapPrefixes` exists at all.
+
+Two independent corroborations, both measured:
+
+* `SeamlessTravelTo` is **not overridden** on `BioPlayerController` (or `SFXPlayerController`) on any
+  build. `PreClientTravel` **is**, on ME2 and ME3. A build that travelled seamlessly would override
+  the former.
+* The earlier session's note that `GetSeamlessTravelActorList` "has an override in
+  `BioPlayerController` (ME2/ME3)" is **wrong** and is corrected here: the function is declared on
+  `PlayerController`, `GameInfo` and `Mutator`, and overridden nowhere on the Bio controller chain.
+
+**Consequences for the design, and they are large:**
+
+1. The client's pawn is destroyed at every level boundary and must be **re-created on the other
+   side**. Carrying it is not an option the engine offers.
+2. "Survive a seamless travel" cannot be a test step, because there is no seamless travel to survive.
+   The step is "re-create the client's pawn in the new world, and re-establish possession".
+3. Any plan built on `GetSeamlessTravelActorList` is built on a function the campaign never calls.
+   `LAN-COOP-DESIGN.md` §4 and §7 said otherwise and are corrected.
+
+### 2. ME3's campaign game class clamps capacity to ONE, and it is an active value
+
+| build | `Default__GameInfo` | campaign game class |
+|---|---|---|
+| ME1 | MaxPlayers=16, MaxPlayersAllowed=32 | `Default__BioSPGame` sets neither |
+| ME2 | MaxPlayers=16, MaxPlayersAllowed=32 | `Default__BioSPGame` sets neither |
+| ME3 | MaxPlayers=4, MaxPlayersAllowed=32 | `Default__SFXGame` sets **MaxPlayersAllowed=1** |
+
+So "the engine permits 32" is true and useless: ME3's campaign class deliberately serialises a 1 to
+clamp it, and ME1/ME2 inherit the 32 with no clamp. A co-op mod must raise the ME3 value before a
+second participant can ever be admitted — and on ME1/ME2 there is nothing to raise, which is the
+opposite of what `local/MELE/refs/.../offsets_LE2.json` asserts ("Unlike ME3 there is nothing to raise
+before CreatePlayer"). That line is right about the *field* and misleading about the *need*: what
+differs is the value, not the mechanism.
+
+### 3. The squad roster changes container type on ME3, and `MemberData` disappears
+
+`BioBaseSquad.Members` is an `ArrayProperty` on all three, but its element type is not the same:
+
+| build | `Members` is | `MemberData` struct |
+|---|---|---|
+| ME1 | `TArray<StructProperty>` | present, **17 fields** |
+| ME2 | `TArray<StructProperty>` | present, **7 fields** |
+| ME3 | `TArray<ObjectProperty>` | **absent** |
+
+`MemberData` on ME1 carries the full per-member state — `SquadMember`, `vMoveLocation`,
+`vHoldPosition`, `vTarget`, `stCoverToUse`, `EscapeLocation`, `nmPower`,
+`oOrderedAttackTarget`, `eAction`, `eSwitchWeapon`, `eFormation`. ME2 keeps 7 of those;
+ME3 keeps **none** of it in a struct and stores bare objects instead.
+
+**Consequence, and it answers the design's top unknown in the negative direction:** "add a third
+roster entry" is a *different edit per build*. On ME1/ME2 it means appending a `MemberData` with
+member-orders state that the AI will read; on ME3 it means appending an object and there is no
+corresponding orders struct to fill. A port that copies ME1's append path to ME3 writes a struct that
+does not exist there.
+
+What this does **not** say: whether a third entry is *tolerated*. No declaration caps the roster at
+two — `Members` is a plain `TArray` with no `ArrayDim` limit and `MaxPlayers` is about players, not
+squad members. So the S2/S3 question narrows to "does the campaign's own bookkeeping cope with a
+third entry", which is a live test, not a file read.
+
+### Rule 50
+
+**"The engine supports it" and "this build enables it" are separate measurements, and a serialised
+value is the only proof of the second.** The base `GameInfo` allows 32 players on every build; ME3's
+campaign class serialises 1. Reading the declaration gives the wrong answer with full confidence.
+
+### Rule 51
+
+**An un-set property is a measured absence only if the walk closed.** "No CDO sets
+`bUseSeamlessTravel`" is a fact because 6,685 objects closed exactly across the three builds. The
+same parse on a desynchronised walk would report the same absence, and the count is what separates
+the two.

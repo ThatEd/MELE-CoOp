@@ -117,26 +117,35 @@ most important measurement in the file:
 * `AddMutator(mutname: Str @0x00, bUserAdded: Bool @0x10, mutClass: Class @0x18, mut: Object @0x20,
   I: Int @0x28)` — parms block **`0x2c`, byte-identical on ME1, ME2 and ME3**.
 * `Mutator` declares the **same 32 hooks** on every build, including the ones co-op needs:
-  `GetSeamlessTravelActorList`, `ModifyPlayer`, `NotifyLogin`, `NotifyLogout`, `CheckReplacement`,
-  `InitMutator`, `PreBeginPlay`.
+  `ModifyPlayer`, `NotifyLogin`, `NotifyLogout`, `CheckReplacement`, `InitMutator`,
+  `PreBeginPlay` — and `GetSeamlessTravelActorList`, which is **declared but never called by this
+  campaign**, because no build enables seamless travel (§4).
 
 So the design is: **one co-op mutator, written once, added to the `BaseMutator` chain of whatever
 `GameInfo` the level constructs.** No per-game rewrite at this layer. Everything game-specific sits
 *above* it in a small per-build table (section 5) and *below* it in the transport.
+
+Because there is no seamless travel and `GameInfo` is re-constructed per level, the mutator must be
+re-added on **every** level, not carried across one. That is the single most important consequence of
+§4 for this diagram — the mutator is a per-world install, not a per-session one.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  host + client                   (one binary, role by flag) │
 ├─────────────────────────────────────────────────────────────┤
 │  CO-OP MUTATOR            same 32 hooks on all 3 builds     │
-│    NotifyLogin     → admit a second local player            │
+│    re-added to BaseMutator on EVERY level (no seam. travel) │
 │    ModifyPlayer    → give it a controller, possess a pawn   │
-│    GetSeamlessTravelActorList → carry state across a load   │
-│    CheckReplacement / PreventDeath → death + revive policy   │
+│    NotifyLogin     → admit a second participant             │
+│    CheckReplacement / PreventDeath → death + revive policy  │
+├─────────────────────────────────────────────────────────────┤
+│  RE-CREATE THE CLIENT PAWN after each hard reload (none of  │
+│  GetSeamlessTravelActorList carries it)                     │
 ├─────────────────────────────────────────────────────────────┤
 │  PER-BUILD TABLE          ~20 names, measured (section 5)   │
 ├─────────────────────────────────────────────────────────────┤
-│  TRANSPORT                LAN, TCP loopback + UDP broadcast │
+│  TRANSPORT     the game's own native driver, started via     │
+│                `open <map>?listen`; UDP, port in the URL     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -156,9 +165,10 @@ Three decisions, and the first two are the reason this page exists.
 Two candidates, and they are not equivalent.
 
 **A. Host-authoritative, client mirrors.** The host runs the campaign. The client sends input and
-receives state; the host's engine is the only one that advances the story. The client's `BioPawn`
-for the squadmate is a *remote puppet*, possessed locally by a second `LocalPlayer` so it has input,
-but its authoritative position comes from the host.
+receives state; the host's engine is the only one that advances the story. The client's pawn for the
+squadmate is a *remote puppet* whose authoritative position comes from the host. (Note: on LE1/LE2
+the pawn cannot be possessed via a second `LocalPlayer` — that faults, see §3.1a — so the client is a
+remote machine, and on a single PC the supported configuration is two processes.)
 
 **B. Both machines run the campaign and we keep them in step.** Two full simulations, reconciled.
 
@@ -168,8 +178,10 @@ simulations will diverge at the first node either machine evaluates differently.
 desync surface to everything, including things this project has never looked at.
 
 A has its own cost: **the client must be able to render a level whose story it is not advancing.**
-That needs the level loaded, the actors spawned, and the `BioPawn` present — which is exactly what
-`GetSeamlessTravelActorList` and `ModifyPlayer` are for.
+That needs the level loaded, the actors spawned, and the pawn present — and because there is no
+seamless travel (§4), it needs that **re-established after every level change**, from scratch:
+`ModifyPlayer` to hand out a controller, then a spawn and possess in the new world. `GetSeamlessTravelActorList`
+does not help, because nothing calls it.
 
 *Label:* **derived**. Nothing in the packages says "authoritative"; this is a design choice informed
 by what the engine can express.
@@ -230,8 +242,15 @@ campaign state, which matters because the first thing to get working is a full c
 its dialogue. S3 is the real answer and needs `BioPlayerSquad` (present in all three, measured) plus
 the henchman spawn path — which is per-build (section 5).
 
-*Label:* **unknown** which the campaign tolerates. This is the top thing to test once a client can
-move at all.
+**What the packages now say about this choice (measured, 2026-10-30):** the roster is a plain `TArray`
+with no declaration capping it at two, and `AddMember` exists on `BioBaseSquad` on all three builds —
+so nothing in the file structure forbids a third entry. What differs is the **element**:
+`TArray<MemberData>` on ME1/ME2 (a struct carrying `SquadMember` plus per-member order state, 17
+fields on ME1 and 7 on ME2) versus `TArray<Object>` on ME3, where `MemberData` does not exist. So S2
+is three different edits, and ME3's is the simplest because there is no orders struct to fill in.
+
+*Label:* the container shapes are **measured**. Whether a third entry is **tolerated** at runtime is
+**unknown** and is the top thing to test once a client can move at all.
 
 ### 3.3 Save, and what happens when the client leaves
 
@@ -249,6 +268,13 @@ hour 20 of a career does not lose it.
 This is where "functional on paper" is decided. Each row states what crosses the wire and what does
 not, and what breaks if it does not.
 
+**One structural fact changes every row below it: there is no seamless travel.** `bUseSeamlessTravel`
+is declared on `Engine.GameInfo` in all three builds and is **serialised by zero of 6,685
+exactly-closing class default objects** (measured; see `NOTES.md`). Un-set means the UE3 default,
+False. `SeamlessTravelTo` is not overridden on `BioPlayerController` on any build, while
+`PreClientTravel` is. So every level change is a **hard reload that constructs a new `GameInfo`**, and
+the client's pawn does not survive it — it must be destroyed and re-created on the far side.
+
 | subsystem | crosses the wire | does not | if it does not work |
 |---|---|---|---|
 | **movement** | the puppet's position, rotation, velocity, animation state | host's own movement (authoritative) | client pawn is visibly wrong, but input is unaffected |
@@ -257,17 +283,20 @@ not, and what breaks if it does not.
 | **enemies** | host only | client never simulates AI | client sees enemies as puppets; acceptable |
 | **conversation** | host drives `BioConversation`; client receives camera + node | client choices (unless host's turn) | client cannot pick dialogue — **acceptable for S2, a hole for S3** |
 | **map events / triggers** | host drives; client receives state | client never fires Kismet | client walking through a trigger does nothing — this is the **deliberate** design, see `TRIGGER-DELAY.md` |
-| **galaxy map / travel** | host only; client follows | client never starts a jump | client is frozen or in a stale level if the host travels |
+| **galaxy map / travel** | host only; client follows | client never starts a jump | client is frozen or in a stale level if the host travels — and the pawn **is** destroyed, see below |
 | **saves** | host only | client has none | client crash costs nothing |
 | **cinematics / matinee** | host drives | client is a passenger | looks right |
+| **level change** | the host's URL only | nothing carries automatically | **the client pawn must be re-created from scratch** — there is no seamless travel (§4) |
 
 Three rows are the holes, and they are stated as such:
 
 * **conversation choices.** In S2 the client is a passenger in every conversation. That is honest but
   thin; a full career has hundreds of them and the client would never choose anything.
-* **galaxy map travel.** The host jumping systems is a level transition for the client too, and it
-  goes through `GetSeamlessTravelActorList`. If the client's puppet is not in that list it is
-  destroyed and the client is left with a controller and no pawn.
+* **galaxy map travel.** The host jumping systems is a level transition for the client too — and it is
+  a **hard reload**, not seamless: `bUseSeamlessTravel` is False on every build (§4), so no
+  `GetSeamlessTravelActorList` is consulted and nothing is carried. The client's puppet is destroyed
+  with the old world. Re-creating it on the far side is a per-transition step the mod must perform,
+  not something the engine will do.
 * **trigger gating.** The client's walking must *not* fire Kismet, or the host's story advances from
   a machine that is not authoritative. `EWhoTriggers` already has `WT_PlayerOnly` (value 0 on all
   three, measured) and ME3 adds `WT_PlayerOnlyLocal` at 1 — **and ME3 renumbers everything after it**,
@@ -282,7 +311,11 @@ memory.
 |---|---|---|---|---|
 | `Mutator` hooks | same 32 | same 32 | same 32 | **one implementation** |
 | `AddMutator` parms | `0x2c` | `0x2c` | `0x2c` | same call, same layout |
-| `GetSeamlessTravelActorList` | `PlayerController`, `GameInfo`, `Mutator` | same | same | one travel hook |
+| `GetSeamlessTravelActorList` | declared on `PlayerController`, `GameInfo`, `Mutator` | same | same | **declared but never called** — no build enables seamless travel |
+| `bUseSeamlessTravel` (declared) | yes | yes | yes | …but **set by 0 of 6,685 CDOs**: campaign travel is a hard reload |
+| `MaxPlayers` / `MaxPlayersAllowed` on the campaign game class | not set (inherits 16/32) | not set (16/32) | **`MaxPlayersAllowed=1`** | ME3 needs the clamp raised; ME1/ME2 have nothing to raise |
+| `BioBaseSquad.Members` element type | `TArray<MemberData>` | `TArray<MemberData>` | `TArray<Object>` | adding a roster entry is a **different edit per build** |
+| `MemberData` struct | 17 fields | 7 fields | **absent** | ME1's per-member order state has no ME3 counterpart |
 | `BioPlayerSquad` / `BioBaseSquad` | yes | yes | yes | squad container is shared |
 | squadmate pawn | *(none)* | `SFXPawn_Henchman : SFXPawn` | `SFXPawn_Henchman : SFXPawn_PlayerParty` | **per-build**, and ME3 re-parents it |
 | henchman AI | `BioAI_Henchman : BioAI_Core` | `SFXAI_Henchman : SFXAI_Core` | `SFXAI_Henchman : SFXAI_Cover` | **per-build**, different name *and* ancestor |
@@ -432,7 +465,7 @@ LE1/LE2 (§3.1a), so the client's controller comes from the squadmate route inst
 | 1 | mutator installs on all three builds | `AddMutator` + `BaseMutator` work as measured | log from `InitMutator` + `PreBeginPlay` in each game |
 | 2 | a client-owned **squadmate** pawn exists and is possessed | the `SFXPawn_Henchman`/squad path works without a second `LocalPlayer` | pawn count, `IsPlayerControlled`, possession log |
 | 3 | that pawn moves from recorded input | input reaches a pawn | replay a fixed input tape, compare host-side transform to the tape |
-| 4 | survive one level transition | `GetSeamlessTravelActorList` is honoured | puppet still exists after a load |
+| 4 | re-create the client's pawn after a **hard reload** | the per-transition spawn path works at all | pawn exists and is possessed in the new world; **not** a seamless-travel test, because there is none |
 | 5 | survive a **chain** of transitions | state carries | a scripted 5-load run with a state checksum per level |
 | 6 | the same over a LAN socket | the transport carries what step 3–5 proved locally | the §6 protocol over two processes, then two machines |
 | 7 | a full career | everything above holds for hours | the goal; not yet attempted |
@@ -440,6 +473,12 @@ LE1/LE2 (§3.1a), so the client's controller comes from the squadmate route inst
 Step 5 is the one that separates "works" from "works for a career". A single transition can pass by
 luck; five in a row with a checksum cannot. Step 6 is deliberately last among the mechanics: proving
 the transport before the thing it carries is how a project ends up debugging two unknowns at once.
+
+**Step 4 is not a `GetSeamlessTravelActorList` test, and calling it one was a mistake in an earlier
+draft of this page.** No build enables seamless travel (§4), so the function is never called and
+there is no travel to "survive": the client's pawn is destroyed with the old world and must be spawned
+and possessed again. The check is therefore *re-creation*, and a passing step 4 that only verified a
+surviving actor would be testing a code path the game does not use.
 
 **Step 6 has a known failure mode, already documented, and it is silent.** `loadmap_hook.cpp` records
 that after a clean handshake the client's pending level completes, all 197 advertised packages are
@@ -452,12 +491,10 @@ the menu is not a netcode failure and must not be debugged as one.
 
 ## 8. What is unknown, stated plainly
 
-* **Which squadmate model the campaign tolerates** (S2 vs S3). Top unknown.
+* **Whether a third squad-roster entry is tolerated.** The container does not cap it (measured), but
+  the campaign's own bookkeeping may. Top unknown.
 * **Whether the host's Kismet tolerates a second possessed pawn in the level** — it may fail an
   assertion nobody has hit yet.
-* **Whether `GetSeamlessTravelActorList` is actually called on the path the campaign uses.** It is
-  declared on `PlayerController`, `GameInfo` and `Mutator` on all three builds, which implies yes, but
-  no live capture has shown it firing.
 * **Where ME1 selects its game class in native code.** The *fact* that it does is measured (no
   config key anywhere, no script function that resolves the name pair); the call site is not.
 * **Whether any of the three builds will start a listen server on a CAMPAIGN map.** ME3's driver is
@@ -497,10 +534,28 @@ is not callability — the same mistake `SECOND-PLAYER-ME2.md` records from the 
 **Split-screen is not the testing strategy; the ME3SquadCoop route (a possessed squadmate with its
 own camera, no second `LocalPlayer`) is.**
 
-The remaining holes are real: revive has to be supplied on all three builds (the radius and health
-values exist; the downed *player* does not); LE1 has no `SFXPawn_Henchman`; ME3 re-parents the
-squadmate pawn and renumbers the trigger enum; conversation and galaxy-map travel are passenger
-experiences in the S2 design. None of those is fatal to the architecture, and all of them are the kind
-of thing that kills a project *after* someone has written a thousand lines assuming otherwise.
+Three further measurements, all on the critical path, and two of them contradict earlier drafts of
+this page:
 
-That is what this page is for.
+3. **There is no seamless travel.** `bUseSeamlessTravel` is declared on `Engine.GameInfo` on all three
+   builds and is serialised by **0 of 6,685** exactly-closing class default objects, so the UE3
+   default (False) applies. `SeamlessTravelTo` is overridden on no Bio controller, while
+   `PreClientTravel` is. Every level change therefore constructs a new `GameInfo` and destroys the
+   old world, so the client's pawn must be **re-created** on the far side. Two sections of this page
+   previously planned around `GetSeamlessTravelActorList`; they are corrected.
+4. **ME3 clamps capacity to one.** The base `GameInfo` allows 32 players on every build, and ME3's
+   campaign class serialises `MaxPlayersAllowed = 1` — an active clamp a co-op mod must raise.
+   ME1/ME2 set neither field and inherit 32, so there is nothing to raise there.
+5. **The squad roster changes container type on ME3.** `Members` is `TArray<MemberData>` on ME1/ME2
+   and `TArray<Object>` on ME3, where the `MemberData` struct does not exist at all. Adding a roster
+   entry is three different edits, and no declaration caps the roster at two.
+
+The remaining holes are real: the downed-*player* state has to be supplied on all three builds (the
+revive radius and health values exist; the state does not); LE1 has no `SFXPawn_Henchman`; ME3
+re-parents the squadmate pawn and renumbers the trigger enum; conversation and galaxy-map travel are
+passenger experiences in the S2 design. None of those is fatal to the architecture, and all of them
+are the kind of thing that kills a project *after* someone has written a thousand lines assuming
+otherwise.
+
+That is what this page is for. Reproduce every claim in §1, §5, §5b and §5c with
+`python -I tools/melepkg/mele_props.py routing` and `... coopcheck`.
