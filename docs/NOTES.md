@@ -4834,6 +4834,8 @@ maintaining a delta log, and a guest can be handed a complete story state rather
 transitions. That removes a whole class of desync: with no delta log there is nothing to miss.
 
 ### ME3 has none of this, and that is the per-build difference to carry
+> **Corrected below (same day).** The absence is real; the conclusion drawn from it - "not
+> enumerable, LE3 is the hard case" - was wrong. See the next section.
 
 ME3 defines **no `BioAutoConditionals` anywhere in its 7,943 packages** and ships **no
 `PlotManager.pcc`**. Its plot data lives in tables - `Plot_Treasure_Resources`, `Plot_Treasure_Tech`,
@@ -4858,3 +4860,104 @@ enumeration is what made the budget knowable, and it took one command.
 `SFXGameInfoSP`, the plot actions) and the *worst* story-state model for this purpose, because it is
 the one that stopped generating a script class for the flags. Build order should follow the state
 model, not the release date.
+## 2026-10-31 (correction): LE3 keeps its story state in one save struct, not nowhere
+
+The previous section concluded that because ME3 generates no `BioAutoConditionals` class, its flag set
+cannot be enumerated, and that LE3 is therefore the hard build for story sync. **That was wrong**, and
+it was wrong in a way worth recording: "the class that enumerates the state is missing" was read as
+"the state is missing". The state is there. It is *saved*, so it has a home even without an accessor class.
+
+`plotcheck` now measures it. Everything below comes from `ME3/SFXGame.pcc`.
+
+### The struct that holds it
+
+`SFXGame.pcc` declares `PlotTableSaveRecord` as a `Core.ScriptStruct` with outer `SFXSaveGame`, and
+`SFXSaveGame` holds it as `PlotRecord`. There is a second one, `ME1PlotRecord`, for imported LE1 state,
+plus `HasME1PlotData()` to tell them apart. The struct is:
+
+| field | type |
+|---|---|
+| `BoolVariables` | array |
+| `IntVariables` | array |
+| `FloatVariables` | array |
+| `QuestProgress` | array |
+| `QuestIDs` | array |
+| `CodexEntries` | array |
+| `CodexIDs` | array |
+| `QuestProgressCounter` | int32 |
+
+and the element structs are index-keyed pairs, not names:
+
+| struct | fields | width |
+|---|---|---|
+| `IntVariablePair` | `Index: int32`, `Value: int32` | **8 bytes** |
+| `FloatVariablePair` | `Index: int32`, `Value: float32` | **8 bytes** |
+| `PlotQuest` | `History: array`, `QuestCounter: int`, `ActiveGoal: int`, `bQuestUpdated: bool` | 25+ |
+| `PlotCodex` | `Pages: array` | - |
+
+### The index space is bounded, and the bounds ship
+
+The runtime plot manager is `BioGlobalVariableTable` (134 fields, declared in `SFXGame.pcc`) - ME3
+renamed the plot manager. Its class default object carries the cutoffs:
+
+| constant | value |
+|---|---|
+| `ME1PlotTable_IndexOffset` | **10000** |
+| `ME1PlotTable_Float_CutoffIndex` | 10039 |
+| `ME1PlotTable_Int_CutoffIndex` | 10148 |
+| `ME1PlotTable_Bool_CutoffIndex` | **17655** |
+
+So the combined index space runs to 17,655 slots: ~69 KB dense as int32, ~138 KB as 8-byte pairs. Larger
+than LE1/LE2's ~8 KB, and still small enough that a host ships the whole thing at a level change instead
+of keeping a delta log. On LE3 that is *easier* than on LE1/LE2, because the thing being shipped is
+already a save struct the engine knows how to serialize.
+
+### Where the names go
+
+`oNameLookupTable` on `BioGlobalVariableTable` points at `PlotManagerGameData`, a `Bio2DA` cooked
+**inside `SFXGame.pcc`** under the package group `BIOG_2DA_PlotManager_X` (which is why no
+`BIOG_2DA_PlotManager_X.pcc` exists anywhere in the install - only ME1 ships `BIOG_2DA_*` files, 9 of
+them). That table has **176 rows**, and its row labels are the *named* integer variables:
+
+```
+False_Flag, InSquadLiara .. InSquadTali, InPartyLiara .. InPartyTali,
+IsSelectable*, FireTeamLeader, Specialist, Appearance*, IsFemale, Active_World, Childhood,
+Reputation, Paragon_Points, Renegade_Points, CurrentMusicState, PlotAddedMaxGrenades,
+PlotAddedMaxMedigel, Current_Galaxy_*, ScannerRange*, SecondPlaythrough,
+Rsr_* (13), Tec_* (55), Dep_* (11), Wpn_* (18), Equip_* (5), Tut_* (8), TutStr_* (8),
+Character_Class, Morinth_not_Samara, ChangedDifficulty, Player_Played_ME1,
+IgnoreGrinderAchievements, LastLineDoesntWorkWTF
+```
+
+That is the answer to "why 176 and not 17,655": only those 176 variables are *named*. The rest of the
+index space is addressed by integer from Kismet, which is why scanning name tables for `ME3_Plots_*`
+found only 76 such names in `SFXGame.pcc` and would have undercounted the state badly.
+
+### Two side findings
+
+- **Plot state gates level streaming.** `BioSeqAct_GetIsLevelLoaded.GetLevelStreamingObject` has the
+  signature `(LevelName: Name, oWorldInfo: Object, i: Int, PlotStreamingElements: Array,
+  Element: Struct) -> Object`, and each level package declares its own `PlotStreamingElements` struct.
+  So what a level streams in is a function of plot flags, which fixes the ordering for co-op: the
+  guest must receive the host's plot state **before** its streaming is applied.
+- **`DebugSetPlotState` exists on `BioCheatManager`** in all-`SFXGame.pcc`, which is a ready-made way
+  to drive plot state from a console during testing - useful for the automated-QA bot, not for shipping.
+
+### Rules
+
+**Rule 67. "The accessor class is missing" is not "the state is missing".** Two builds enumerate their
+story state through a generated class and one does not; I read that difference as absence and started
+redesigning around a gap that was not there. The state had a save struct the whole time. When an
+enumeration path disappears, look for the *serialization* path before concluding anything about the data.
+
+**Rule 68. Ask where the state is written, not only where it is read.** Every read path for ME3's plot
+flags is native or table-driven, which is why nothing turned up while searching for readers. The write
+path - the save - was one command away and answered the shape, the width and the bound.
+
+**Rule 69. A name count is not a size.** 176 names and 17,655 slots are both true and neither is the
+answer on its own. The bound came from constants, the names came from a table, and the sync payload is
+the struct that holds both.
+
+**Rule 70. When a level's streaming depends on state, the state must arrive first.** That ordering is
+invisible in any per-function reading and obvious from one signature; it is the kind of constraint that
+turns into "the guest is standing in geometry that does not exist" bug reports later.

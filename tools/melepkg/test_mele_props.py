@@ -673,7 +673,7 @@ def t_story_surface_is_shared():
                   "maps")
 
 
-@case("LE1/LE2 story state is a bounded flag set small enough to ship whole")
+@case("LE1/LE2 story state is a bounded flag set, and LE3 keeps the same state as one save struct")
 def t_plot_state_budget():
     """The co-op budget question: how many values is a career's story state?
 
@@ -688,9 +688,12 @@ def t_plot_state_budget():
     host can ship the whole flag set rather than maintaining a delta log, and a guest can be handed a
     complete story state rather than a replay.
 
-    **ME3's absence is asserted, not assumed.** It defines no `BioAutoConditionals` in any of its 7,943
-    packages and ships no `PlotManager.pcc`, so the LE3 answer is different and the design has to carry
-    that as a per-build difference.
+    **LE3 is different, and the first reading of it was wrong.** It defines no `BioAutoConditionals` in
+    any of its 7,943 packages and ships no `PlotManager.pcc`, which was taken to mean the flag set could
+    not be enumerated. The state is there, in `PlotTableSaveRecord` - a struct of seven arrays held by
+    `SFXSaveGame` - and its index space is bounded by the cutoffs on `Default__BioGlobalVariableTable`.
+    Both are asserted here, because "LE3 has no story state to sync" would be a plan built on a gap
+    that is not real.
     """
     import io
     import contextlib
@@ -708,9 +711,18 @@ def t_plot_state_budget():
         return "fail", "ME2 plot flag set changed:\n%s" % out.strip()
     if "ME3  PlotManager.pcc present: False" not in out:
         return "fail", "ME3 gained a PlotManager.pcc - re-read the LE3 plot plan:\n%s" % out.strip()
-    if "small enough to ship whole" not in out:
+    if "PlotTableSaveRecord" not in out:
+        return "fail", "LE3 save struct not measured:\n%s" % out.strip()
+    for array in ("BoolVariables", "IntVariables", "FloatVariables", "QuestIDs", "CodexIDs"):
+        if array not in out:
+            return "fail", "PlotTableSaveRecord lost %s:\n%s" % (array, out.strip())
+    if "IntVariablePair = 8 bytes" not in out:
+        return "fail", "entry width changed - recompute the LE3 blob size:\n%s" % out.strip()
+    if "Bool_CutoffIndex=17655" not in out:
+        return "fail", "LE3 plot index bound changed:\n%s" % out.strip()
+    if "small enough to ship" not in out:
         return "fail", "verdict missing:\n%s" % out.strip()
-    return "ok", "1,066 / 1,356 flags over 2,019 / 2,051 slots (~8 KB); LE3 has no such class"
+    return "ok", ("1,066 / 1,356 flags over 2,019 / 2,051 slots (~8 KB); LE3 = 7 arrays, 17,655 slots")
 
 
 def main():

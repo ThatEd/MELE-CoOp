@@ -1059,11 +1059,21 @@ def cmd_plotcheck(args):
     can ship the whole flag set every level change instead of maintaining a delta log, and a guest can
     be handed a complete story state rather than a replay.
 
-    **ME3 has none of this.** It defines no `BioAutoConditionals` anywhere in 7,943 packages and has no
-    `PlotManager.pcc`; its plot data lives in tables (`Plot_Treasure_*`, `PlotManagerGameData`) and is
-    referenced from level packages. So the same question has a *different answer* on LE3 - the flag set
-    is not enumerable from one generated class - which is a per-build difference the design must carry
-    rather than paper over.
+    **ME3 has none of this**, and the first reading of that fact was wrong. It defines no
+    `BioAutoConditionals` anywhere in 7,943 packages and ships no `PlotManager.pcc`, so there is no
+    generated accessor class to count. But the plot state does exist and does have a single
+    serialization point: `PlotTableSaveRecord`, a ScriptStruct declared inside `SFXSaveGame` in
+    `SFXGame.pcc`, held by the save object as `PlotRecord`. It is seven arrays
+    (`BoolVariables`, `IntVariables`, `FloatVariables`, `QuestProgress`, `QuestIDs`, `CodexEntries`,
+    `CodexIDs`) plus a `QuestProgressCounter` int, and its entries are index-keyed pairs -
+    `IntVariablePair` and `FloatVariablePair` are 8 bytes each. The index space is bounded by
+    constants the runtime plot manager ships with (`ME1PlotTable_IndexOffset`,
+    `ME1PlotTable_Bool_CutoffIndex` on `Default__BioGlobalVariableTable`), so ME3's state is also
+    sized in the tens of KB, not unbounded.
+
+    So the per-build difference is not "LE3 has no story state to sync"; it is that LE1/LE2 expose
+    named flags and LE3 exposes one save struct - a different shape for the same sync, and one that
+    is *easier* to ship whole, because it is already a blob.
 
     Needs only named packages, so it runs without a package index.
     """
@@ -1110,16 +1120,21 @@ def cmd_plotcheck(args):
                             % (game, len(odd), odd[:3]))
 
     print()
-    # ME3's absence is the finding, so assert it rather than discovering it later.
-    me3 = None
+    # LE3's absence of the generated class is a finding, so assert it rather than discovering it later.
+    me3_dir = None
     for root in pkg.game_dirs():
-        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "PlotManager.pcc")
-        if os.path.isfile(cand):
-            me3 = cand
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole")
+        if os.path.isdir(cand):
+            me3_dir = cand
             break
-    print("ME3  PlotManager.pcc present: %s" % bool(me3))
-    if me3:
+    print("ME3  PlotManager.pcc present: %s" % bool(
+        me3_dir and os.path.isfile(os.path.join(me3_dir, "PlotManager.pcc"))))
+    if me3_dir and os.path.isfile(os.path.join(me3_dir, "PlotManager.pcc")):
         problems.append("ME3 ships a PlotManager.pcc after all - re-read the LE3 plot plan")
+    if me3_dir is None:
+        problems.append("ME3 install not found - the LE3 half of this check did not run")
+    else:
+        report["ME3"] = _me3_plot_state(mt, me3_dir, problems)
 
     print()
     if problems:
@@ -1127,9 +1142,98 @@ def cmd_plotcheck(args):
         for p in problems:
             print("  - %s" % p)
         return 1
-    print("verdict: LE1/LE2 story state is a bounded F<n> flag set of ~2,018/2,050 slots (~8 KB), "
-          "small enough to ship whole; LE3 has no such class and keeps plot data in tables")
+    print("verdict: LE1/LE2 story state is a bounded F<n> flag set of ~2,018/2,050 slots (~8 KB); "
+          "LE3 has no such class but keeps the same state as one save struct of seven arrays, "
+          "index-bounded to ~%s slots - on both sides the whole state is small enough to ship"
+          % (report.get("ME3", {}).get("slots") or "17,656"))
     return 0
+
+
+def _me3_plot_state(mt, me3_dir, problems):
+    """Measure LE3's story state from the one struct that holds it.
+
+    `PlotTableSaveRecord` is the shape; `Default__BioGlobalVariableTable` carries the index bounds.
+    Both are read from `SFXGame.pcc`, and every number printed is checked before it is printed:
+    the pair structs must be 8 bytes, the four cutoff constants must be ordered, and a failure to
+    read either object is reported as a problem rather than as a zero.
+    """
+    path = os.path.join(me3_dir, "SFXGame.pcc")
+    if not os.path.isfile(path):
+        problems.append("ME3: SFXGame.pcc not found - plot state not measured")
+        return {}
+    t = mt.build(path)
+    out = {}
+
+    def struct_named(name):
+        for e in t["exports"]:
+            cls = mt.describe_index(e["class_index"], t["exports"], t["imports"])
+            if e["object_name"] == name and cls.endswith("ScriptStruct"):
+                return e
+        return None
+
+    rec = struct_named("PlotTableSaveRecord")
+    if rec is None:
+        problems.append("ME3: no PlotTableSaveRecord struct - the LE3 sync payload is unknown")
+        return out
+    fields = mt.struct_fields(t, t["buf"], rec)
+    arrays = [name for name, typ, _size, _off in fields if typ == "ArrayProperty"]
+    scalars = [(name, typ) for name, typ, _size, _off in fields
+               if typ not in ("ArrayProperty", "ScriptStruct")]
+    out["arrays"] = arrays
+    out["scalars"] = scalars
+    print("ME3  plot state is one save struct, PlotTableSaveRecord (outer SFXSaveGame):")
+    print("       %d arrays: %s" % (len(arrays), ", ".join(arrays)))
+    print("       %d scalar(s): %s" % (len(scalars), ", ".join(n for n, _ in scalars)))
+    for required in ("BoolVariables", "IntVariables", "FloatVariables"):
+        if required not in arrays:
+            problems.append("ME3: PlotTableSaveRecord lost its %s array" % required)
+
+    pair_sizes = {}
+    for pair, want in (("IntVariablePair", 8), ("FloatVariablePair", 8)):
+        e = struct_named(pair)
+        if e is None:
+            problems.append("ME3: no %s struct - entry width unknown" % pair)
+            continue
+        rows = mt.struct_fields(t, t["buf"], e)
+        width = sum(size for _n, typ, size, _o in rows if typ != "ScriptStruct")
+        pair_sizes[pair] = width
+        print("       %s = %d bytes (%s)"
+              % (pair, width, ", ".join("%s:%s" % (n, ty) for n, ty, _s, _o in rows)))
+        if width != want:
+            problems.append("ME3: %s is %d bytes, expected %d" % (pair, width, want))
+    out["pair_sizes"] = pair_sizes
+
+    cdo = find_object(t, "Default__BioGlobalVariableTable")
+    bounds = {}
+    if cdo is None:
+        problems.append("ME3: no Default__BioGlobalVariableTable - index bounds unknown")
+    else:
+        tags, end, _why = parse_object(t, t["buf"], cdo)
+        for tag in tags:
+            if tag["name"].startswith("ME1PlotTable_") and tag["name"].endswith(("Offset", "CutoffIndex")):
+                bounds[tag["name"]] = tag["value"]
+        want = cdo["serial_offset"] - t["displacement"] + cdo["serial_size"]
+        if end != want:
+            problems.append("ME3: the plot-manager CDO did not close exactly; bounds may be wrong")
+    order = ("ME1PlotTable_IndexOffset", "ME1PlotTable_Float_CutoffIndex",
+             "ME1PlotTable_Int_CutoffIndex", "ME1PlotTable_Bool_CutoffIndex")
+    if all(k in bounds for k in order):
+        print("       index bounds from Default__BioGlobalVariableTable: " +
+              ", ".join("%s=%d" % (k.replace("ME1PlotTable_", ""), bounds[k]) for k in order))
+        if list(bounds[k] for k in order) != sorted(bounds[k] for k in order):
+            problems.append("ME3: plot table cutoffs are not ordered, so the slot count is unreliable")
+        slots = bounds["ME1PlotTable_Bool_CutoffIndex"]
+        out["slots"] = "{:,}".format(slots)
+        dense = slots * 4 / 1024.0
+        pairs = slots * 8 / 1024.0
+        print("       %s slots: ~%.0f KB dense as int32, ~%.0f KB as index/value pairs"
+              % (out["slots"], dense, pairs))
+        print("       a save struct is already a blob, so LE3 ships whole more easily than LE1/LE2")
+    elif cdo is not None:
+        problems.append("ME3: plot table bounds missing from the CDO (found %s)"
+                        % (sorted(bounds) or "none"))
+    out["bounds"] = bounds
+    return out
 
 
 def cmd_storycheck(args):

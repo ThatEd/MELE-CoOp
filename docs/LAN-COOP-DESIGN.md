@@ -375,30 +375,50 @@ game and silently misses the rest. ME1 uses `BioSeqAct_AutoSave`; ME2/ME3 use `S
 
 Reproduce with `python -I tools/melepkg/mele_props.py storycheck`.
 
-### 4c. Story state is ~8 KB on LE1/LE2, and LE3 is the hard case
+### 4c. Story state is ~8 KB on LE1/LE2 and ~17,655 slots as one blob on LE3
 
 `storycheck` says where the story advances; this says how much state that produces. `PlotManager.pcc`
 defines exactly one class, `BioAutoConditionals`, and its whole body is plot-flag accessors named
 `F<n>`, each shaped `F(id)(Argument: Int) -> ReturnValue: Bool`:
 
-| build | functions | id range | as int32 |
-|---|---|---|---|
-| LE1 | **1,066** | 113..2,018 | **~8 KB** |
-| LE2 | **1,356** | 1..2,050 | **~8 KB** |
-| LE3 | **no such class** | - | not enumerable this way |
+| build | shape | size |
+|---|---|---|
+| LE1 | 1,066 accessors, ids 113..2,018 | **~8 KB** as int32 over 2,019 slots |
+| LE2 | 1,356 accessors, ids 1..2,050 | **~8 KB** as int32 over 2,051 slots |
+| LE3 | **no such class** — one save struct instead | **~69 KB** dense over 17,655 slots |
 
 So on LE1/LE2 a career's story state is at most ~2,000 integers, and **the host can ship the whole
 flag set every level change rather than maintaining a delta log**. That removes an entire class of
 desync: with no delta log there is nothing to miss.
 
-**LE3 defines no `BioAutoConditionals` in any of its 7,943 packages and ships no `PlotManager.pcc`.**
-Its plot data lives in tables (`Plot_Treasure_*`, `PlotManagerGameData`) and plot names are referenced
-from level packages. So "ship the whole state" needs a different mechanism on LE3 - read the plot
-manager's runtime state, or reconstruct the set from the tables.
+**LE3 defines no `BioAutoConditionals` in any of its 7,943 packages and ships no `PlotManager.pcc`,
+but it does hold the same state, in one place.** `SFXGame.pcc` declares `PlotTableSaveRecord` inside
+`SFXSaveGame`, and the save object holds it as `PlotRecord` (with `ME1PlotRecord` beside it for
+imported LE1 state). The struct is seven arrays — `BoolVariables`, `IntVariables`, `FloatVariables`,
+`QuestProgress`, `QuestIDs`, `CodexEntries`, `CodexIDs` — plus a `QuestProgressCounter` int. Entries
+are index-keyed pairs, not names: `IntVariablePair` is `{Index: int32, Value: int32}` (8 bytes) and
+`FloatVariablePair` is `{Index: int32, Value: float32}`. The index space is bounded by constants the
+runtime plot manager ships with, read from `Default__BioGlobalVariableTable`:
+`ME1PlotTable_IndexOffset=10000`, `Float_CutoffIndex=10039`, `Int_CutoffIndex=10148`,
+`Bool_CutoffIndex=17655`.
 
-That inverts the natural build order in one specific way: on this surface **LE3 is the hard one**, and
-it is the game the scope targets first. The `AddMutator` hook (§2) and the plot-action family (§4b) are
-both easier on LE3 than the state model is.
+The consequences, in the order they matter:
+
+1. **"Ship the whole state" works on all three builds, for the same reason: the state is small and it
+   already has a single serialization point.** On LE3 that point is a struct that the save system
+   already knows how to write, so co-op ships a blob it did not have to invent.
+2. **The per-build difference is the shape, not the feasibility.** LE1/LE2 give named flags a guest
+   can be told about individually; LE3 gives an index-addressed blob. The guest-side apply step is
+   trivial on LE3 and slightly more explicit on LE1/LE2.
+3. **Level streaming depends on plot state.** `BioSeqAct_GetIsLevelLoaded.GetLevelStreamingObject` on
+   each level package takes a `PlotStreamingElements` array beside `LevelName` and `oWorldInfo`, so
+   what a level streams in is a function of plot flags. A guest must have the host's plot state
+   **before** its streaming is applied, not after — this is the ordering constraint to get right.
+
+The earlier reading of this section said LE3 was the hard case and the state could not be enumerated.
+That was wrong: the absence of the generated class is real, but the state has a home, and
+`oNameLookupTable` on the plot manager points at `PlotManagerGameData` — a `Bio2DA` of 176 rows naming
+the *named* integer variables, which is why the names are not the whole set.
 
 Reproduce with `python -I tools/melepkg/mele_props.py plotcheck`.
 
