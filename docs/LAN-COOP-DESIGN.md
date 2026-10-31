@@ -764,6 +764,25 @@ in the presence path** — which happens to be exactly the seam "the client take
 That is a far narrower surface than writing a netcode layer, and it is the most actionable result in this
 document.
 
+**And the campaign's possession is already squad-aware on LE2/LE3.** The signatures an override has to match:
+
+| build | `BioPlayerController.Possess` |
+|---|---|
+| LE1 | `(aPawn, bVehicleTransition, V)` — `0x18` |
+| LE2 | `(aPawn, bVehicleTransition, V, **PlayerSquad**, oBioPawn, oBioWorldInfo)` — `0x30` |
+| LE3 | `(aPawn, bVehicleTransition, V, **PlayerSquad**, oBioWorldInfo)` — `0x28` |
+
+LE1's takes three parameters and no squad; LE2/LE3's take the **`PlayerSquad` the pawn is being placed
+into**. That matches the recruitment difference measured earlier (LE1's `AddToParty` touches no `Bio2DA`,
+LE2/LE3 go through the table) — the two findings agree, which is a good sign for both.
+
+But the class the campaign actually instantiates is `SFXPlayerController`, and its `Possess` is
+**stock-shaped**: `(aPawn, bVehicleTransition)`, `0xc`, on LE2 and LE3. So the override a mod writes matches
+the engine's own signature exactly, and the squad-aware version is one level down.
+
+The pawn side adds one parameter the engine does not have: `SFXPawn_Player.PossessedBy(C,
+bVehicleTransition, Manager)` — `0x18` — beside `Pawn.PossessedBy(C, bVehicleTransition)` at `0xc`.
+
 **A per-build trap worth writing down:** LE1/LE2 name the transform property **`Location`**, LE3 names it
 **`location`**. Export names are case-sensitive, so a lookup that tries one spelling finds it on two builds
 or one, depending which it tried. That is how this check first failed.

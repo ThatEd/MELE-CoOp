@@ -2770,7 +2770,49 @@ def cmd_netcheck(args):
             if e is None or e["serial_size"] <= 4:
                 problems.append("%s: PlayerController.%s is not scripted" % (game, required))
         print()
+        print("   the possession signatures a mod has to match")
+        possession = (("Controller", "Possess"), ("Pawn", "PossessedBy"),
+                      ("BioPlayerController", "Possess"), ("SFXPlayerController", "Possess"),
+                      ("BioPawn", "PossessedBy"), ("SFXPawn_Player", "PossessedBy"))
+        seen_possess = {}
+        for cls_name, fn_name in possession:
+            for ct in packages_for_chain:
+                if _class_export(mt, ct, cls_name) is None:
+                    continue
+                fns, _r = _script_functions(mt, ct, cls_name)
+                e = fns.get(fn_name)
+                if e is None or e["serial_size"] <= 4:
+                    continue
+                sig = mt.signature(ct, ct["buf"], e)
+                params = [(n, ty) for n, ty, _s, _o in sig["params"]]
+                print("     %-22s %-12s (%s) parms=0x%x"
+                      % (cls_name, fn_name, ", ".join("%s:%s" % p for p in params),
+                         sig["parms_size"]))
+                if fn_name == "Possess":
+                    seen_possess[cls_name] = params
+                break
+        # The campaign's possession is squad-aware on LE2/LE3 and not on LE1, which matches the recruitment
+        # path: LE1's AddToParty touches no Bio2DA, LE2/LE3 go through the table. The outermost class the
+        # campaign instantiates has a stock-shaped Possess on LE2/LE3, which is what an override must match.
+        if "BioPlayerController" in seen_possess:
+            names = [n for n, _ty in seen_possess["BioPlayerController"]]
+            squad_aware = "PlayerSquad" in names
+            print("     BioPlayerController.Possess squad-aware: %s" % squad_aware)
+            if game == "ME1" and squad_aware:
+                problems.append("ME1: BioPlayerController.Possess gained a PlayerSquad - re-read the LE1 "
+                                "recruitment difference")
+            if game != "ME1" and not squad_aware:
+                problems.append("%s: BioPlayerController.Possess no longer takes a PlayerSquad - the "
+                                "squad-aware possession claim fails" % game)
+        if "SFXPlayerController" in seen_possess:
+            names = [n for n, _ty in seen_possess["SFXPlayerController"]]
+            if names != ["aPawn", "bVehicleTransition"]:
+                problems.append("%s: SFXPlayerController.Possess is %s, expected the stock "
+                                "aPawn/bVehicleTransition pair" % (game, names))
+        print()
+
         print("   weapon fire: replicated as a flash, with no replicated projectile")
+
         pawn_net = {n.lower() for n in (per_class.get("Pawn") or [])}
         proj_net = per_class.get("Projectile") or []
         for required in ("flashcount", "flashlocation"):

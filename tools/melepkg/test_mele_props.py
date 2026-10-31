@@ -1111,8 +1111,15 @@ def t_replication_surface():
             return "fail", "a Bio/SP controller now replaces ServerMove: %s" % line.strip()
     if "replaces: Possess" not in out:
         return "fail", "possession is no longer the overridden seam:\n%s" % out.strip()
+    if "the possession signatures a mod has to match" not in out:
+        return "fail", "possession signatures were not measured:\n%s" % out.strip()
+    # LE1's Possess is not squad-aware; LE2/LE3's is, matching the recruitment-path difference.
+    if out.count("BioPlayerController.Possess squad-aware:") != 3:
+        return "fail", "squad-awareness not reported per build:\n%s" % out.strip()
+    if "SFXPlayerController.Possess is" in out:
+        return "fail", "SFXPlayerController.Possess no longer has the stock signature:\n%s" % out.strip()
     return "ok", ("1.8% of engine properties replicate; 5/5 join RPCs x3; ServerMove never replaced; "
-                  "Projectile replicates nothing")
+                  "Possess is the seam, squad-aware on LE2/LE3 only; Projectile replicates nothing")
 
 
 def main():
