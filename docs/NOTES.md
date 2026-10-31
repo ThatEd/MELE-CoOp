@@ -5261,3 +5261,58 @@ the type is called.
 `BioPlayerSquad` and the word `SpareController` appears nowhere else in 19,430 packages. That is either a
 feature that was built and switched off, or a stub - and both are cheaper to investigate than to
 reimplement.
+
+## 2026-10-31 (spawn points): a guest shares the host's start, and my first count was of the wrong class
+
+Question: where does a second player stand? First pass counted `PlayerStart` actors per map and got
+**zero in 94.1% / 93.6% / 98.7% of maps**. That reads as "co-op has nowhere to put a guest" and it is
+wrong, because it counted a class the campaign barely uses.
+
+`BioSPGame` overrides `FindPlayerStart` and adds `FindStartingNavPoint` and
+`AdjustHeightOfPawnSpawnedAtNavigationPoint`, which was the hint that the spawn class is not
+`PlayerStart`. Counting what the maps actually contain gives the answer:
+
+| build | `BioStartLocation` | `BioStartPoint` | `PlayerStart` |
+|---|---|---|---|
+| ME1 | **251** | 202 | 165 |
+| ME2 | **338** | 33 | 147 |
+| ME3 | **255** | - | 44 |
+
+`BioStartLocation` is the campaign's spawn point. Recounted with it:
+
+| build | maps | maps with a spawn point | exactly one | two or more | most in one map |
+|---|---|---|---|---|---|
+| ME1 | 1,811 | 129 (7.1%) | 61 (47.3%) | 68 (52.7%) | 51 |
+| ME2 | 2,156 | 250 (11.6%) | 121 (48.4%) | 129 (51.6%) | 11 |
+| ME3 | 2,677 | 114 (4.3%) | **69 (60.5%)** | 45 (39.5%) | 20 |
+
+### What it means
+
+1. **Most packages are not places you stand in.** 92-96% of the 6,644 packages have no spawn point at
+   all because they are streaming sublevels - `_ART`, `_SND`, `_LAY`, `_DSG` - and the campaign places
+   the player by its own logic rather than by an actor: `SpawnDefaultPawnFor` with a start spot, and
+   `FindStartingNavPoint` on LE1's `BioSPGame`.
+2. **On LE3, 60% of the maps that do have a spawn point have exactly one.** So the guest has no start of
+   its own in the majority of places a player can appear.
+3. That is exactly what `bNoCollisionFail` is for, and ME3's `Engine.GameInfo.SpawnDefaultPawnFor` has
+   it (ME1/ME2's Engine version does not - theirs is `(NewPlayer, StartSpot, DefaultPlayerClass,
+   StartRotation, ResultPawn)`). The "spawn even though something is standing there" flag was added by
+   this build, and co-op needs it rather than merely benefits from it.
+
+So guest placement is settled without a new mechanism: **share the host's start, pass
+`bNoCollisionFail`**, and let the existing spawn do the work. No synthetic start point, no
+"find a nearby nav point" heuristic.
+
+### Rules
+
+**Rule 83. Zero can mean the wrong class.** "94% of maps have no player start" was not a fact about the
+game, it was a fact about `PlayerStart`. The override `FindStartingNavPoint` on the campaign class was
+sitting in the same measurement the whole time, saying the spawn class was something else.
+
+**Rule 84. Caveat the denominator.** "114 of 2,677 maps have a spawn point" sounds like a hole and is
+not: 96% of those 2,677 are sublevels no player ever stands in. The useful fraction was *of the maps that
+have one, how many have only one* - 60% on LE3 - and that changed the placement plan.
+
+**Rule 85. When the engine grew a flag, it grew it for a reason.** `bNoCollisionFail` appears on ME3's
+`GameInfo.SpawnDefaultPawnFor` and not on ME1/ME2's. That is not decoration; it is the build telling you
+that two things can want the same spot.

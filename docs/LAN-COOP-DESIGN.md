@@ -575,6 +575,35 @@ which means anything that listens for a squad change has to be driven explicitly
 
 Reproduce with `python -I tools/melepkg/mele_props.py rostercheck`.
 
+## 4g. A guest shares the host's spawn point, because most maps have none or exactly one
+
+`startcheck` answers where a second player could stand. The first attempt at this counted only
+`PlayerStart` and reported zero spawn points in 94–99% of maps, which looked alarming and was measuring
+the wrong class — the campaign spawns from **`BioStartLocation`** (plus `BioStartPoint` on LE1/LE2).
+
+Counted over every package holding a `PersistentLevel`:
+
+| build | maps | with a spawn point | exactly one | two or more |
+|---|---|---|---|---|
+| LE1 | 1,811 | 129 (7.1%) | 61 (47.3%) | 68 (52.7%) |
+| LE2 | 2,156 | 250 (11.6%) | 121 (48.4%) | 129 (51.6%) |
+| LE3 | 2,677 | 114 (4.3%) | **69 (60.5%)** | 45 (39.5%) |
+
+By class: LE1 `BioStartLocation` 251 / `BioStartPoint` 202 / `PlayerStart` 165; LE2 338 / 147 / 33;
+LE3 255 / – / 44.
+
+Two things follow.
+
+1. **Most maps have no spawn point at all.** Most of the 6,644 packages are streaming sublevels that
+   never receive a player; the campaign places the player by its own logic (`SpawnDefaultPawnFor` with a
+   start spot, and `FindStartingNavPoint` on LE1's `BioSPGame`).
+2. **Of the maps that do have one, LE3 has exactly one in 60% of them.** A guest cannot expect a start
+   of its own, so it shares the host's — which is exactly what `SpawnDefaultPawnFor`'s `bNoCollisionFail`
+   parameter is for, present on ME3's `Engine.GameInfo` version. The engine already has the "spawn even
+   though someone is standing there" flag; on this build it is needed rather than optional.
+
+Reproduce with `python -I tools/melepkg/mele_props.py startcheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from

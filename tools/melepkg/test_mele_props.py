@@ -861,6 +861,60 @@ def t_roster_store_and_api():
     return "ok", "MemberData on LE1/LE2 vs Pawn on LE3; AddMember(Pawn) on all three"
 
 
+@case("a guest shares the host's spawn point, because most maps have none or exactly one")
+def t_guest_has_nowhere_of_its_own():
+    """Section 11: where a second player could stand.
+
+    A first pass at this counted only `PlayerStart` and reported zero spawn points in 94-99% of maps,
+    which looked alarming and was measuring the wrong class. The campaign spawns from
+    **`BioStartLocation`** (plus `BioStartPoint` on LE1/LE2), and most packages are streaming sublevels
+    that never receive a player at all.
+
+    The number that matters is the shape of the distribution over maps that *do* have a spawn point, and
+    LE3 is the tight one: exactly one in ~60% of them. A guest therefore cannot expect a start of its
+    own, which is what `SpawnDefaultPawnFor`'s `bNoCollisionFail` parameter is for.
+    """
+    import io
+    import contextlib
+    import os
+    index_dir = mp._index_dir()
+    if not os.path.isfile(os.path.join(index_dir, "ME1.json")):
+        return "skip", "no package index (startcheck needs every map; set MELE_INDEX_DIR)"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_startcheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_startcheck returned %d:\n%s" % (rc, out.strip())
+    import re
+    lines = out.splitlines()
+    for game in ("ME1", "ME2", "ME3"):
+        idx = [i for i, l in enumerate(lines) if l.startswith(game)]
+        if not idx:
+            return "fail", "%s row missing:\n%s" % (game, out.strip())
+        # The summary line is followed by the "by class:" line, which is indented.
+        following = lines[idx[0] + 1] if idx[0] + 1 < len(lines) else ""
+        if "BioStartLocation" not in following:
+            return "fail", "%s no longer defines its spawn class as BioStartLocation:\n%s" % (
+                game, out.strip())
+    counts = {}
+    for game in ("ME1", "ME2", "ME3"):
+        line = [l for l in out.splitlines() if l.startswith(game)][0]
+        maps = int(re.search(r"(\d+) map\(s\)", line).group(1))
+        with_start = int(re.search(r"(\d+) with a spawn point", line).group(1))
+        counts[game] = (maps, with_start)
+        if with_start == 0 or with_start > maps:
+            return "fail", "%s spawn-point counts are impossible: %s" % (game, line)
+    if counts["ME3"][0] < 2000:
+        return "fail", "LE3 map count collapsed: %s" % (counts["ME3"],)
+    if "SpawnDefaultPawnFor's bNoCollisionFail" not in out:
+        return "fail", "verdict missing the bNoCollisionFail consequence:\n%s" % out.strip()
+    return "ok", ("spawn points are BioStartLocation; LE3 %d of %d maps have one, and mostly just one"
+                  % (counts["ME3"][1], counts["ME3"][0]))
+
+
 def main():
     failures = 0
     skips = 0

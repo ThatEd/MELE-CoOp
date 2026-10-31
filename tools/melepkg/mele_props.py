@@ -77,6 +77,7 @@ Usage:
     python -I tools/melepkg/mele_props.py plotcheck                    # how big story state is
     python -I tools/melepkg/mele_props.py joincheck                     # is the join path in script
     python -I tools/melepkg/mele_props.py spawncheck                    # what a guest pawn needs
+    python -I tools/melepkg/mele_props.py startcheck                    # where a guest could stand
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -2004,6 +2005,107 @@ def cmd_rostercheck(args):
     return 0
 
 
+def cmd_startcheck(args):
+    """Where a second player could stand, counted across every map.
+
+    A guest needs somewhere to appear. The campaign does not use `PlayerStart` for this - it uses
+    **`BioStartLocation`** (and `BioStartPoint` on LE1/LE2), which is why a first pass that counted only
+    `PlayerStart` reported zero spawn points in 94-99% of maps and looked alarming.
+
+    Counted over every package holding a `PersistentLevel`, using all four spawn classes:
+
+        build  maps   with a spawn point   exactly one      two or more
+        LE1    1,811  129 ( 7.1%)          61 (47.3%)       68 (52.7%)
+        LE2    2,156  250 (11.6%)         121 (48.4%)      129 (51.6%)
+        LE3    2,677  114 ( 4.3%)          69 (60.5%)       45 (39.5%)
+
+    Two things follow.
+
+    1. **Most maps have no spawn point at all**, because most packages are streaming sublevels that
+       never receive a player; the campaign places the player by its own logic
+       (`SpawnDefaultPawnFor` with a start spot, and `FindStartingNavPoint` on LE1's `BioSPGame`).
+    2. **Of the maps that do have one, LE3 has exactly one in 60% of them.** So a guest cannot expect
+       a second start point to exist. It has to share the host's, which is precisely what
+       `SpawnDefaultPawnFor`'s `bNoCollisionFail` parameter is for on ME3's `Engine.GameInfo` version -
+       the engine already has the "spawn even though someone is standing there" flag, and on this
+       build it is needed rather than optional.
+
+    The spawn classes are counted by export class from the package index. That index is required rather
+    than optional here: `_iter_index` can walk the install instead, but a full walk is many minutes per
+    build, so a silent slow path would be worse than a clear refusal.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    if not os.path.isfile(os.path.join(_index_dir(), "ME1.json")):
+        print("no package index in %s - startcheck counts spawn points in every map, so it needs one "
+              "(set MELE_INDEX_DIR; skip, not a result)" % _index_dir())
+        return 2
+    spawn_classes = ("BioStartLocation", "BioStartPoint", "PlayerStart", "BioPlayerStart")
+    problems = []
+    table = {}
+    for game in ("ME1", "ME2", "ME3"):
+        maps = 0
+        with_start = 0
+        hist = {}
+        per_class = {}
+        for _game, rel, rec in _iter_index(game):
+            rows = rec.get("exports") or []
+            if not any(r[0] == "PersistentLevel" for r in rows):
+                continue
+            maps += 1
+            n = 0
+            for _name, cls, _sup, _outer in rows:
+                short = (cls or "").split(".")[-1]
+                if short in spawn_classes:
+                    n += 1
+                    per_class[short] = per_class.get(short, 0) + 1
+            if n:
+                with_start += 1
+                hist[n] = hist.get(n, 0) + 1
+        if not maps:
+            problems.append("%s: no maps counted - the index is empty or unreadable" % game)
+            continue
+        if not with_start:
+            problems.append("%s: no map has any spawn point - the spawn classes are wrong" % game)
+            continue
+        one = hist.get(1, 0)
+        two = sum(v for k, v in hist.items() if k >= 2)
+        table[game] = (maps, with_start, one, two, per_class)
+        print("%-4s %5d map(s), %4d with a spawn point (%.1f%%); exactly one %d (%.1f%%), "
+              "two or more %d (%.1f%%)"
+              % (game, maps, with_start, 100.0 * with_start / maps,
+                 one, 100.0 * one / with_start, two, 100.0 * two / with_start))
+        print("     by class: %s"
+              % ", ".join("%s %d" % (k, v) for k, v in
+                          sorted(per_class.items(), key=lambda kv: -kv[1])))
+        if "BioStartLocation" not in per_class:
+            problems.append("%s: no BioStartLocation anywhere - the campaign spawn class changed" % game)
+
+    print()
+    # The point of the measurement: does a second start point exist where it matters?
+    for game in ("ME1", "ME2", "ME3"):
+        if game not in table:
+            continue
+        maps, with_start, one, two, _per_class = table[game]
+        if with_start and one / float(with_start) > 0.95:
+            problems.append("%s: nearly every spawnable map has exactly one start - re-read the guest "
+                            "placement plan" % game)
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    le3 = table.get("ME3", (0, 0, 0, 0, {}))
+    print("verdict: the campaign spawns from BioStartLocation, not PlayerStart, and most maps are "
+          "sublevels with none; of the maps that do have a spawn point, LE3 has exactly one in %.0f%% "
+          "of them, so a guest shares the host's start and needs SpawnDefaultPawnFor's bNoCollisionFail"
+          % (100.0 * le3[2] / max(le3[1], 1)))
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -2077,6 +2179,10 @@ def main():
     p = sub.add_parser("rostercheck",
                        help="how a squad roster entry is added, and what a guest needs to occupy one")
     p.set_defaults(func=cmd_rostercheck)
+
+    p = sub.add_parser("startcheck",
+                       help="where a second player could stand, counted across every map")
+    p.set_defaults(func=cmd_startcheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")
