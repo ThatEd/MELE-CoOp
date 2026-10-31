@@ -2623,7 +2623,18 @@ def cmd_netcheck(args):
     the client sends its own movement - so a guest needs no new networking, only the campaign's refusal
     lifted and a squadmate pawn to hand over.
 
-    Needs only `Engine.pcc`, so it runs without a package index.
+    **And the campaign's own chain does not replace that transport.** Following the class the campaign
+    instantiates:
+
+        Engine.PlayerController         script: ServerMove, ClientRestart
+        BioPlayerController : that      272 script functions, replaces Possess and SpawnPlayerCamera
+        SFXPlayerController : that       76 script functions, replaces Possess and UnPossess
+
+    `ServerMove` and `ClientRestart` are inherited untouched the whole way down, so the movement transport
+    a guest gets is exactly the engine's, and **possession is the one overridden seam** - which is also the
+    seam "the client takes a squadmate" needs to hook. Much narrower than writing a netcode layer.
+
+    Needs only `Engine.pcc` and the campaign package, so it runs without a package index.
     """
     if not _require_install():
         print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
@@ -2722,6 +2733,43 @@ def cmd_netcheck(args):
             problems.append("%s: only %d Client* functions, expected 90-ish" % (game, len(clients)))
 
         print()
+        print("   the campaign's own controller chain, and what it replaces")
+        # The class the campaign actually instantiates is SFXPlayerController on LE3, and it lives in the
+        # campaign package rather than Engine.pcc, so both packages are searched.
+        packages_for_chain = [t]
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "SFXGame.pcc")
+            if os.path.isfile(cand):
+                packages_for_chain.append(mt.build(cand))
+                break
+        for name in ("PlayerController", "BioBasePlayerController", "BioPlayerController",
+                     "SFXPlayerController"):
+            found = None
+            for ct in packages_for_chain:
+                ce = _class_export(mt, ct, name)
+                if ce is not None:
+                    found = (ct, ce)
+                    break
+            if found is None:
+                continue
+            ct, _ce = found
+            funcs, _rows = _script_functions(mt, ct, name)
+            scripted = {n: e for n, e in funcs.items() if e["serial_size"] > 4}
+            replaced = [n for n in ("ServerMove", "ClientRestart", "Possess", "UnPossess")
+                        if n in scripted]
+            print("     %-24s %3d script fn, replaces: %s"
+                  % (name, len(scripted), ", ".join(replaced) or "none of those"))
+            # The claim this section exists to support: the movement transport is inherited unchanged, so
+            # possession is the only overridden seam in the presence path.
+            if name != "PlayerController" and "ServerMove" in replaced:
+                problems.append("%s: %s now replaces ServerMove - the inherited-transport claim fails"
+                                % (game, name))
+        funcs, _rows = _script_functions(mt, t, "PlayerController")
+        for required in ("ServerMove", "ClientRestart"):
+            e = funcs.get(required)
+            if e is None or e["serial_size"] <= 4:
+                problems.append("%s: PlayerController.%s is not scripted" % (game, required))
+        print()
         print("   weapon fire: replicated as a flash, with no replicated projectile")
         pawn_net = {n.lower() for n in (per_class.get("Pawn") or [])}
         proj_net = per_class.get("Projectile") or []
@@ -2747,11 +2795,12 @@ def cmd_netcheck(args):
     if density and all(totals.get(g) for g in density):
         share = 100.0 * sum(density.values()) / sum(totals[g] for g in density)
     print("verdict: only %.1f%% of the engine's properties replicate, and they are the right ones - "
-          "Actor.Role/RemoteRole with location/Rotation/Velocity, a whole player pawn including "
+          "Actor.Role/RemoteRole with Location/Rotation/Velocity, a whole player pawn including "
           "Controller/Health/FiringMode, and the unmodified UE3 client-join handshake "
-          "(ServerGivePawn, ServerAcknowledgePossession, ServerMove) on every build; weapon fire travels "
-          "as Pawn.FlashCount/FlashLocation with no replicated projectile, so visuals are free and damage "
-          "must be authority-checked" % share)
+          "(ServerGivePawn, ServerAcknowledgePossession, ServerMove) on every build; ServerMove and "
+          "ClientRestart are never replaced anywhere in the Bio controller chain, so possession is the "
+          "single overridden seam; weapon fire travels as Pawn.FlashCount/FlashLocation with no "
+          "replicated projectile, so visuals are free and damage must be authority-checked" % share)
     return 0
 
 

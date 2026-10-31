@@ -1103,7 +1103,16 @@ def t_replication_surface():
         return "fail", "LE3 no longer spells the transform location:\n%s" % out.strip()
     if "Projectile replicates 0 propert(ies)" not in out:
         return "fail", "Projectile started replicating - re-read the damage authority plan:\n%s" % out.strip()
-    return "ok", "1.8% of engine properties replicate; 5/5 join RPCs x3; Projectile replicates nothing"
+    # The chain claim: ServerMove/ClientRestart are inherited untouched; only possession is replaced.
+    if "the campaign's own controller chain, and what it replaces" not in out:
+        return "fail", "the controller chain was not measured:\n%s" % out.strip()
+    for line in out.splitlines():
+        if "replaces:" in line and "ServerMove" in line and "PlayerController   " not in line:
+            return "fail", "a Bio/SP controller now replaces ServerMove: %s" % line.strip()
+    if "replaces: Possess" not in out:
+        return "fail", "possession is no longer the overridden seam:\n%s" % out.strip()
+    return "ok", ("1.8% of engine properties replicate; 5/5 join RPCs x3; ServerMove never replaced; "
+                  "Projectile replicates nothing")
 
 
 def main():

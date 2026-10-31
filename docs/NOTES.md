@@ -5581,3 +5581,49 @@ replicated field *is used for* before assuming what it delivers.
 `Actor.Location` on LE1/LE2, `Actor.location` on LE3. My required-name list used the lowercase form and the
 check failed on two builds - which is the check working. A cross-build lookup on a serialized name has to be
 case-insensitive, and the spelling is worth reporting rather than normalising.
+
+## 2026-10-31 (the controller chain): the movement transport is inherited untouched, and possession is the only seam
+
+The replication surface said `Pawn` replicates its transform and `PlayerController` still has `ServerMove`.
+The follow-up question is whether the *campaign's* controller replaces that transport - a game that shipped
+single-player might well have. It does not.
+
+Following the class the campaign actually instantiates:
+
+| build | chain, outermost last | `ServerMove` replaced? |
+|---|---|---|
+| ME1 | `Engine.PlayerController` 364 fn -> `BioBasePlayerController` 2 fn -> `BioPlayerController` 119 fn | **no** |
+| ME2 | `Engine.PlayerController` 362 -> `BioBasePlayerController` 0 -> `BioPlayerController` 166 -> `SFXPlayerController` 14 | **no** |
+| ME3 | `Engine.PlayerController` 361 -> `BioPlayerController` 272 -> `SFXPlayerController` 76 | **no** |
+
+`ServerMove` and `ClientRestart` are declared once, on `Engine.PlayerController`, and **never overridden
+anywhere in the Bio chain on any build**. What the chain *does* replace:
+
+- `Possess` - on `BioPlayerController` on all three, and again on `SFXPlayerController` on ME2/ME3
+- `UnPossess` - on `BioPlayerController` (ME2) and `SFXPlayerController` (ME2/ME3)
+- `SpawnPlayerCamera` - `BioPlayerController` on ME3
+
+So the movement transport a guest gets is exactly the engine's own, and **possession is the single overridden
+seam in the presence path**. That is also precisely the seam "the client takes a squadmate" has to hook: the
+guest's controller must end up possessing the squadmate pawn, and the campaign already overrides the function
+that does the possessing - twice on LE3, once in Bio and once in SP.
+
+This is the most actionable result in the log. It means co-op on LE3 is:
+
+1. lift `MaxPlayersAllowed` from 1 (one int, on `SFXGame`)
+2. let the engine's own `Login`/`PostLogin`/`RestartPlayer` path hand the guest a controller
+3. override `Possess` so the guest's `SFXPlayerController` takes a squadmate pawn instead of Shepard's
+4. let `ServerMove`, the replicated `Pawn` transform and the stock handshake carry everything else
+
+No packet format, no movement code, no snapshot system. The engine's whole client protocol is present and
+unmodified; only the choice of *which pawn* is BioWare's.
+
+### Rule 94. Check what a chain inherits before assuming it was replaced.
+`BioPlayerController` has 272 script functions, which looks like it owns the presence path. It owns
+`Possess` and the camera and nothing else that matters here; `ServerMove` passes straight through. The count
+of a class's functions says nothing about which of the engine's contracts it upholds - the override list does.
+
+### Rule 95. The seam that is overridden twice is the seam that matters.
+`Possess` is replaced on `BioPlayerController` *and* on `SFXPlayerController`. Two independent overrides of
+the same function is the game saying that possession is where its own behaviour lives - and therefore where a
+mod's has to go too.

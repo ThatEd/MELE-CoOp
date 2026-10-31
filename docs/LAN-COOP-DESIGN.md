@@ -748,6 +748,22 @@ locally from those. So tracers, muzzle flashes and fire sounds work for free —
 because the guest's projectile is a different object from the host's. Any co-op damage path has to be
 authority-checked rather than trusting the replicating flash.
 
+**And the campaign's own controller chain does not replace that transport.** Following the class the
+campaign instantiates:
+
+| class | script functions | replaces |
+|---|---|---|
+| `Engine.PlayerController` | 361–364 | `ServerMove`, `ClientRestart`, `Possess`, `UnPossess` |
+| `BioBasePlayerController` (LE1/LE2) | 0–2 | nothing |
+| `BioPlayerController` | 119–272 | **`Possess`** (and `UnPossess` on LE2) |
+| `SFXPlayerController` (LE2/LE3) | 14–76 | **`Possess`**, `UnPossess` |
+
+**`ServerMove` and `ClientRestart` are inherited untouched the whole way down, on every build.** So the
+movement transport a guest gets is exactly the engine's own, and **possession is the single overridden seam
+in the presence path** — which happens to be exactly the seam "the client takes a squadmate" needs to hook.
+That is a far narrower surface than writing a netcode layer, and it is the most actionable result in this
+document.
+
 **A per-build trap worth writing down:** LE1/LE2 name the transform property **`Location`**, LE3 names it
 **`location`**. Export names are case-sensitive, so a lookup that tries one spelling finds it on two builds
 or one, depending which it tried. That is how this check first failed.
