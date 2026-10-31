@@ -5803,3 +5803,85 @@ into a place to put a patch - and into a warning about an approach that would si
 `?MaxPlayers=` is the natural thing to try, it is parsed by the engine, it looks like it works - and the
 ceiling undoes it in the same function. When a parameter is accepted and then ignored, look for the clamp
 before concluding the parameter is unheard.
+
+## 2026-10-31 (the mutator chain): there is a supported hook into the join path, and it ships
+
+This is the most consequential finding of the session and it came from a false negative I had been carrying.
+
+### The false negative
+
+Earlier I scanned `GameInfo`'s join functions for references to `Mutator.*` and got "none" on every build, and
+concluded the mutator class was dead code. **It is not.** UE3 emits a **virtual call as an `FName` index**,
+not as a package reference to the function export, so an export-reference scan cannot see `Mutator.ModifyLogin`
+even when it is being called. Scanning for the hook's **name index** instead finds all of them:
+
+| `GameInfo` function | calls |
+|---|---|
+| `InitGame` | `AddMutator`, `InitMutator` |
+| `Login` | **`Mutator.ModifyLogin`**, `FindPlayerStart` |
+| `PostLogin` -> `GenericPlayerInitialization` | **`Mutator.NotifyLogin`** |
+| `RestartPlayer` -> `SetPlayerDefaults` | **`Mutator.ModifyPlayer`** |
+| `Logout` | `Mutator.NotifyLogout` |
+| `PlayerController.ServerMutate` -> `GameInfo.Mutate` | `Mutator.Mutate` |
+
+Identical on ME1, ME2 and ME3.
+
+### The gate is open
+
+`Mutator.MutatorIsAllowed` is **29 bytes** on all three builds, and resolving its references gives
+`return !WorldInfo.IsDemoBuild()`. Stock UE3. **Mutators are permitted in a retail build** - the only thing
+that would turn them off is being a demo.
+
+### The signatures are identical everywhere
+
+| hook | signature | parms |
+|---|---|---|
+| `ModifyLogin` | `(Portal: Str, Options: Str)` | `0x20` |
+| `InitMutator` | `(Options: Str, ErrorMessage: Str)` | `0x20` |
+| `ModifyPlayer` | `(Other: Object)` | `0x8` |
+| `NotifyLogin` | `(NewPlayer: Object)` | `0x8` |
+| `NotifyLogout` | `(Exiting: Object)` | `0x8` |
+| `Mutate` | `(MutateString: Str, Sender: Object)` | `0x18` |
+| `FindPlayerStart` | `(Player, InTeam, IncomingName, out ReturnValue)` | `0x24` |
+| `GameInfo.AddMutator` | `(mutname: Str, bUserAdded: Bool, mutClass: Class, out mut, I: Int)` | `0x2c` |
+
+`Mutator` declares 29 functions, 28 with real bodies, the same set on all three builds.
+
+### Why this matters more than anything else measured today
+
+The three things the co-op design needs are **already hook names**: accept the guest is `ModifyLogin`, give
+the guest a pawn is `ModifyPlayer`, set up the guest's per-player state is `NotifyLogin`. And `InitGame`
+parses `Mutator`/`Mutators` out of the URL and calls `InitMutator` *after* the `MaxPlayers` clamp - so a
+mutator can correct the player count from inside the supported path.
+
+That makes the LE3 plan:
+
+1. load a mutator with `?Mutator=<class>` in the travel URL
+2. `InitMutator` raises the effective player count (`MaxPlayers`, post-clamp)
+3. `ModifyLogin` accepts the guest
+4. `ModifyPlayer` hands the guest a squadmate pawn
+5. `ServerMove`, the replicated `Actor`/`Pawn` transform and `ProcessServerTravel` carry it from there
+
+No binary patch, no code injection, no packet format.
+
+### What it does not settle
+
+1. **The class has to be loadable.** A mutator whose class is not reachable from a cooked package will not
+   spawn. Cooking is a toolchain question this environment cannot answer.
+2. **The campaign builds its own travel URLs.** Whether `?Mutator=` on the initial URL survives into the
+   campaign's own map changes is unmeasured, and it is the main risk in this route.
+3. **Nothing here proves a mutator's effect replicates** to a client. It proves the hook is called.
+
+All three are stated as risks rather than waved away.
+
+### Rule 103. A virtual call has no object reference.
+`Mutator.ModifyLogin` being called from `Login` leaves no package index to find - UE3 emits the function's
+`FName` and lets the object's vtable resolve it. So "no references to X" from an export-index scan is not
+evidence that X is uncalled. Scan the name table too, and treat a discrepancy between the two scans as the
+signal that a call is virtual.
+
+### Rule 104. The best hook is one the shipped code already calls.
+Nine sessions of design went into "where do we put the co-op logic". `GameInfo` calls `Mutator.ModifyLogin`
+in `Login`, `Mutator.ModifyPlayer` in `SetPlayerDefaults`, and `Mutator.NotifyLogin` in
+`GenericPlayerInitialization`, on every build, with identical signatures, gated only on not being a demo. The
+extension point was already there and had a name; what was missing was reading a virtual call correctly.

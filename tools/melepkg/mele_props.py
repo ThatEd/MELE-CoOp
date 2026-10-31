@@ -83,6 +83,7 @@ Usage:
     python -I tools/melepkg/mele_props.py netcheck                      # what the engine carries for free
     python -I tools/melepkg/mele_props.py travelcheck                   # what a level change runs
     python -I tools/melepkg/mele_props.py capacitycheck                 # the chain that refuses a guest
+    python -I tools/melepkg/mele_props.py mutatorcheck                  # is there a supported hook into it
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -3201,6 +3202,176 @@ def _bytecode_strings(mt, t, func_export):
     return out
 
 
+def cmd_mutatorcheck(args):
+    """Is there a supported, in-game way to hook the join path without patching a binary?
+
+    Yes, and it has been shipping in all three builds the whole time. UE3's `Mutator` class is not dead code
+    here: `GameInfo` calls into the mutator chain at every point co-op needs, and the chain is loaded from the
+    travel URL.
+
+    **The wiring, measured by scanning each function body for the hook's name index** (a virtual call emits an
+    `FName`, not a package index, so an export-reference scan misses every one of these - which is exactly the
+    false negative this command exists to avoid):
+
+        GameInfo.InitGame                          -> AddMutator, InitMutator
+        GameInfo.Login                             -> Mutator.ModifyLogin, FindPlayerStart
+        GameInfo.PostLogin                         -> GenericPlayerInitialization -> Mutator.NotifyLogin
+        GameInfo.RestartPlayer                     -> SetPlayerDefaults -> Mutator.ModifyPlayer
+        GameInfo.Logout                            -> Mutator.NotifyLogout
+        PlayerController.ServerMutate -> GameInfo.Mutate -> Mutator.Mutate
+
+    **The gate is open.** `Mutator.MutatorIsAllowed` is 29 bytes on all three builds and is
+    `return !WorldInfo.IsDemoBuild()` - stock UE3, so mutators are permitted in a retail build.
+
+    **The hook signatures are identical on all three builds**, which is what makes one implementation portable:
+
+        ModifyLogin(Portal: Str, Options: Str)                 0x20 parms
+        InitMutator(Options: Str, ErrorMessage: Str)           0x20
+        ModifyPlayer(Other: Object)                            0x8
+        NotifyLogin(NewPlayer: Object)                         0x8
+        NotifyLogout(Exiting: Object)                          0x8
+        Mutate(MutateString: Str, Sender: Object)              0x18
+        FindPlayerStart(Player, InTeam, IncomingName, out ReturnValue)  0x24
+        GameInfo.AddMutator(mutname: Str, bUserAdded: Bool, mutClass: Class, out mut, I: Int)  0x2c
+
+    **What that means for co-op.** The three moments the design needs - accept the guest, give the guest a
+    pawn, set up the guest's per-player state - are exactly `ModifyLogin`, `ModifyPlayer` and `NotifyLogin`.
+    So the mod can be a `Mutator` subclass loaded with `?Mutator=<class>` in the travel URL, with no binary
+    patch and no code injection.
+
+    **What this does NOT settle, stated as such:**
+
+      * Unless the object is reachable from a *cooked* package the game already loads, the mutator class has
+        to be cooked in - that is a toolchain question this environment cannot answer.
+      * The campaign builds its own travel URLs for level transitions. Whether a `?Mutator=` on the initial
+        URL survives into the campaign's own map changes is unmeasured, and it is the main risk in this route.
+      * Nothing here proves a mutator's effect is replicated to a client; it proves the hook is called.
+
+    Needs only `Engine.pcc`, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    hooks = ("ModifyLogin", "ModifyPlayer", "NotifyLogin", "NotifyLogout", "InitMutator", "Mutate",
+             "FindPlayerStart")
+    # `AddMutator` is scanned for the wiring but has its own signature on GameInfo, not on Mutator.
+    scanned = hooks + ("AddMutator",)
+    callers = (("InitGame", ("AddMutator", "InitMutator")),
+               ("Login", ("ModifyLogin",)),
+               ("GenericPlayerInitialization", ("NotifyLogin",)),
+               ("Logout", ("NotifyLogout",)),
+               ("SetPlayerDefaults", ("ModifyPlayer",)))
+    expected_parms = {"ModifyLogin": 0x20, "InitMutator": 0x20, "ModifyPlayer": 0x8,
+                      "NotifyLogin": 0x8, "NotifyLogout": 0x8, "Mutate": 0x18,
+                      "FindPlayerStart": 0x24}
+
+    for game in ("ME1", "ME2", "ME3"):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no Engine.pcc" % game)
+            continue
+        t = mt.build(path)
+        names = t["name_table"]
+        print("== %s" % game)
+
+        # 1. The gate.
+        gate = _function_on(mt, t, "Mutator", "MutatorIsAllowed")
+        if gate is None:
+            problems.append("%s: no Mutator.MutatorIsAllowed - mutators may be gated elsewhere" % game)
+        else:
+            body = mt.function_body(t, gate)
+            dwords = []
+            for i in range(0, max(0, len(body) - 3)):
+                v = struct.unpack_from("<i", body, i)[0]
+                if v <= 0:
+                    continue
+                kind, target = mt.resolve_index(v, t["exports"], t["imports"])
+                if target is None:
+                    continue
+                cls = mt.describe_index(target["class_index"], t["exports"], t["imports"])
+                if cls.endswith("Function") or cls.endswith("Property"):
+                    dwords.append("%s.%s" % (
+                        mt.describe_index(target["outer_index"], t["exports"], t["imports"])
+                        .replace("export:", ""), target["object_name"]))
+            print("   MutatorIsAllowed body=%d, references: %s"
+                  % (len(body), ", ".join(sorted(set(dwords))) or "none"))
+            if not any("IsDemoBuild" in d for d in dwords):
+                problems.append("%s: MutatorIsAllowed no longer consults IsDemoBuild - the gate changed and "
+                                "must be re-read" % game)
+            # Everything else in that list is background-rate noise (a random 4-byte window lands on a valid
+            # package index about 10% of the time in Engine.pcc), so it is counted, not claimed.
+            noise = [d for d in set(dwords) if "IsDemoBuild" not in d]
+            if noise:
+                print("     (plus %d unrelated index hit(s) from the heuristic scan; not evidence)"
+                      % len(noise))
+
+        # 2. The wiring: name-index scan, because these are virtual calls.
+        functions = [e for e in t["exports"]
+                     if mt.describe_index(e["class_index"], t["exports"], t["imports"]).endswith("Function")]
+        index_of = {}
+        for hook in scanned:
+            if hook in names:
+                index_of[names.index(hook)] = hook
+        mentioned = {}
+        for f in functions:
+            at, length = mt.function_bytecode(t, f)
+            if at is None:
+                continue
+            body = t["buf"][at:at + length]
+            seen = set()
+            for i in range(0, max(0, len(body) - 3)):
+                v = struct.unpack_from("<i", body, i)[0]
+                if v in index_of:
+                    seen.add(index_of[v])
+            for hook in seen:
+                mentioned.setdefault(hook, set()).add(f["object_name"])
+        for caller, required in callers:
+            missing = [h for h in required if caller not in mentioned.get(h, set())]
+            if missing:
+                problems.append("%s: %s no longer calls %s - the join-path mutator hook is gone"
+                                % (game, caller, ", ".join(missing)))
+            else:
+                print("   GameInfo.%-28s -> %s" % (caller, ", ".join(required)))
+
+        # 3. The signatures one implementation has to match.
+        for hook in hooks:
+            e = _function_on(mt, t, "Mutator", hook)
+            if e is None:
+                problems.append("%s: Mutator.%s missing" % (game, hook))
+                continue
+            sig = mt.signature(t, t["buf"], e)
+            got = sig["parms_size"]
+            want = expected_parms[hook]
+            print("   Mutator.%-16s (%s) parms=0x%x" % (
+                hook, ", ".join(n for n, _ty, _s, _o in sig["params"]), got))
+            if got != want:
+                problems.append("%s: Mutator.%s parms is 0x%x, expected 0x%x - the portable override changed"
+                                % (game, hook, got, want))
+        print()
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: the mutator chain is live on all three builds - InitGame/Login/PostLogin/RestartPlayer/"
+          "Logout all call into it, MutatorIsAllowed is !WorldInfo.IsDemoBuild() so it is open in retail, "
+          "and the hook signatures are identical everywhere; so ModifyLogin/ModifyPlayer/NotifyLogin are a "
+          "supported in-game way to accept a guest, give it a pawn and set up its state, loadable with "
+          "?Mutator= and needing no binary patch - provided the class can be cooked in and the option "
+          "survives the campaign's own travel URLs, neither of which is measured here")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -3298,6 +3469,10 @@ def main():
     p = sub.add_parser("capacitycheck",
                        help="the exact chain that refuses a second player, and where the clamp lives")
     p.set_defaults(func=cmd_capacitycheck)
+
+    p = sub.add_parser("mutatorcheck",
+                       help="is there a supported in-game hook into the join path (the mutator chain)")
+    p.set_defaults(func=cmd_mutatorcheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

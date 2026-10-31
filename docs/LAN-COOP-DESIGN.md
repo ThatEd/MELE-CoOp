@@ -186,6 +186,60 @@ The CDO values the comparison actually sees: `Default__GameInfo.MaxPlayers` is 1
 
 Reproduce with `python -I tools/melepkg/mele_props.py capacitycheck`.
 
+## 2c. The mutator chain is a supported hook into the join path — no binary patch required
+
+This is the most useful structural finding in the whole investigation, and it reframes the plan: **there is an
+in-game, supported way to run code at exactly the moments co-op needs.**
+
+UE3's `Mutator` class is not dead code here. `GameInfo` calls into the mutator chain at every point that
+matters, and the chain is populated from the travel URL.
+
+**The wiring**, measured by scanning each function body for the hook's **name index** (a virtual call emits an
+`FName`, not a package index):
+
+| `GameInfo` function | calls |
+|---|---|
+| `InitGame` | `AddMutator`, `InitMutator` |
+| `Login` | **`Mutator.ModifyLogin`**, `FindPlayerStart` |
+| `PostLogin` → `GenericPlayerInitialization` | **`Mutator.NotifyLogin`** |
+| `RestartPlayer` → `SetPlayerDefaults` | **`Mutator.ModifyPlayer`** |
+| `Logout` | `Mutator.NotifyLogout` |
+| `PlayerController.ServerMutate` → `GameInfo.Mutate` | `Mutator.Mutate` |
+
+**The gate is open.** `Mutator.MutatorIsAllowed` is 29 bytes on all three builds and is
+`return !WorldInfo.IsDemoBuild()` — stock UE3, so mutators are permitted in a retail build.
+
+**The hook signatures are identical on all three builds**, which is what makes one implementation portable:
+
+| hook | signature | parms |
+|---|---|---|
+| `ModifyLogin` | `(Portal: Str, Options: Str)` | `0x20` |
+| `InitMutator` | `(Options: Str, ErrorMessage: Str)` | `0x20` |
+| `ModifyPlayer` | `(Other: Object)` | `0x8` |
+| `NotifyLogin` | `(NewPlayer: Object)` | `0x8` |
+| `NotifyLogout` | `(Exiting: Object)` | `0x8` |
+| `Mutate` | `(MutateString: Str, Sender: Object)` | `0x18` |
+| `FindPlayerStart` | `(Player, InTeam, IncomingName, out ReturnValue)` | `0x24` |
+
+**So the three things the design needs are already hook names:** accept the guest is `ModifyLogin`, give the
+guest a pawn is `ModifyPlayer`, set up the guest's per-player state is `NotifyLogin`. Plus `InitMutator`,
+which runs during `InitGame` *after* the `MaxPlayers` clamp — so a mutator can correct `MaxPlayers` from
+inside the supported path rather than by patching an int.
+
+Combined with §2b, that makes the LE3 path: load a mutator with `?Mutator=<class>`, have `InitMutator` raise
+the effective player count, `ModifyLogin` accept the guest, and `ModifyPlayer` hand it a squadmate pawn.
+`ServerMove`, the replicated transform and the map-change broadcast then carry it (§4j, §4k).
+
+**What this does not settle, stated as such:**
+
+1. **The class has to be loadable.** A mutator whose class is not reachable from a cooked package will not
+   spawn. Cooking is a toolchain question this environment cannot answer.
+2. **The campaign builds its own travel URLs.** Whether a `?Mutator=` on the initial URL survives into the
+   campaign's own map changes is unmeasured, and it is the main risk in this route.
+3. **Nothing here proves a mutator's effect replicates** to a client. It proves the hook is called.
+
+Reproduce with `python -I tools/melepkg/mele_props.py mutatorcheck`.
+
 ## 3. What must be decided before anything is coded
 
 Three decisions, and the first two are the reason this page exists.

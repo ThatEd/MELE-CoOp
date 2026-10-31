@@ -1275,6 +1275,65 @@ def t_capacity_chain():
     return "ok", "InitGame clamps to MaxPlayersAllowed; AtCapacity reads MaxPlayers; Login uses MaxedOut"
 
 
+@case("the mutator chain is a supported in-game hook into the join path, open in retail")
+def t_mutator_route():
+    """Is there a way to hook the join path without patching a binary? Yes, and it has always shipped.
+
+    `GameInfo` calls the mutator chain at every moment co-op needs: `InitGame` -> `AddMutator`/`InitMutator`,
+    `Login` -> `ModifyLogin`, `GenericPlayerInitialization` -> `NotifyLogin`, `SetPlayerDefaults` ->
+    `ModifyPlayer`, `Logout` -> `NotifyLogout`. `MutatorIsAllowed` is `!WorldInfo.IsDemoBuild()`, so the chain
+    is permitted in a retail build.
+
+    The scan has to look for the hook's **name index**, not its export index: a virtual call emits an
+    `FName`, so an export-reference scan reports "no mutator calls anywhere" - which is the false negative
+    that made this look like dead code in the first place. Both the wiring and the signatures are asserted,
+    because identical signatures are what make one implementation portable across all three builds.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_mutatorcheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_mutatorcheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        section = out.split("== %s" % game)
+        if len(section) < 2:
+            return "fail", "%s section missing:\n%s" % (game, out.strip())
+        body = section[1].split("== ME")[0]
+        # Parsed by content, not by column padding.
+        wiring = {}
+        for line in body.splitlines():
+            if "->" in line and line.strip().startswith("GameInfo."):
+                caller = line.strip().split("->")[0].strip().replace("GameInfo.", "")
+                hooks_called = [h.strip() for h in line.split("->")[1].split(",")]
+                wiring[caller] = hooks_called
+        for caller, hook in (("InitGame", "AddMutator"), ("InitGame", "InitMutator"),
+                             ("Login", "ModifyLogin"),
+                             ("GenericPlayerInitialization", "NotifyLogin"),
+                             ("SetPlayerDefaults", "ModifyPlayer"),
+                             ("Logout", "NotifyLogout")):
+            if hook not in wiring.get(caller, []):
+                return "fail", ("%s: %s no longer calls %s; wiring is %s"
+                                % (game, caller, hook, wiring))
+        for fn, params, parms in (("ModifyLogin", "(Portal, Options)", "0x20"),
+                                  ("ModifyPlayer", "(Other)", "0x8"),
+                                  ("NotifyLogin", "(NewPlayer)", "0x8"),
+                                  ("InitMutator", "(Options, ErrorMessage)", "0x20")):
+            want = "Mutator.%s" % fn
+            got = [ln for ln in body.splitlines()
+                   if ln.strip().startswith(want) and "%s parms=%s" % (params, parms) in ln]
+            if not got:
+                return "fail", "%s: %s changed shape (want %s parms=%s)\n%s" % (
+                    game, want, params, parms, body)
+        if "WorldInfo.IsDemoBuild" not in body:
+            return "fail", "%s gate no longer mentions IsDemoBuild:\n%s" % (game, body)
+    return "ok", "6/6 join-path hooks wired x3, gate is !IsDemoBuild, signatures identical"
+
+
 def main():
     failures = 0
     skips = 0
