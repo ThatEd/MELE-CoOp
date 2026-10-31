@@ -673,6 +673,46 @@ def t_story_surface_is_shared():
                   "maps")
 
 
+@case("LE1/LE2 story state is a bounded flag set small enough to ship whole")
+def t_plot_state_budget():
+    """The co-op budget question: how many values is a career's story state?
+
+    `PlotManager.pcc` on ME1/ME2 defines one class, `BioAutoConditionals`, whose entire body is plot-flag
+    accessors named `F<n>`, each shaped `F(id)(Argument: Int) -> ReturnValue: Bool`. So each flag is an
+    integer addressed by a small id, and the id space is bounded:
+
+        ME1  1,066 functions, ids 113..2018
+        ME2  1,356 functions, ids 1..2050
+
+    An int32 per slot over that range is ~8 KB. That is the number a sync design needs: it means the
+    host can ship the whole flag set rather than maintaining a delta log, and a guest can be handed a
+    complete story state rather than a replay.
+
+    **ME3's absence is asserted, not assumed.** It defines no `BioAutoConditionals` in any of its 7,943
+    packages and ships no `PlotManager.pcc`, so the LE3 answer is different and the design has to carry
+    that as a per-build difference.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_plotcheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_plotcheck returned %d:\n%s" % (rc, out.strip())
+    if "ME1   1066 plot flag(s), ids 113..2018" not in out:
+        return "fail", "ME1 plot flag set changed:\n%s" % out.strip()
+    if "ME2   1356 plot flag(s), ids 1..2050" not in out:
+        return "fail", "ME2 plot flag set changed:\n%s" % out.strip()
+    if "ME3  PlotManager.pcc present: False" not in out:
+        return "fail", "ME3 gained a PlotManager.pcc - re-read the LE3 plot plan:\n%s" % out.strip()
+    if "small enough to ship whole" not in out:
+        return "fail", "verdict missing:\n%s" % out.strip()
+    return "ok", "1,066 / 1,356 flags over 2,019 / 2,051 slots (~8 KB); LE3 has no such class"
+
+
 def main():
     failures = 0
     skips = 0

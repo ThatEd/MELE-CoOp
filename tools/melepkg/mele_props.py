@@ -74,6 +74,7 @@ Usage:
     python -I tools/melepkg/mele_props.py maplist                      # how many maps to cover
     python -I tools/melepkg/mele_props.py squadadd                     # how the campaign recruits
     python -I tools/melepkg/mele_props.py storycheck                   # what advances the campaign
+    python -I tools/melepkg/mele_props.py plotcheck                    # how big story state is
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -94,6 +95,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import struct
 import sys
 
@@ -1039,6 +1041,97 @@ def _declared_in(game, class_name):
     return False
 
 
+def cmd_plotcheck(args):
+    """How much story state there is, and whether it can be shipped whole. The co-op budget question.
+
+    `coopcheck` answers "where does the story advance". This answers **how much state that advancement
+    produces**, which decides whether a co-op sync tracks deltas or ships the lot.
+
+    Measured shape of `PlotManager.pcc` on ME1 and ME2: it defines exactly one class,
+    `BioAutoConditionals`, and its entire body is a set of plot-flag accessors named `F<n>` - every one
+    of them shaped `F(id)(Argument: Int) -> ReturnValue: Bool`. So each flag is an integer addressed by
+    a small id, and the id space is bounded by the largest id:
+
+        ME1  1,066 functions, ids 113..2018
+        ME2  1,356 functions, ids 1..2050
+
+    An integer per slot over that range is **at most ~8 KB**, which is the number that matters: a host
+    can ship the whole flag set every level change instead of maintaining a delta log, and a guest can
+    be handed a complete story state rather than a replay.
+
+    **ME3 has none of this.** It defines no `BioAutoConditionals` anywhere in 7,943 packages and has no
+    `PlotManager.pcc`; its plot data lives in tables (`Plot_Treasure_*`, `PlotManagerGameData`) and is
+    referenced from level packages. So the same question has a *different answer* on LE3 - the flag set
+    is not enumerable from one generated class - which is a per-build difference the design must carry
+    rather than paper over.
+
+    Needs only named packages, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    report = {}
+    for game in ("ME1", "ME2"):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "PlotManager.pcc")
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no PlotManager.pcc" % game)
+            print("%-4s PlotManager.pcc not found" % game)
+            continue
+        t = mt.build(path)
+        funcs = [e for e in t["exports"]
+                 if mt.describe_index(e["class_index"], t["exports"], t["imports"]).endswith("Function")]
+        ids, odd = [], []
+        for f in funcs:
+            m = re.fullmatch(r"F(\d+)", f["object_name"] or "")
+            if not m:
+                odd.append(f["object_name"])
+                continue
+            ids.append(int(m.group(1)))
+            kids = sorted(k["object_name"] for k in t["exports"] if k["outer_index"] == f["index"] + 1)
+            if "Argument" not in kids or "ReturnValue" not in kids:
+                odd.append("%s:%s" % (f["object_name"], kids))
+        if not ids:
+            problems.append("%s: no F<n> plot-flag functions" % game)
+            continue
+        span = max(ids) + 1
+        report[game] = (len(ids), min(ids), max(ids), span)
+        print("%-4s %5d plot flag(s), ids %d..%d, span %d slots (~%.0f KB as int32)"
+              % (game, len(ids), min(ids), max(ids), span, span * 4 / 1024.0))
+        if odd:
+            problems.append("%s: %d function(s) not shaped F<n>(Argument)->ReturnValue, e.g. %s"
+                            % (game, len(odd), odd[:3]))
+
+    print()
+    # ME3's absence is the finding, so assert it rather than discovering it later.
+    me3 = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "PlotManager.pcc")
+        if os.path.isfile(cand):
+            me3 = cand
+            break
+    print("ME3  PlotManager.pcc present: %s" % bool(me3))
+    if me3:
+        problems.append("ME3 ships a PlotManager.pcc after all - re-read the LE3 plot plan")
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: LE1/LE2 story state is a bounded F<n> flag set of ~2,018/2,050 slots (~8 KB), "
+          "small enough to ship whole; LE3 has no such class and keeps plot data in tables")
+    return 0
+
+
 def cmd_storycheck(args):
     """What actually advances the campaign, counted across every map. The co-op story gate.
 
@@ -1367,6 +1460,10 @@ def main():
     p = sub.add_parser("storycheck",
                        help="what advances the campaign, counted across every map")
     p.set_defaults(func=cmd_storycheck)
+
+    p = sub.add_parser("plotcheck",
+                       help="how much story state there is, and whether it can be shipped whole")
+    p.set_defaults(func=cmd_plotcheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

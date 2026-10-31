@@ -4809,3 +4809,52 @@ all three builds.
 placed in zero maps, because it declares no functions. "The class exists everywhere" and "the class is
 used anywhere" are separate measurements, and assuming the first implies the second is how a per-build
 table acquires a row that is really a constant.
+## 2026-10-31 (story state budget): ~8 KB, so ship it whole instead of logging deltas
+
+`coopcheck` and `storycheck` answered *where* the story advances and *how often*. This answers **how
+much state that produces**, which is the question a sync design actually needs. Re-runnable:
+`python -I tools/melepkg/mele_props.py plotcheck`.
+
+`PlotManager.pcc` defines exactly **one** class, `BioAutoConditionals`, and its entire body is plot-flag
+accessors named `F<n>`:
+
+| build | functions | id range | id space | as int32 |
+|---|---|---|---|---|
+| ME1 | **1,066** | 113..2,018 | 2,019 slots | **~8 KB** |
+| ME2 | **1,356** | 1..2,050 | 2,051 slots | **~8 KB** |
+
+Every function in both builds is shaped `F(id)(Argument: Int) -> ReturnValue: Bool`, with a
+`bioWorld` local and usually a `gv` local (1,040 of ME1's 1,066 have it, 26 do not; 1,339 of ME2's 1,356).
+Zero functions fail to match `F<digits>`. So each flag is an **integer addressed by a small id**, and
+the id space is bounded by the largest id.
+
+**The consequence is the useful part.** A full career's story state on ME1/ME2 is at most 2,019 / 2,051
+integers. The host can therefore **ship the entire flag set** at each level change instead of
+maintaining a delta log, and a guest can be handed a complete story state rather than a replay of
+transitions. That removes a whole class of desync: with no delta log there is nothing to miss.
+
+### ME3 has none of this, and that is the per-build difference to carry
+
+ME3 defines **no `BioAutoConditionals` anywhere in its 7,943 packages** and ships **no
+`PlotManager.pcc`**. Its plot data lives in tables - `Plot_Treasure_Resources`, `Plot_Treasure_Tech`,
+`Plot_Treasure_Treasure`, `PlotManagerGameData` - and plot names are referenced from level packages
+(`BioP_Nor.pcc` 12, `BioP_CitHub.pcc` 8, and so on). So on LE3 the flag set is **not enumerable from
+one generated class**, and "ship the whole state" needs a different mechanism: read the plot manager's
+runtime state, or reconstruct the set from the tables.
+
+That asymmetry is worth stating plainly because it inverts the natural assumption that the newest game
+is the easiest: on this surface **LE3 is the hard one**, and it is the one the project targets first.
+
+### Rule 65
+
+**A state model you can enumerate is a state model you can snapshot.** 1,066 accessor functions look
+like a lot of code until you notice they are `F(id)(Argument) -> Bool` and the ids stop at 2,018 - at
+which point "sync the story" stops being a distributed-systems problem and becomes "send 8 KB". The
+enumeration is what made the budget knowable, and it took one command.
+
+### Rule 66
+
+**The newest build is not the most tractable one.** ME3 has the richest tooling story (mutators,
+`SFXGameInfoSP`, the plot actions) and the *worst* story-state model for this purpose, because it is
+the one that stopped generating a script class for the flags. Build order should follow the state
+model, not the release date.

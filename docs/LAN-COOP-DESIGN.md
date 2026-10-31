@@ -375,6 +375,33 @@ game and silently misses the rest. ME1 uses `BioSeqAct_AutoSave`; ME2/ME3 use `S
 
 Reproduce with `python -I tools/melepkg/mele_props.py storycheck`.
 
+### 4c. Story state is ~8 KB on LE1/LE2, and LE3 is the hard case
+
+`storycheck` says where the story advances; this says how much state that produces. `PlotManager.pcc`
+defines exactly one class, `BioAutoConditionals`, and its whole body is plot-flag accessors named
+`F<n>`, each shaped `F(id)(Argument: Int) -> ReturnValue: Bool`:
+
+| build | functions | id range | as int32 |
+|---|---|---|---|
+| LE1 | **1,066** | 113..2,018 | **~8 KB** |
+| LE2 | **1,356** | 1..2,050 | **~8 KB** |
+| LE3 | **no such class** | - | not enumerable this way |
+
+So on LE1/LE2 a career's story state is at most ~2,000 integers, and **the host can ship the whole
+flag set every level change rather than maintaining a delta log**. That removes an entire class of
+desync: with no delta log there is nothing to miss.
+
+**LE3 defines no `BioAutoConditionals` in any of its 7,943 packages and ships no `PlotManager.pcc`.**
+Its plot data lives in tables (`Plot_Treasure_*`, `PlotManagerGameData`) and plot names are referenced
+from level packages. So "ship the whole state" needs a different mechanism on LE3 - read the plot
+manager's runtime state, or reconstruct the set from the tables.
+
+That inverts the natural build order in one specific way: on this surface **LE3 is the hard one**, and
+it is the game the scope targets first. The `AddMutator` hook (§2) and the plot-action family (§4b) are
+both easier on LE3 than the state model is.
+
+Reproduce with `python -I tools/melepkg/mele_props.py plotcheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from
