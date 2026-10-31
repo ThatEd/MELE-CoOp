@@ -915,6 +915,56 @@ def t_guest_has_nowhere_of_its_own():
                   % (counts["ME3"][1], counts["ME3"][0]))
 
 
+@case("the campaign's replication info is multiplayer-shaped on LE3 only, and its flags are local")
+def t_gri_surface():
+    """What the campaign's game-replication-info carries, and what actually replicates.
+
+    `Default__SFXGameInfoSP` sets one property, `GameReplicationInfoClass=SFXGRISP`, and `SFXGRISP` is a
+    zero-override alias of `SFXGRI` - 35 properties, 32 script functions, CDO closing exactly. That is a
+    multiplayer-shaped state bag shipped inside a single-player campaign.
+
+    The claim worth pinning is the negative: of those 35 properties exactly four carry `CPF_Net`, and
+    none of them is a capability flag. So `bCanSave` / `bCanShowJournal` / `bCanShowCodex` /
+    `bCanShowMap` are **local settings**, not a replicated capability gate - "the guest cannot save"
+    must be enforced where the save happens. If a future read shows those flags replicated, the gating
+    plan gets simpler and this test says so by failing.
+
+    All three campaigns have a replication-info class; the scale differs by an order of magnitude, and
+    the test asserts the per-build numbers so a rewrite cannot quietly change them.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_gricheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_gricheck returned %d:\n%s" % (rc, out.strip())
+    if "GameReplicationInfoClass=<BioGameReplicationInfo>" not in out:
+        return "fail", "ME1 no longer points at its own replication info:\n%s" % out.strip()
+    if "inherited (stock GameReplicationInfo)" not in out:
+        return "fail", "ME2 now overrides GameReplicationInfoClass:\n%s" % out.strip()
+    if "GameReplicationInfoClass=<SFXGRISP>" not in out:
+        return "fail", "ME3 no longer points at SFXGRISP:\n%s" % out.strip()
+    if "SFXGRISP                  0 property(ies),  0 function(s)" not in out:
+        return "fail", "SFXGRISP is no longer a pure alias:\n%s" % out.strip()
+    if "35 property(ies), 32 function(s)" not in out:
+        return "fail", "SFXGRI shape changed:\n%s" % out.strip()
+    if "closure EXACT" not in out:
+        return "fail", "Default__SFXGRI no longer closes exactly:\n%s" % out.strip()
+    rep = [ln for ln in out.splitlines() if "replicated: MaxUniquePlayers" in ln]
+    if not rep:
+        return "fail", "the CPF_Net set changed:\n%s" % out.strip()
+    for flag in ("bCanSave", "bCanShowCodex", "bCanShowJournal", "bCanShowMap"):
+        if flag not in out.split("capability flags present")[-1].split("\n")[0]:
+            return "fail", "%s is no longer reported local-only:\n%s" % (flag, out.strip())
+    if "CopyProperties       (OldGRI)" not in out:
+        return "fail", "SFXGRI.CopyProperties changed:\n%s" % out.strip()
+    return "ok", "LE3 GRI 35 props / 32 fns behind an alias; 4 net props, capability flags local-only"
+
+
 def main():
     failures = 0
     skips = 0

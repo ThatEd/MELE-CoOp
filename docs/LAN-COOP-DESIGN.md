@@ -615,6 +615,51 @@ Two things follow.
 
 Reproduce with `python -I tools/melepkg/mele_props.py startcheck`.
 
+## 4h. The campaign's replication info already carries multiplayer state on LE3 — and its capability flags are local
+
+`gricheck` reads the class each campaign points at with `GameReplicationInfoClass`. LE3's campaign GameInfo
+sets exactly one property and it is this one, so the class it names is the per-session state the campaign
+is built on:
+
+| build | campaign GameInfo points at | that class |
+|---|---|---|
+| LE1 | **`BioGameReplicationInfo`** | 3 properties, 1 function |
+| LE2 | *inherited* — stock `GameReplicationInfo` | (`BioGameReplicationInfo` is defined in `SFXGame.pcc` but the class default object does not point at it) |
+| LE3 | **`SFXGRISP`** | a **zero-override alias of `SFXGRI`**: 35 properties, 32 script functions |
+
+`SFXGRI` is the interesting one, because it is exactly the state a networked game needs, shipped inside a
+single-player campaign: `MaxUniquePlayers`, `bMultiplayer`, `bIsMultiplayerCharacter`, `bInCombat`,
+`bForceCombat`, `bAlwaysInCombat`, plus capability switches `bCanSave`, `bCanShowJournal`,
+`bCanShowCodex`, `bCanShowMap`, `bPlayerCanChangeSquad`, `bCanSpawnHenchmen`, `bPauseForCommand`,
+`bAllowTimeDilation` — and functions `NumPlayersInGame`, `NumLivingPlayers`, `IsJoinInProgress`,
+`NextLivingPlayer`, `IsGameOver`, `GetTeamScore`, `CopyProperties(OldGRI)`.
+
+`Default__SFXGRI` closes exactly with 18 properties: all eight capability switches default to **True**;
+`bMultiplayer`, `bIsMultiplayerCharacter` and `MaxUniquePlayers` are unset, so they take engine defaults.
+
+**The hope that followed from this does not survive measurement, and this section exists to say so.**
+Only **four** of the 35 properties carry `CPF_Net` (0x20):
+
+```
+replicated:  MaxUniquePlayers, WaveCoordinator, bForceCombat, bInCombat
+local-only:  bCanSave, bCanShowJournal, bCanShowCodex, bCanShowMap,
+             bPlayerCanChangeSquad, bCanSpawnHenchmen, bPauseForCommand, bAllowTimeDilation
+```
+
+So the capability flags are **local settings, not a replicated capability gate**. "The guest cannot save"
+cannot be done by flipping a bool the host owns; it has to be enforced where the save happens. What *is*
+replicated is combat state and the player ceiling — the right half to have, because those are the things
+that must not diverge.
+
+`CopyProperties(OldGRI)` is a state-transfer primitive the other two builds do not have: one GRI can be
+handed another's state wholesale.
+
+**A correction:** an earlier pass concluded LE1/LE2 "have no replication-info class at all". They both
+define `BioGameReplicationInfo`, and ME1's campaign points at it. What differs is order of magnitude —
+3 / 1 / 35 properties — and whether the campaign actually uses the class, which on ME2 it does not.
+
+Reproduce with `python -I tools/melepkg/mele_props.py gricheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from

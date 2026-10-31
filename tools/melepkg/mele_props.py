@@ -78,6 +78,7 @@ Usage:
     python -I tools/melepkg/mele_props.py joincheck                     # is the join path in script
     python -I tools/melepkg/mele_props.py spawncheck                    # what a guest pawn needs
     python -I tools/melepkg/mele_props.py startcheck                    # where a guest could stand
+    python -I tools/melepkg/mele_props.py gricheck                      # what replicates, what does not
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -2134,6 +2135,238 @@ def cmd_startcheck(args):
     return 0
 
 
+def cmd_gricheck(args):
+    """What the campaign's game-replication-info already carries, and whether it can gate a guest.
+
+    `Default__SFXGameInfoSP` sets exactly one property, `GameReplicationInfoClass=SFXGRISP`, so whatever
+    that class carries is the per-session replicated state the campaign already has. On LE3 it is a large
+    one, and it is **multiplayer-shaped**:
+
+        SFXGRISP : SFXGRI          defined in BIO_COMMON.pcc with 0 own properties and 0 functions
+        SFXGRI                    35 properties, 32 script functions, CDO closing exactly
+
+    Its properties include capability switches (`bCanSave`, `bCanShowJournal`, `bCanShowCodex`,
+    `bCanShowMap`, `bPlayerCanChangeSquad`, `bCanSpawnHenchmen`, `bPauseForCommand`,
+    `bAllowTimeDilation`), multiplayer state (`bMultiplayer`, `bIsMultiplayerCharacter`,
+    `MaxUniquePlayers`), and combat state (`bInCombat`, `bForceCombat`, `bAlwaysInCombat`).
+
+    **The obvious hope - that those capability flags are replicated, so a host could turn a guest's save
+    off centrally - does not hold, and this command exists to keep saying so.** Of the 35 properties,
+    exactly four carry `CPF_Net` (0x20): `MaxUniquePlayers`, `bForceCombat`, `bInCombat` and
+    `WaveCoordinator`. Every capability flag reads `0x00000000`. So they are local settings, and "the
+    guest cannot save" has to be enforced where the save happens, not by flipping a replicated bool.
+
+    What *is* replicated is combat state and the player ceiling, which is the right half to have: a host
+    owning `bInCombat` and `MaxUniquePlayers` is authority over the things that must not diverge.
+
+    LE3 also gets a state-transfer primitive the other builds lack: `SFXGRI.CopyProperties(OldGRI)`.
+
+    **The per-build comparison, corrected once already:** all three campaigns have a replication-info
+    class of their own, and saying otherwise was wrong. What differs is scale. ME1's `BioSPGame` points
+    at `BioGameReplicationInfo` (3 properties, 1 function); ME2 defines the same class in `SFXGame.pcc`
+    but its campaign does **not** point at it, so ME2 runs on the stock `GameReplicationInfo`; ME3's
+    points at `SFXGRISP`. So the *asset* is LE3-only even though the class name is shared.
+
+    Needs only named packages, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    cpf_net = 0x20
+    expected_net = {"MaxUniquePlayers", "bForceCombat", "bInCombat", "WaveCoordinator"}
+    capability = ("bCanSave", "bCanShowJournal", "bCanShowCodex", "bCanShowMap",
+                  "bPlayerCanChangeSquad", "bCanSpawnHenchmen", "bPauseForCommand",
+                  "bAllowTimeDilation")
+
+    def prop_flags(t, prop):
+        at = prop["serial_offset"] - t["displacement"] + mt.CPF_OFFSET_FLAGS
+        if at < 0 or at + 4 > len(t["buf"]):
+            return None
+        return struct.unpack_from("<i", t["buf"], at)[0] & 0xFFFFFFFF
+
+    def members(t, class_name):
+        owner = [e for e in t["exports"] if e["object_name"] == class_name and e["class_index"] == 0]
+        if not owner:
+            return None, None
+        kids = [e for e in t["exports"] if e["outer_index"] == owner[0]["index"] + 1]
+        props = [k for k in kids
+                 if mt.describe_index(k["class_index"], t["exports"], t["imports"]) not in
+                 ("Core.Function", "Core.ScriptStruct", "Core.State", "Core.Class")]
+        funcs = [k for k in kids
+                 if mt.describe_index(k["class_index"], t["exports"], t["imports"]) == "Core.Function"]
+        return props, funcs
+
+    print("1. Which replication-info class each campaign actually uses")
+    campaign_gri = {}
+    for game, package, campaign in (("ME1", "SFXGame.pcc", "BioSPGame"),
+                                    ("ME2", "SFXGame.pcc", "BioSPGame"),
+                                    ("ME3", "BIO_COMMON.pcc", "SFXGameInfoSP")):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", package)
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no %s" % (game, package))
+            continue
+        t = mt.build(path)
+        cdo = find_object(t, "Default__" + campaign)
+        if cdo is None:
+            problems.append("%s: no Default__%s in %s" % (game, campaign, package))
+            continue
+        tags, end, _why = parse_object(t, t["buf"], cdo)
+        want = cdo["serial_offset"] - t["displacement"] + cdo["serial_size"]
+        props = {tg["name"]: tg["value"] for tg in tags if tg["name"] != "None"}
+        gri = props.get("GameReplicationInfoClass")
+        campaign_gri[game] = gri
+        print("   %-4s Default__%-14s sets %d property(ies); GameReplicationInfoClass=%s"
+              % (game, campaign, len(props),
+                 gri if gri is not None else "inherited (stock GameReplicationInfo)"))
+        if end != want:
+            problems.append("%s: Default__%s did not close exactly" % (game, campaign))
+    if "BioGameReplicationInfo" not in str(campaign_gri.get("ME1")):
+        problems.append("ME1: its campaign no longer points at BioGameReplicationInfo")
+    if campaign_gri.get("ME2") is not None:
+        problems.append("ME2: its campaign now overrides GameReplicationInfoClass - it used to inherit "
+                        "the stock one, so re-read this section")
+    if "SFXGRISP" not in str(campaign_gri.get("ME3")):
+        problems.append("ME3: its campaign no longer points at SFXGRISP")
+
+    print()
+    print("2. How much each build's campaign-shaped replication info carries")
+    for game, package, classes in (("ME1", "SFXGame.pcc", ("BioGameReplicationInfo",)),
+                                   ("ME2", "SFXGame.pcc", ("BioGameReplicationInfo",)),
+                                   ("ME3", "SFXGame.pcc", ("SFXGRI",))):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", package)
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            continue
+        t = mt.build(path)
+        for cls_name in classes:
+            ps, fs = members(t, cls_name)
+            if ps is None:
+                problems.append("%s: no %s class" % (game, cls_name))
+                continue
+            net = sorted(p["object_name"] for p in ps
+                         if (prop_flags(t, p) or 0) & cpf_net)
+            print("   %-4s %-24s %2d property(ies), %2d function(s); replicated: %s"
+                  % (game, cls_name, len(ps), len(fs), ", ".join(net) or "none"))
+            if game != "ME3" and net != ["Temp"]:
+                problems.append("%s: %s replicated set changed to %s (was the single 'Temp' marker)"
+                                % (game, cls_name, net))
+    sfx = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "SFXGame.pcc")
+        if os.path.isfile(cand):
+            sfx = cand
+            break
+    alias = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "BIO_COMMON.pcc")
+        if os.path.isfile(cand):
+            alias = cand
+            break
+    if alias is None:
+        problems.append("ME3: no BIO_COMMON.pcc - SFXGRISP not read")
+    else:
+        t2 = mt.build(alias)
+        ps, fs = members(t2, "SFXGRISP")
+        if ps is None:
+            problems.append("ME3: no SFXGRISP class in BIO_COMMON.pcc")
+        else:
+            print("   ME3  %-24s %2d property(ies), %2d function(s) - a pure alias of SFXGRI"
+                  % ("SFXGRISP", len(ps), len(fs)))
+            if ps or fs:
+                problems.append("ME3: SFXGRISP now overrides %d propert(ies) and %d function(s) - it "
+                                "was a zero-override alias, so re-read it" % (len(ps), len(fs)))
+
+    print()
+    print("3. LE3's capability flags: defaulted on, and NOT replicated")
+    if sfx is None:
+        problems.append("ME3: no SFXGame.pcc - SFXGRI not read")
+    else:
+        t = mt.build(sfx)
+        props, funcs = members(t, "SFXGRI")
+        cdo = find_object(t, "Default__SFXGRI")
+        if props is None or cdo is None:
+            problems.append("ME3: SFXGRI or its CDO missing")
+        else:
+            tags, end, _why = parse_object(t, t["buf"], cdo)
+            want = cdo["serial_offset"] - t["displacement"] + cdo["serial_size"]
+            defaults = {tg["name"]: tg["value"] for tg in tags if tg["name"] != "None"}
+            print("   Default__SFXGRI sets %d property(ies), closure %s"
+                  % (len(defaults), "EXACT" if end == want else "MISMATCH"))
+            if end != want:
+                problems.append("ME3: Default__SFXGRI did not close exactly")
+            net = set()
+            for p in props:
+                f = prop_flags(t, p)
+                if f is None:
+                    problems.append("ME3: %s flags unreadable" % p["object_name"])
+                    continue
+                if f & cpf_net:
+                    net.add(p["object_name"])
+            print("   replicated: %s" % ", ".join(sorted(net)))
+            local = [f for f in capability if f not in net]
+            print("   capability flags present and local-only: %s"
+                  % (", ".join(local) if local else "(none)"))
+            if net != expected_net:
+                problems.append("ME3: the CPF_Net set changed to %s - the 'capability flags are local' "
+                                "conclusion depends on it" % sorted(net))
+            leaked = [f for f in capability if f in net]
+            if leaked:
+                problems.append("ME3: capability flag(s) %s are now replicated - the gating plan gets "
+                                "simpler and should be rewritten" % leaked)
+            for flag in capability:
+                if flag not in defaults:
+                    problems.append("ME3: capability flag %s is no longer defaulted in the CDO" % flag)
+                elif defaults[flag] is not True:
+                    problems.append("ME3: capability flag %s defaults to %r, not True"
+                                    % (flag, defaults[flag]))
+            for flag in ("bMultiplayer", "bIsMultiplayerCharacter"):
+                if flag in defaults:
+                    problems.append("ME3: %s is now defaulted to %r - re-read the MP gating plan"
+                                    % (flag, defaults[flag]))
+
+    print()
+    print("4. State transfer and player counting")
+    if sfx is not None and props is not None:
+        wanted = ("CopyProperties", "NumPlayersInGame", "NumLivingPlayers", "IsJoinInProgress",
+                  "NextLivingPlayer", "GetPlayerLevel", "IsGameOver", "GetTeamScore")
+        funcs_by_name = {f["object_name"]: f for f in funcs}
+        for name in wanted:
+            e = funcs_by_name.get(name)
+            if e is None:
+                print("   %-20s ABSENT" % name)
+                continue
+            sig = mt.signature(t, t["buf"], e)
+            print("   %-20s (%s) -> %s"
+                  % (name, ", ".join(n for n, _ty, _s, _o in sig["params"]), sig["returns"]))
+        if "CopyProperties" not in funcs_by_name:
+            problems.append("ME3: SFXGRI.CopyProperties is gone - no GRI state-transfer primitive")
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: all three campaigns have a replication-info class, but the scale differs by an "
+          "order of magnitude - LE1 3 properties / LE2 1 / LE3 35 with 32 functions behind a "
+          "zero-override SFXGRISP alias; LE3 replicates only combat state and its player ceiling, "
+          "while every capability flag is local-only, so gating a guest's save/journal/codex has to "
+          "happen where the action happens")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -2211,6 +2444,10 @@ def main():
     p = sub.add_parser("startcheck",
                        help="where a second player could stand, counted across every map")
     p.set_defaults(func=cmd_startcheck)
+
+    p = sub.add_parser("gricheck",
+                       help="what the campaign's game-replication-info carries, and what replicates")
+    p.set_defaults(func=cmd_gricheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

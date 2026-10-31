@@ -5327,3 +5327,81 @@ have one, how many have only one* - 60% on LE3 - and that changed the placement 
 **Rule 85. When the engine grew a flag, it grew it for a reason.** `bNoCollisionFail` appears on ME3's
 `GameInfo.SpawnDefaultPawnFor` and not on ME1/ME2's. That is not decoration; it is the build telling you
 that two things can want the same spot.
+
+## 2026-10-31 (replication info): LE3 ships a multiplayer state bag, but its capability flags do not replicate
+
+Follow-on from the join and spawn work. The campaign GameInfo sets exactly one property, so the class it
+names is the per-session state the game is built on. `gricheck` reads it on all three builds:
+
+| build | `GameReplicationInfoClass` on the campaign GameInfo | that class |
+|---|---|---|
+| ME1 | **`BioGameReplicationInfo`** | 3 properties, 1 function |
+| ME2 | *inherited* (stock `GameReplicationInfo`) | `BioGameReplicationInfo` defined in `SFXGame.pcc`, not pointed at |
+| ME3 | **`SFXGRISP`** | zero-override alias of `SFXGRI`: **35 properties, 32 functions** |
+
+**Correction to my own first pass:** I wrote that LE1/LE2 have no campaign replication info. Both define
+`BioGameReplicationInfo` and ME1's campaign uses it. The difference is scale (3 / 1 / 35) and whether the
+campaign points at it, not existence.
+
+### What SFXGRI carries
+
+35 properties, 32 script functions, all with bytecode. The relevant ones:
+
+- capability switches: `bCanSave`, `bCanShowJournal`, `bCanShowCodex`, `bCanShowMap`,
+  `bPlayerCanChangeSquad`, `bCanSpawnHenchmen`, `bPauseForCommand`, `bAllowTimeDilation`
+- multiplayer state: `MaxUniquePlayers`, `bMultiplayer`, `bIsMultiplayerCharacter`
+- combat state: `bInCombat`, `bForceCombat`, `bAlwaysInCombat`
+- functions: `NumPlayersInGame`, `NumLivingPlayers`, `IsJoinInProgress`, `NextLivingPlayer`,
+  `GetPlayerLevel`, `IsGameOver`, `GetTeamScore`, `CopyProperties(OldGRI)`
+
+`Default__SFXGRI` closes **exactly** with 18 properties. All eight capability switches default to **True**.
+`bMultiplayer`, `bIsMultiplayerCharacter` and `MaxUniquePlayers` are unset, so they take engine defaults
+(False / 0).
+
+### The hypothesis it suggested, and the measurement that killed it
+
+If those capability switches replicated, co-op could gate a guest centrally: set `bCanSave = false` on the
+host's GRI and every client would see it. That would remove the need to hook the save action at all.
+
+They do not replicate. Exactly four of the 35 properties carry `CPF_Net` (0x20):
+
+```
+replicated:  MaxUniquePlayers, WaveCoordinator, bForceCombat, bInCombat
+local-only:  bCanSave, bCanShowJournal, bCanShowCodex, bCanShowMap,
+             bPlayerCanChangeSquad, bCanSpawnHenchmen, bPauseForCommand, bAllowTimeDilation
+```
+
+Every capability flag reads `0x00000000`. So they are **local settings**, and "the guest cannot save"
+has to be enforced where the save happens - which is the `SFXSeqAct_SaveGame` / `BioSeqAct_AutoSave`
+surface `storycheck` already measured, not a bool.
+
+The flag word is not noise: the same word discriminates within the class (`WaveDelay` reads
+`0x00004000`, `m_pClientEffectPool` reads `0x04400008`, `DifficultyHandler` reads `0x00000001`), and it
+matches known-replicated stock properties like `bInCombat`.
+
+### What is worth having
+
+1. **Combat state replicates and the player ceiling replicates.** `bInCombat`, `bForceCombat`,
+   `MaxUniquePlayers` are host-owned by construction. Combat divergence - the single most visible co-op
+   bug class - is already the engine's problem on LE3.
+2. **`CopyProperties(OldGRI)` exists.** One GRI can be handed another's whole state. For a late join or a
+   level transition that is a free state-transfer primitive with no serialization to invent.
+3. **`IsJoinInProgress()`, `NumPlayersInGame()`, `NumLivingPlayers()`, `NextLivingPlayer()` are script
+   functions on the campaign's own class**, so "how many players are there" is a call, not a hook.
+4. **`MaxUniquePlayers` is a replicated byte and unset (0) in the campaign.** That is the multiplayer
+   player ceiling sitting at its floor, on the class the campaign actually instantiates.
+
+### Rules
+
+**Rule 86. "It has the field" is not "it replicates the field".** `bCanSave` existing on a
+`GameReplicationInfo` subclass is a strong hint that it is a remote capability - and it is exactly wrong
+here. The `CPF_Net` bit decided it, and it is one read per property.
+
+**Rule 87. Measure the control, not just the target.** The +24 flag word could have been anything. What
+made it a measurement was that it varies *within* SFXGRI (0x0, 0x20, 0x2000, 0x4000, 0x400000,
+0x4400008, 0x1, 0x2) and matches stock replicated properties.
+
+**Rule 88. A correction is worth more than a tidy claim.** "LE1/LE2 have no replication info" was clean,
+confident and false - both define `BioGameReplicationInfo` and ME1 uses it. The real finding is the
+35-versus-3 scale and ME2 defining a class its campaign does not point at, which is the dormant-mechanism
+pattern again.
