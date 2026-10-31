@@ -5970,3 +5970,100 @@ is a much smaller question than the one I started with.
 `GroupNames`, `WorldInfo`, `Squad` - each is both a class/property name and a nested member name in these
 packages. Every lookup that matters should filter by owner, and the ones that do not are the ones that quietly
 return the wrong export.
+
+## 2026-11-01 (bytecode decode attempt): the stock UE3 grammar gets 12-22%, not enough to trust
+
+Tried to break the ceiling noted several times in this log - that every remaining co-op question needs a real
+bytecode decoder. Got the real grammar and still did not get a usable one. Recording the whole attempt because
+the failure mode is instructive.
+
+### What was obtained
+
+The genuine `EExprToken` table and, more importantly, `UStruct::SerializeExpr` - the function that defines each
+token's operand grammar - from `CodeRedModding/UnrealEngine3`:
+`Development/Src/Core/Inc/UnStack.h` (blob 774de7f) and `Development/Src/Core/Inc/ScriptSerialization.h`
+(blob ee67f58). That is UE3 source, not a UE4 approximation, so the grammar is right in principle. Key facts
+read from it:
+
+- `CodeSkipSizeType` is **WORD** (2 bytes), used by `EX_Jump`, `EX_JumpIfNot`, `EX_Skip`,
+  `EX_DefaultParmValue`, `EX_Context`, `EX_Iterator`, `EX_Conditional`, and the dynarray ops.
+- `XFER_PROP_POINTER` and `XFER_FUNC_POINTER` are `XFERPTR`, width `sizeof(ScriptPointerType)`.
+- `EX_StringConst` is a NUL-terminated byte string; `EX_UnicodeStringConst` a NUL-terminated WORD string.
+- `XFERNAME()` transfers an `FName`, which in ME:LE packages is 8 bytes (index + number).
+- `EX_Case` transfers a WORD and only parses a boolean expression when it is not `MAXWORD`.
+
+### The pointer width is measurable, and it is 4
+
+`ScriptPointerType` depends on the target. Tried both, over the same functions:
+
+| build | ptr=8 closed | ptr=4 closed |
+|---|---|---|
+| ME1 | 7.8% | **23.5%** |
+| ME2 | 5.8% | **22.5%** |
+| ME3 | 6.2% | **16.7%** |
+
+4 wins by 3x on every build, so `ScriptPointerType` is 32-bit here - **UE3 script pointers were serialized as
+32-bit even though the game is a 64-bit executable.** That is a real, useful fact, and the closure-rate test is
+what established it.
+
+### The result, over every function rather than a sample
+
+| build | functions with bodies | closed exactly | desynced | unsupported token |
+|---|---|---|---|---|
+| ME1 | 4,314 | 945 (**21.9%**) | 188 (4.4%) | 3,181 (73.7%) |
+| ME2 | 4,265 | 959 (**22.5%**) | 213 (5.0%) | 3,093 (72.5%) |
+| ME3 | 4,209 | 528 (**12.5%**) | 188 (4.5%) | 3,493 (83.0%) |
+
+**Not usable.** A decoder that closes on a fifth of functions cannot be trusted on any *particular* function,
+and the ones this project cares about (`AtCapacity`, `ProcessClientTravel`, `ModifyPlayer`) are exactly the ones
+that would need checking individually.
+
+### Why it fails, and why more case-writing would not fix it
+
+The unsupported tokens are things like `0x5e`, `0x61`, `0x62`, `0x64`, `0x65` - **gaps in the stock table** -
+plus native-final-function tokens `0x70`-`0xFF`. Two readings:
+
+1. **This build's table genuinely has extra opcodes** below `EX_ExtendedNative`, so the grammar is incomplete.
+2. **The walks are desyncing and reading operands as tokens**, which produces exactly this signature: garbage
+   bytes landing in the unused ranges.
+
+The second is more likely, because writing cases for `0x5e`/`0x62`/`0x65` one at a time did not raise the
+closure rate - it stayed within noise (23.9% -> 23.5% -> 22.5% on ME1 as cases were added). **A grammar fix
+would raise the rate; a desync does not.** That is the diagnostic, and it says the error is upstream: some
+token already being decoded consumes the wrong number of bytes.
+
+The most likely culprit is `FName` width. This project measured 8-byte `FName` in *property* tags, but
+`XFERNAME()` in bytecode may be a 4-byte index here, or the number half may be absent.
+
+**Tested, and refuted.** Closure rate by name-operand width, over every function:
+
+| name operands | ME1 | ME3 |
+|---|---|---|
+| 8 bytes (two u32) | **21.9%** | **12.5%** |
+| 4 bytes (one u32) | 17.6% | 12.4% |
+| 12 bytes (three u32) | 16.8% | 12.3% |
+
+8 bytes is best, so `XFERNAME()` really is the same 8-byte `FName` the property tags use. The desync is
+somewhere else and was not found.
+
+### What was NOT concluded
+
+I did not use the partial decoder to answer any of the open questions. `AtCapacity`'s 139 bytes, the
+`ClientTravel` forwarder, and which functions call `ServerTravel` all remain **undecoded**, and the earlier
+"does not read GroupNames"-style false negatives are the reason to be strict about this.
+
+### Rules
+
+**Rule 109. A closure rate is the only honest test of a decoder, and it has to be measured over everything.**
+Sampling 288 functions reported a plausible-looking 16-18%; the full 4,209 reported 12.5%. Neither is good, but
+only the full measurement shows that adding ten correct opcode cases changed nothing - which is the signal that
+the problem is not the table.
+
+**Rule 110. When fixing the table does not help, the cursor is already wrong.**
+`23.9% -> 23.5% -> 22.5%` while adding cases is a monotone non-improvement. That pattern means errors happen
+before the unknown token is reached, so every case added is treating a symptom.
+
+**Rule 111. Do not report a decode you cannot close.**
+The tempting move here is to accept the 20% that closes and describe the rest from the earlier string and
+name-index scans. Those scans already produced one hard false negative in this project (`Mutator.*` looked
+uncalled because virtual calls use names). The open questions stay open.

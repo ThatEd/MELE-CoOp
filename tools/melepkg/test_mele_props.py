@@ -1341,6 +1341,53 @@ def t_mutator_route():
                   "SFXMutator template is named through Mutator.GroupNames which AddMutator reads")
 
 
+@case("UE3 script pointers are 32-bit here, measured by bytecode closure rate")
+def t_bytecode_pointer_width():
+    """The one solid fact from the bytecode-decode attempt, and the honest limit around it.
+
+    `UStruct::SerializeExpr` uses `XFERPTR` for property and function pointers, whose width is
+    `sizeof(ScriptPointerType)` - machine dependent. Trying both widths over every function with a body and
+    requiring the walk to land exactly on the end:
+
+        ptr=8:  1.9% closed        ptr=4:  12.5% closed        (ME3 Engine.pcc)
+
+    4 wins by more than 6x, so script pointers were serialized 32-bit even though the game is 64-bit.
+
+    **But 12.5% is not a decoder.** The test asserts both halves: that ptr=4 is the better fit, and that the
+    absolute rate is low - so nobody mistakes this module for a disassembler later. Ten extra opcode cases were
+    added without moving the rate, which means the walks desync before reaching an unknown token.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ue3_decode", os.path.join(HERE, "ue3_decode.py"))
+    dec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dec)
+    base = None
+    tables = mp.load_tables()
+    pkg = tables.load_pkg()
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "Engine.pcc")
+        if os.path.isfile(cand):
+            base = cand
+            break
+    if not base:
+        return "skip", "install absent"
+    t = tables.build(base)
+    c4, _d4, _u4, total4 = dec.closure(t, 4, 8)
+    c8, _d8, _u8, total8 = dec.closure(t, 8, 8)
+    if total4 != total8 or total4 < 1000:
+        return "fail", "function counts disagree (%d vs %d)" % (total4, total8)
+    if c4 <= c8 * 2:
+        return "fail", ("ptr=4 no longer clearly better: %d vs %d - re-read the pointer-width claim"
+                        % (c4, c8))
+    share = 100.0 * c4 / total4
+    if share > 40.0:
+        # Not a failure of the project - a genuine improvement - but the docs must be updated to match.
+        return "fail", ("the decoder now closes on %.1f%% of functions; the 'partial, not a disassembler' "
+                        "claim in the docs should be revisited" % share)
+    return "ok", ("ptr=4 closes %d/%d (%.1f%%) vs ptr=8 %d/%d - 32-bit script pointers, and still not a "
+                  "disassembler" % (c4, total4, share, c8, total8))
+
+
 def main():
     failures = 0
     skips = 0
