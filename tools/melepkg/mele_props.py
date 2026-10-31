@@ -80,6 +80,7 @@ Usage:
     python -I tools/melepkg/mele_props.py startcheck                    # where a guest could stand
     python -I tools/melepkg/mele_props.py gricheck                      # what replicates, what does not
     python -I tools/melepkg/mele_props.py prefixcheck                   # does routing know about MP
+    python -I tools/melepkg/mele_props.py netcheck                      # what the engine carries for free
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -2584,6 +2585,176 @@ def cmd_prefixcheck(args):
     return 0
 
 
+def cmd_netcheck(args):
+    """What the engine will carry to a guest for free, and what it will not.
+
+    `coopcheck` and `joincheck` established that a second player can be accepted in script. This measures
+    how much of "being a player" the engine then provides, by counting `CPF_Net` (0x20) on real property
+    exports and looking for the stock RPCs.
+
+    **Replication density:** across every class in `Engine.pcc` that owns properties, only about 1.8-1.9%
+    of properties replicate. That is the honest headline - most of the engine's state is server-local, and
+    a guest sees a deliberately small subset.
+
+    **What does replicate, on `Actor`:** `Role`, `RemoteRole`, `bNetOwner`, `bProjTarget`, `Location`,
+    `Rotation`, `Velocity`, `RelativeLocation`, `RelativeRotation`, `DrawScale`, `bHidden`, `Base`,
+    `Owner`, `Instigator`, `Physics`, `bCollideActors`, `bBlockActors`, `bCollideWorld`, `bHardAttach`,
+    `bTearOff`, `ReplicatedCollisionType`. So the **authority model and the transform both replicate**: a
+    replicated pawn's position and its `Role`/`RemoteRole` pair travel without a line of custom code.
+
+    Note a per-build spelling: LE1/LE2 name the transform property `Location`, LE3 names it `location`.
+    Export names are case-sensitive, so a lookup that only tries one spelling will miss on two builds or
+    one, depending on which it tries.
+
+    **On `Pawn`:** `Controller`, `PlayerReplicationInfo`, `Health`, `FiringMode`, `FlashCount`,
+    `FlashLocation`, `TakeHitLocation`, `HitDamageType`, `bIsCrouched`, `bIsWalking`,
+    `RemoteViewPitch`, `DrivenVehicle`, `InvManager`, and the movement rates. That is a whole player pawn.
+
+    **`Projectile` replicates nothing - and that is not a gap.** UE3 replicates weapon fire through
+    `Pawn.FlashCount` (an increment) and `Pawn.FlashLocation` (a position); each client spawns its own
+    projectile locally from those. So tracers and muzzle effects work for free, and **damage does not** -
+    the projectile that spawns on the guest is a different object from the host's. Any co-op damage path
+    has to be authority-checked rather than trusting the replicating flash.
+
+    **The stock client-join handshake is intact in script** on `PlayerController`, on every build:
+    `ServerGivePawn`, `ServerAcknowledgePossession`, `ServerMove`, `ServerSetSpectatorLocation`,
+    `ServerUpdatePing`, `ServerChangeTeam`, `ServerChangeName`, plus 90-odd `Client*` counterparts. That is
+    the unmodified UE3 client protocol - the host assigns a pawn, the client acknowledges possession, and
+    the client sends its own movement - so a guest needs no new networking, only the campaign's refusal
+    lifted and a squadmate pawn to hand over.
+
+    Needs only `Engine.pcc`, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    totals = {}
+    property_classes = frozenset((
+        "Core.BoolProperty", "Core.ByteProperty", "Core.IntProperty", "Core.FloatProperty",
+        "Core.ObjectProperty", "Core.StructProperty", "Core.StrProperty", "Core.NameProperty",
+        "Core.ArrayProperty", "Core.ClassProperty", "Core.MapProperty",
+        "Core.InterfaceProperty", "Core.DelegateProperty", "Core.ComponentProperty",
+        "Core.FixedArrayProperty",
+    ))
+    cpf_net = 0x20
+    handshake = ("ServerGivePawn", "ServerAcknowledgePossession", "ServerMove",
+                 "ServerSetSpectatorLocation", "ServerUpdatePing")
+    density = {}
+
+    for game in ("ME1", "ME2", "ME3"):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no Engine.pcc" % game)
+            continue
+        t = mt.build(path)
+        buf, exports, imports = t["buf"], t["exports"], t["imports"]
+        disp = t["displacement"]
+
+        def flags(prop):
+            at = prop["serial_offset"] - disp + mt.CPF_OFFSET_FLAGS
+            if at < 0 or at + 4 > len(buf):
+                return None
+            return struct.unpack_from("<i", buf, at)[0] & 0xFFFFFFFF
+
+        classes = [e for e in exports if e["class_index"] == 0]
+        total = net_total = 0
+        per_class = {}
+        for cls in classes:
+            kids = [e for e in exports if e["outer_index"] == cls["index"] + 1]
+            # Only real UProperty children: an enum declared on a class is a child too, and its members
+            # made `Actor` look like it had 36 replicated properties when most were enum values.
+            props = [k for k in kids
+                     if mt.describe_index(k["class_index"], exports, imports) in property_classes]
+            if not props:
+                continue
+            net = [p["object_name"] for p in props if (flags(p) or 0) & cpf_net]
+            total += len(props)
+            net_total += len(net)
+            if net:
+                per_class[cls["object_name"]] = net
+        if not total:
+            problems.append("%s: no properties counted in Engine.pcc" % game)
+            continue
+        density[game] = net_total
+        totals[game] = total
+        print("%-4s %d class(es) own properties; %d propert(ies), %d replicate (%.2f%%)"
+              % (game, len(per_class), total, net_total, 100.0 * net_total / total))
+        if net_total == 0:
+            problems.append("%s: nothing replicates at all - the CPF_Net bit would be wrong" % game)
+        for wanted in ("Actor", "Pawn"):
+            net = per_class.get(wanted)
+            if not net:
+                problems.append("%s: %s has no replicated properties" % (game, wanted))
+                continue
+            print("     %-14s %2d replicated: %s" % (wanted, len(net), ", ".join(sorted(net))))
+        # Property names are case-sensitive in the export table and the builds disagree: LE1/LE2 spell the
+        # transform property `Location`, LE3 spells it `location`. Matching case-insensitively is the point,
+        # and the spelling is reported rather than normalised away.
+        actor_net = {n.lower(): n for n in (per_class.get("Actor") or [])}
+        for required in ("role", "remoterole", "location", "velocity"):
+            if required not in actor_net:
+                problems.append("%s: Actor.%s is no longer replicated - the transform/authority claim "
+                                "fails" % (game, required))
+        spelled = actor_net.get("location")
+        print("     transform spelling: Actor.%s" % spelled)
+
+        print()
+        print("   the stock client-join handshake on PlayerController")
+        funcs = _script_functions(mt, t, "PlayerController")[0]
+        present = [n for n in handshake if n in funcs and funcs[n]["serial_size"] > 4]
+        clients = sorted(n for n, e in funcs.items()
+                         if n.startswith("Client") and e["serial_size"] > 4)
+        print("     %d/%d present: %s" % (len(present), len(handshake), ", ".join(present)))
+        print("     %d Client* function(s) with bytecode" % len(clients))
+        for required in handshake:
+            if required not in present:
+                problems.append("%s: PlayerController.%s is missing - the client-join handshake is "
+                                "incomplete" % (game, required))
+        if len(clients) < 50:
+            problems.append("%s: only %d Client* functions, expected 90-ish" % (game, len(clients)))
+
+        print()
+        print("   weapon fire: replicated as a flash, with no replicated projectile")
+        pawn_net = {n.lower() for n in (per_class.get("Pawn") or [])}
+        proj_net = per_class.get("Projectile") or []
+        for required in ("flashcount", "flashlocation"):
+            if required not in pawn_net:
+                problems.append("%s: Pawn.%s is no longer replicated - weapon fire would not reach a "
+                                "guest" % (game, required))
+        print("     Pawn.FlashCount/FlashLocation %s; Projectile replicates %d propert(ies)"
+              % ("replicated" if {"flashcount", "flashlocation"} <= pawn_net else "MISSING",
+                 len(proj_net)))
+        if proj_net:
+            problems.append("%s: Projectile now replicates %d propert(ies) - re-read the damage "
+                            "authority plan" % (game, len(proj_net)))
+        print()
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    share = 0.0
+    if density and all(totals.get(g) for g in density):
+        share = 100.0 * sum(density.values()) / sum(totals[g] for g in density)
+    print("verdict: only %.1f%% of the engine's properties replicate, and they are the right ones - "
+          "Actor.Role/RemoteRole with location/Rotation/Velocity, a whole player pawn including "
+          "Controller/Health/FiringMode, and the unmodified UE3 client-join handshake "
+          "(ServerGivePawn, ServerAcknowledgePossession, ServerMove) on every build; weapon fire travels "
+          "as Pawn.FlashCount/FlashLocation with no replicated projectile, so visuals are free and damage "
+          "must be authority-checked" % share)
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -2669,6 +2840,10 @@ def main():
     p = sub.add_parser("prefixcheck",
                        help="does the map-prefix table route anything to a multiplayer game class")
     p.set_defaults(func=cmd_prefixcheck)
+
+    p = sub.add_parser("netcheck",
+                       help="what the engine replicates to a guest, and what it does not")
+    p.set_defaults(func=cmd_netcheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

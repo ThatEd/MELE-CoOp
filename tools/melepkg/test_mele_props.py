@@ -1060,6 +1060,52 @@ def t_prefix_and_player_stack():
     return "ok", "3 SP prefixes, one SP alias, and SFXGame supplies PC/PRI/HUD to any spawned player"
 
 
+@case("the engine replicates the transform, a whole player pawn, and the stock join handshake")
+def t_replication_surface():
+    """What co-op gets for free, measured rather than assumed.
+
+    Only ~1.8% of the engine's properties replicate, and they are the right ones: `Actor.Role`/`RemoteRole`
+    with `Location`/`Rotation`/`Velocity`, and a whole `Pawn` - `Controller`, `Health`, `FiringMode`,
+    `FlashCount`, `FlashLocation`, `PlayerReplicationInfo`, the movement rates.
+
+    The stock client-join handshake is also intact in script on every build: `ServerGivePawn`,
+    `ServerAcknowledgePossession`, `ServerMove`, `ServerSetSpectatorLocation`, `ServerUpdatePing`, plus
+    60-odd `Client*` counterparts. So a guest does not need new networking.
+
+    The negative is asserted too: `Projectile` replicates **nothing** - weapon fire travels as
+    `Pawn.FlashCount`/`FlashLocation` and each client spawns its own projectile, so visuals are free and
+    damage has to be authority-checked.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_netcheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_netcheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        line = [l for l in out.splitlines() if l.startswith(game)]
+        if not line:
+            return "fail", "%s density row missing:\n%s" % (game, out.strip())
+        if "replicate (" not in line[0]:
+            return "fail", "%s row malformed: %s" % (game, line[0])
+        if "5/5 present: ServerGivePawn, ServerAcknowledgePossession, ServerMove" not in out:
+            return "fail", "the join handshake changed:\n%s" % out.strip()
+    if out.count("transform spelling") != 3:
+        return "fail", "the transform spelling was not reported per build:\n%s" % out.strip()
+    # ME3 spells it lowercase; LE1/LE2 do not. That difference is the reason the lookup is case-insensitive.
+    if "transform spelling: Actor.Location" not in out:
+        return "fail", "LE1/LE2 no longer spell the transform Location:\n%s" % out.strip()
+    if "transform spelling: Actor.location" not in out:
+        return "fail", "LE3 no longer spells the transform location:\n%s" % out.strip()
+    if "Projectile replicates 0 propert(ies)" not in out:
+        return "fail", "Projectile started replicating - re-read the damage authority plan:\n%s" % out.strip()
+    return "ok", "1.8% of engine properties replicate; 5/5 join RPCs x3; Projectile replicates nothing"
+
+
 def main():
     failures = 0
     skips = 0

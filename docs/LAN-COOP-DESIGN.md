@@ -716,6 +716,44 @@ removed, not a stripped single-player engine.
 
 Reproduce with `python -I tools/melepkg/mele_props.py prefixcheck`.
 
+## 4j. What the engine already replicates to a guest
+
+`netcheck` counts `CPF_Net` on real property exports across every class in `Engine.pcc`, and looks for the
+stock RPCs. This is the "how much does co-op get for free" question.
+
+**Density: only ~1.8% of the engine's properties replicate** — 145 of 7,922 on LE1, 147 of 7,929 on LE2,
+146 of 7,923 on LE3. Most of the engine's state is server-local by design.
+
+**On `Actor` (20–21 properties):** `Role`, `RemoteRole`, `bNetOwner`, `bProjTarget`, `Location`/`location`,
+`Rotation`, `Velocity`, `RelativeLocation`, `RelativeRotation`, `DrawScale`, `bHidden`, `Base`, `Owner`,
+`Instigator`, `Physics`, `bCollideActors`, `bBlockActors`, `bCollideWorld`, `bHardAttach`, `bTearOff`,
+`ReplicatedCollisionType`.
+
+So **the authority model and the transform both replicate**. A replicated pawn's position and its
+`Role`/`RemoteRole` pair travel with no custom code — `RemoteRole` is what tells a client it is looking at a
+simulated proxy.
+
+**On `Pawn` (25–26 properties):** `Controller`, `PlayerReplicationInfo`, `Health`, `FiringMode`,
+`FlashCount`, `FlashLocation`, `TakeHitLocation`, `HitDamageType`, `bIsCrouched`, `bIsWalking`,
+`RemoteViewPitch`, `DrivenVehicle`, `InvManager`, and the movement rates. That is a whole player pawn.
+
+**The stock client-join handshake is intact in script** on `PlayerController`, on **every build**, 5/5:
+`ServerGivePawn`, `ServerAcknowledgePossession`, `ServerMove`, `ServerSetSpectatorLocation`,
+`ServerUpdatePing` — plus 62–65 `Client*` functions with bytecode. That is unmodified UE3: the host assigns
+a pawn, the client acknowledges possession, the client sends its own movement.
+
+**And the negative that matters most: `Projectile` replicates nothing.** Weapon fire travels as
+`Pawn.FlashCount` (an increment) and `Pawn.FlashLocation` (a position); each client spawns its own projectile
+locally from those. So tracers, muzzle flashes and fire sounds work for free — and **damage does not**,
+because the guest's projectile is a different object from the host's. Any co-op damage path has to be
+authority-checked rather than trusting the replicating flash.
+
+**A per-build trap worth writing down:** LE1/LE2 name the transform property **`Location`**, LE3 names it
+**`location`**. Export names are case-sensitive, so a lookup that tries one spelling finds it on two builds
+or one, depending which it tried. That is how this check first failed.
+
+Reproduce with `python -I tools/melepkg/mele_props.py netcheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from

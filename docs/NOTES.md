@@ -5512,3 +5512,72 @@ mod has to work with.
 An `X` and a `FindLocalX` together mean the game has several `X` and needs to identify which one is "mine".
 That pair is a cheaper signal of multiplayer readiness than any flag, because it exists only when there is
 more than one of something.
+
+## 2026-10-31 (replication surface): 1.8% of the engine replicates, and it is the right 1.8%
+
+New command `netcheck`. `joincheck` established a second player can be accepted in script; this measures how
+much of "being a player" the engine then provides for free, by counting `CPF_Net` (0x20) on **real property
+exports** and looking for the stock RPCs.
+
+### Density
+
+| build | classes owning properties | properties | replicated |
+|---|---|---|---|
+| ME1 | 35 | 7,922 | **145 (1.83%)** |
+| ME2 | 36 | 7,929 | **147 (1.85%)** |
+| ME3 | 36 | 7,923 | **146 (1.84%)** |
+
+**First attempt was wrong and the way it was wrong is the lesson.** Counting every child of a class produced
+`Actor` with 36 replicated properties, 6 of which were `TRACEFLAG_*` and `EPhysics` - **enum members**, not
+properties. An enum declared on a class is a child of that class, so a filter that only excludes
+Function/ScriptStruct/State/Class counts them. Restricting to the `UProperty` subclasses dropped the density
+from a nonsense 4.7% to 1.8% and made `Actor`'s list look like what it is.
+
+### What replicates, and why it is the right set
+
+`Actor` (20-21): `Role`, `RemoteRole`, `bNetOwner`, `bProjTarget`, `Location`, `Rotation`, `Velocity`,
+`RelativeLocation`, `RelativeRotation`, `DrawScale`, `bHidden`, `Base`, `Owner`, `Instigator`, `Physics`,
+`bCollideActors`, `bBlockActors`, `bCollideWorld`, `bHardAttach`, `bTearOff`, `ReplicatedCollisionType`.
+
+`Pawn` (25-26): `Controller`, `PlayerReplicationInfo`, `Health`, `FiringMode`, `FlashCount`, `FlashLocation`,
+`TakeHitLocation`, `HitDamageType`, `bIsCrouched`, `bIsWalking`, `RemoteViewPitch`, `DrivenVehicle`,
+`InvManager`, `AccelRate`, `AirControl`, `AirSpeed`, `GroundSpeed`, `WaterSpeed`, `JumpZ`, and the
+root-motion interpolation pair.
+
+So **the authority model and the transform both replicate**, and **the pawn is a complete player pawn**. A
+replicated pawn's position, its `Role`/`RemoteRole` pair, its health and its firing state travel with no
+custom code. That is the single most useful fact in this whole log for co-op: the guest is not a special case
+to the engine, it is a client.
+
+### The handshake is stock
+
+`PlayerController`, every build, 5/5 present with bytecode:
+
+    ServerGivePawn, ServerAcknowledgePossession, ServerMove, ServerSetSpectatorLocation, ServerUpdatePing
+
+plus 62-65 `Client*` functions. `ServerGivePawn` (host assigns), `ServerAcknowledgePossession` (client
+confirms) and `ServerMove` (client sends movement) are the unmodified UE3 client protocol. **A guest needs no
+new networking** - only the campaign's refusal lifted and a squadmate pawn to hand over.
+
+### The negative that matters
+
+**`Projectile` replicates zero properties on all three builds.** Weapon fire travels as `Pawn.FlashCount` (an
+increment) and `Pawn.FlashLocation` (a position); each client spawns its own projectile locally from those.
+Tracers, muzzle flashes and fire audio therefore work for free, and **damage does not** - the guest's
+projectile is a different object from the host's. Every co-op damage path has to be authority-checked rather
+than trusting the flash.
+
+### Rule 91. A class's children are not all properties.
+An enum declared on a class is a child export of that class. Counting children as properties inflated
+`Actor` by 15 fields, all of them `TRACEFLAG_*`/`EPhysics`-style enum values, and inflated the whole density
+figure from 1.8% to 4.7%. Filter on the class being a `UProperty` subclass.
+
+### Rule 92. Replicated isn't the same as synchronised.
+`FlashCount` replicating does not mean the shot replicates - UE3 replicates *the trigger count* and lets each
+machine spawn its own projectile. The consequences differ completely: visuals yes, damage no. Read what a
+replicated field *is used for* before assuming what it delivers.
+
+### Rule 93. Case matters across builds.
+`Actor.Location` on LE1/LE2, `Actor.location` on LE3. My required-name list used the lowercase form and the
+check failed on two builds - which is the check working. A cross-build lookup on a serialized name has to be
+case-insensitive, and the spelling is worth reporting rather than normalising.
