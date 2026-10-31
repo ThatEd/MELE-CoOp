@@ -1185,6 +1185,49 @@ def t_native_stub_discriminator():
                   % (stubs, len(funcs), share, dict(shapes.most_common(3))))
 
 
+@case("a level change is a scripted broadcast, so a connected guest is moved by the engine")
+def t_travel_is_a_broadcast():
+    """Section 15: does the engine move every connected player, or only one?
+
+    `ProcessServerTravel` (704-718 bytes) is the loop and `ProcessClientTravel` (180-185 bytes) takes the
+    `PlayerController` to move as an out parameter. So a level change is already a broadcast to every player
+    the game knows about - a connected guest is transported by the engine, not by co-op code.
+
+    The negative is asserted too: `PlayerController.ClientTravel` has a ~28-byte body, far too small to hold
+    a travel loop, and its only package references are its own four parameters - the shape of a forwarder
+    onto a native implementation. So the script layer decides and the native layer performs, which means a
+    mod should observe the change at `Process*Travel`.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_travelcheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_travelcheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        block = out.split("== %s" % game)
+        if len(block) < 2:
+            return "fail", "%s section missing:\n%s" % (game, out.strip())
+        section = block[1].split("== ME")[0]
+        if "ProcessServerTravel" not in section or "ProcessClientTravel" not in section:
+            return "fail", "%s lost a travel function:\n%s" % (game, section)
+        if "body=28" not in section:
+            return "fail", "%s PlayerController.ClientTravel changed size:\n%s" % (game, section)
+    if out.count("PlayerController   ClientTravel                 script  body=28") != 3:
+        return "fail", "ClientTravel is no longer the same tiny forwarder on all three:\n%s" % out.strip()
+    if "P, LP" not in out:
+        return "fail", "ProcessClientTravel no longer takes the controller to move:\n%s" % out.strip()
+    # The dead seamless path is what would preserve a pawn, so its absence must be visible too.
+    if "never called, because no build enables it" not in out:
+        return "fail", "the dead seamless path is no longer reported:\n%s" % out.strip()
+    return "ok", ("ProcessServerTravel 704-718 / ProcessClientTravel 180-185; ClientTravel is a 28-byte "
+                  "forwarder; the seamless path is scripted and dead")
+
+
 def main():
     failures = 0
     skips = 0

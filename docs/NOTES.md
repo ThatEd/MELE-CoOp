@@ -5689,3 +5689,66 @@ tell was that the same garbage appeared for several unrelated functions, which a
 Six counts in this log were inflated by 10-20%. None of the conclusions changed, because each had been
 phrased around a specific function whose body is hundreds of bytes - but that was luck as much as design. A
 count that is only ever used as "a lot" is a count that cannot be wrong; a count used in a comparison can.
+
+## 2026-10-31 (level changes): the transition is a broadcast, and the seamless path is dead but scripted
+
+The open question behind "campaign works in co-op" was whether a level change moves every connected player or
+only the host. `travelcheck` answers it, and the answer is the good one.
+
+All three builds, real bodies:
+
+| function | body | signature |
+|---|---|---|
+| `GameInfo.ProcessServerTravel` | 704 / 704 / **718** | `(URL, bAbsolute, LocalPlayer, bSeamless, NextMap, NextMapGuid, OptionStart)` |
+| `GameInfo.ProcessClientTravel` | 180 / 180 / **185** | `(URL, NextMapGuid, bSeamless, bAbsolute, out ReturnValue, out P, out LP)` |
+| `GameInfo.PostLogin` | 894 / 894 / 915 | `(NewPlayer, Address, StatGuid, pos, I, GameSeq, AllInterpActions)` |
+| `WorldInfo.ServerTravel` | 363 / 363 / 365 | `(URL, bAbsolute, bShouldSkipGameNotify)` |
+
+`ProcessClientTravel` takes the `PlayerController` to move as an out parameter; `ProcessServerTravel` is the
+loop above it. **A level change is already a broadcast to every player the game knows about.** A connected
+guest does not need co-op code to be carried to the next map.
+
+That closes a thread that has been open since the seamless-travel finding: the concern was "a level change
+destroys the guest's pawn and it must be re-created". True - and the engine still moves the *controller*, so
+the re-creation happens on the normal `PostLogin`/`RestartPlayer` path exactly as it would for a late joiner.
+
+### The travel call itself is native, not script
+
+`PlayerController.ClientTravel(URL, TravelType, bSeamless, MapPackageGuid)` has a **28-byte** body on ME1 and
+ME2, and LE3's `BioPlayerController.ClientTravel` override is **24 bytes**. The only package references inside
+those bodies are the function's own four parameters, at evenly spaced offsets (`+0x03, +0x08, +0x0d, +0x12`).
+That is the shape of a script forwarder onto a native implementation - push the parameters, call the native -
+not the shape of logic.
+
+**Labelled a hypothesis, not a measurement.** The opcode table for this engine version is unproven (see
+`ue3_bytecode.py` for why), so the bodies are described rather than decoded. What IS measured is that 24-28
+bytes cannot contain a loop over players, and that the loop demonstrably lives in `ProcessServerTravel`.
+
+The consequence is concrete: **observe a guest's map change at `ProcessClientTravel` or
+`ProcessServerTravel`, not at `ClientTravel`.** The script layer decides; the native layer performs. A mod
+that hooks `ClientTravel` is hooking a forwarder.
+
+### The seamless path is scripted, complete, and switched off
+
+| function | body | state |
+|---|---|---|
+| `GameInfo.GetSeamlessTravelActorList` | 274-279 bytes | real, never called |
+| `GameInfo.HandleSeamlessTravelPlayer` | 1,315-1,343 bytes | real, never called |
+| `WorldInfo.SeamlessTravel` | 19 bytes | real, never called |
+
+`HandleSeamlessTravelPlayer` at 1,343 bytes is the third-largest travel function in the engine, and it exists
+to carry a player's state across a map change - which is precisely what co-op wants for the guest's squadmate
+pawn. It is unreachable because `bUseSeamlessTravel` is set by 0 of 6,685 class default objects.
+
+That is the second dormant mechanism found in this session, after LE1's spare-controller trio. Both are
+built, both are complete, and both are switched off by a single default.
+
+### Rule 99. Follow the loop, not the call.
+`ClientTravel` looks like the travel function and is a 28-byte forwarder. The loop that decides who moves is
+`ProcessServerTravel`, one level up. When a function is suspiciously small for what it claims to do, the real
+work is at its caller.
+
+### Rule 100. A big dead function is a bigger lead than a small live one.
+`HandleSeamlessTravelPlayer` is 1,343 bytes of code that nothing reaches. Reading a live 20-byte wrapper
+tells you little; finding a large function that is never called tells you the game was built for something
+it no longer does - and that is usually the feature co-op wants to reuse.

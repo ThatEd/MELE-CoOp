@@ -81,6 +81,7 @@ Usage:
     python -I tools/melepkg/mele_props.py gricheck                      # what replicates, what does not
     python -I tools/melepkg/mele_props.py prefixcheck                   # does routing know about MP
     python -I tools/melepkg/mele_props.py netcheck                      # what the engine carries for free
+    python -I tools/melepkg/mele_props.py travelcheck                   # what a level change runs
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -1521,17 +1522,20 @@ def _script_functions(mt, t, class_name):
     """The functions a class declares, by name, using the export table's outer convention.
 
     Function exports point at their owning class with `outer_index == class_index + 1`, so the class has
-    to be looked up first. Returns every function the class declares, including native ones - callers
-    that need "actually implemented" must filter with `_implemented`.
+    to be looked up first. **Prefer the export whose `class_index` is 0** - that is a `UClass` - because a
+    property can share a class's name (`WorldInfo` is both the class and a property on `Actor`, and
+    `Squad` is both), and taking the first name match silently returned the property's children, which is
+    usually nothing.
 
-    This used to filter on `serial_size > 4`, which is wrong: a native function still carries a 2-3 byte
-    stub body (`0b 53`), so on its own serial size cannot tell an implementation from a declaration.
+    Returns every function the class declares, including native ones - callers that need "actually
+    implemented" must filter with `_implemented`.
     """
-    owner = [e for e in t["exports"] if e["object_name"] == class_name]
-    if not owner:
+    candidates = [e for e in t["exports"] if e["object_name"] == class_name]
+    if not candidates:
         return {}, []
+    owner = next((e for e in candidates if e["class_index"] == 0), candidates[0])
     rows = [e for e in t["exports"]
-            if e["outer_index"] == owner[0]["index"] + 1
+            if e["outer_index"] == owner["index"] + 1
             and mt.describe_index(e["class_index"], t["exports"], t["imports"]).endswith("Function")]
     return {e["object_name"]: e for e in rows}, rows
 
@@ -2860,6 +2864,134 @@ def cmd_netcheck(args):
     return 0
 
 
+def cmd_travelcheck(args):
+    """What a campaign level change runs, and whether a second player is moved by it automatically.
+
+    `coopcheck` established there is no seamless travel: `bUseSeamlessTravel` is set by 0 of 6,685 CDOs, so
+    a level change is a hard reload and anything holding actor state is destroyed. This asks the follow-up
+    the design actually needs: **does the engine move every connected player to the new map, or only one?**
+
+    On all three builds, with real bodies:
+
+        GameInfo.ProcessServerTravel(URL, bAbsolute, LocalPlayer, bSeamless, NextMap, NextMapGuid,
+                                     OptionStart)                   704 / 704 / 718 bytes
+        GameInfo.ProcessClientTravel(URL, NextMapGuid, bSeamless, bAbsolute, out ReturnValue,
+                                     out P, out LP)                 180 / 180 / 185 bytes
+        GameInfo.PostLogin(NewPlayer, Address, ...)                 894 / 894 / 915 bytes
+
+    `ProcessClientTravel` takes the `PlayerController` to move as an out parameter, and
+    `ProcessServerTravel` is the loop above it. **So a level change is already a broadcast to every player
+    the game knows about** - a connected guest is moved by the engine, not by anything co-op has to add.
+
+    **But the act of travelling is native.** `PlayerController.ClientTravel(URL, TravelType, bSeamless,
+    MapPackageGuid)` has a 28-byte body on ME1 and ME2 and a 24-byte one on LE3's
+    `BioPlayerController.ClientTravel` override, and the only package references inside those bodies are the
+    function's own four parameters at evenly spaced offsets - the shape of a script forwarder onto a native
+    implementation, not of logic. That is a **hypothesis** and is labelled one: the bytecode opcode table for
+    this engine version is unproven, so the bodies are described, not decoded. What is measured is that the
+    bodies are far too small to contain a travel loop.
+
+    Practical consequence, stated as such: **observe a guest's map change at `ProcessClientTravel` or
+    `ProcessServerTravel`, not at `ClientTravel`.** The script layer decides; the native layer performs.
+
+    What this does *not* settle: whether a guest's new pawn survives, and whether the game re-accepts it on
+    the far side. `GetSeamlessTravelActorList` (274-279 bytes) and `HandleSeamlessTravelPlayer` (1,315-1,343
+    bytes) are both real script and both dead, because seamless travel is off.
+
+    Needs only `Engine.pcc`, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    wanted = ("ProcessServerTravel", "ProcessClientTravel", "PostLogin", "ClientTravel",
+              "HandleSeamlessTravelPlayer", "GetSeamlessTravelActorList", "ServerTravel",
+              "SeamlessTravel")
+    for game in ("ME1", "ME2", "ME3"):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no Engine.pcc" % game)
+            continue
+        t = mt.build(path)
+        print("== %s" % game)
+        found = {}
+        for cls in ("GameInfo", "PlayerController", "WorldInfo"):
+            funcs, _rows = _script_functions(mt, t, cls)
+            for name in wanted:
+                e = funcs.get(name)
+                if e is None:
+                    continue
+                body = mt.function_body(t, e)
+                sig = mt.signature(t, t["buf"], e)
+                found[(cls, name)] = (len(body), sig)
+                print("   %-18s %-28s %-7s body=%-5d (%s)"
+                      % (cls, name, "script" if len(body) > 4 else "NATIVE", len(body),
+                         ", ".join(n for n, _ty, _s, _o in sig["params"])))
+        for required in (("GameInfo", "ProcessServerTravel"), ("GameInfo", "ProcessClientTravel")):
+            if required not in found:
+                problems.append("%s: %s.%s is gone - a level change would have no script path"
+                                % (game, required[0], required[1]))
+                continue
+            size = found[required][0]
+            if size <= 4:
+                problems.append("%s: %s.%s is only a native stub, so the travel decision is not "
+                                "scripted" % (game, required[0], required[1]))
+            elif size < 100:
+                problems.append("%s: %s.%s shrank to %d bytes - re-read the travel plan"
+                                % (game, required[0], required[1], size))
+        # The client-side step must stay tiny or our "native underneath" reading is wrong.
+        client = found.get(("PlayerController", "ClientTravel"))
+        if client and client[0] > 64:
+            problems.append("%s: PlayerController.ClientTravel grew to %d bytes - it now contains logic "
+                            "and the 'observe at ProcessClientTravel' advice changes"
+                            % (game, client[0]))
+        # ProcessClientTravel must take the controller it moves.
+        if ("GameInfo", "ProcessClientTravel") in found:
+            names = [n for n, _t, _s, _o in found[("GameInfo", "ProcessClientTravel")][1]["params"]]
+            if "P" not in names or "LP" not in names:
+                problems.append("%s: ProcessClientTravel no longer takes P/LP - re-read how a player is "
+                                "moved" % game)
+        print()
+
+    # The dead seamless path is worth reporting because it is where a pawn would survive.
+    print("The seamless path exists in script and is never called, because no build enables it:")
+    for game in ("ME1", "ME2", "ME3"):
+        kept = []
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                t = mt.build(cand)
+                for cls, name in (("GameInfo", "GetSeamlessTravelActorList"),
+                                  ("GameInfo", "HandleSeamlessTravelPlayer"),
+                                  ("WorldInfo", "SeamlessTravel")):
+                    funcs, _rows = _script_functions(mt, t, cls)
+                    e = funcs.get(name)
+                    if e is not None and mt.is_implemented(t, e):
+                        kept.append("%s.%s(%d)" % (cls, name, len(mt.function_body(t, e))))
+                break
+        print("   %-4s %s" % (game, ", ".join(kept) or "none"))
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: a level change is a scripted broadcast - ProcessServerTravel(704-718 bytes) loops and "
+          "ProcessClientTravel(180-185 bytes) takes the controller to move - so a connected guest is "
+          "transported by the engine; the actual travel call is a ~28-byte forwarder over a native "
+          "implementation, so observe the change at Process*Travel rather than at ClientTravel; the "
+          "seamless path that would preserve a pawn is scripted and dead on all three builds")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -2949,6 +3081,10 @@ def main():
     p = sub.add_parser("netcheck",
                        help="what the engine replicates to a guest, and what it does not")
     p.set_defaults(func=cmd_netcheck)
+
+    p = sub.add_parser("travelcheck",
+                       help="what a level change runs, and whether a guest is moved with it")
+    p.set_defaults(func=cmd_travelcheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

@@ -793,6 +793,44 @@ or one, depending which it tried. That is how this check first failed.
 
 Reproduce with `python -I tools/melepkg/mele_props.py netcheck`.
 
+## 4k. A level change is a scripted broadcast, so a connected guest is moved by the engine
+
+`travelcheck` answers the question the whole "campaign works in co-op" goal turns on: when the campaign
+changes maps, does the engine move **every** connected player, or only the host?
+
+On all three builds, with real bodies:
+
+| function | body | signature |
+|---|---|---|
+| `GameInfo.ProcessServerTravel` | **704 / 704 / 718** | `(URL, bAbsolute, LocalPlayer, bSeamless, NextMap, NextMapGuid, OptionStart)` |
+| `GameInfo.ProcessClientTravel` | **180 / 180 / 185** | `(URL, NextMapGuid, bSeamless, bAbsolute, out ReturnValue, out **P**, out **LP**)` |
+| `GameInfo.PostLogin` | 894 / 894 / 915 | `(NewPlayer, Address, …)` |
+| `WorldInfo.ServerTravel` | 363 / 363 / 365 | `(URL, bAbsolute, bShouldSkipGameNotify)` |
+
+`ProcessClientTravel` takes the controller to move as an out parameter and `ProcessServerTravel` is the loop
+above it. **So a level change is already a broadcast to every player the game knows about — a connected guest
+is transported by the engine, not by anything co-op has to add.** Combined with §4j (the transform
+replicates) and §4d–§4f (the spawn and roster paths exist), the level transition is not the hard part the
+design assumed.
+
+**But the act of travelling is native.** `PlayerController.ClientTravel(URL, TravelType, bSeamless,
+MapPackageGuid)` has a **28-byte** body on LE1/LE2 and LE3's `BioPlayerController.ClientTravel` override is
+24 bytes, and the only package references inside those bodies are the function's own four parameters at
+evenly spaced offsets — the shape of a script forwarder onto a native implementation, not of logic. That is
+labelled a **hypothesis**: the opcode table for this engine version is unproven, so the bodies are described
+rather than decoded. What is measured is that they are far too small to contain a travel loop.
+
+The practical consequence: **observe a guest's map change at `ProcessClientTravel` / `ProcessServerTravel`,
+not at `ClientTravel`.** The script layer decides; the native layer performs.
+
+**And the seamless path that would preserve a pawn is scripted and dead.** `GetSeamlessTravelActorList`
+(274–279 bytes), `HandleSeamlessTravelPlayer` (1,315–1,343 bytes) and `WorldInfo.SeamlessTravel` (19 bytes)
+all have real bodies on all three builds and none is reachable, because `bUseSeamlessTravel` is never set
+(§1). So the machinery for carrying actors across a level change exists and is switched off — a dormant
+mechanism, and a candidate for the same treatment as LE1's spare-controller slot (§4f).
+
+Reproduce with `python -I tools/melepkg/mele_props.py travelcheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from
