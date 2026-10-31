@@ -3355,6 +3355,38 @@ def cmd_mutatorcheck(args):
             if got != want:
                 problems.append("%s: Mutator.%s parms is 0x%x, expected 0x%x - the portable override changed"
                                 % (game, hook, got, want))
+        # 3. Ordering inside InitGame: does InitMutator run after the MaxPlayers clamp?
+        init = _function_on(mt, t, "GameInfo", "InitGame")
+        if init is None:
+            problems.append("%s: no GameInfo.InitGame" % game)
+        else:
+            body = mt.function_body(t, init)
+            marks = {}
+            for hit in ("MaxPlayers", "MaxPlayersAllowed", "AddMutator", "InitMutator"):
+                if hit in names:
+                    marks.setdefault(hit, []).append(names.index(hit))
+                for prop in t["exports"]:
+                    if prop["object_name"] == hit and \
+                            mt.describe_index(prop["outer_index"], t["exports"], t["imports"]) == \
+                            "export:GameInfo":
+                        marks.setdefault(hit, []).append(prop["index"] + 1)
+            seen = {}
+            for i in range(0, max(0, len(body) - 3)):
+                v = struct.unpack_from("<i", body, i)[0]
+                for hit, indexes in marks.items():
+                    if v in indexes and hit not in seen:
+                        seen[hit] = i
+            if "InitMutator" in seen and "MaxPlayersAllowed" in seen:
+                after = seen["InitMutator"] > seen["MaxPlayersAllowed"]
+                print("   InitGame order: clamp at +0x%x, InitMutator at +0x%x -> %s"
+                      % (seen["MaxPlayersAllowed"], seen["InitMutator"],
+                         "mutator runs AFTER the clamp" if after else "mutator runs BEFORE the clamp"))
+                if not after:
+                    problems.append("%s: InitMutator no longer runs after the MaxPlayers clamp - a mutator "
+                                    "could not correct the player count" % game)
+            else:
+                problems.append("%s: could not locate both the clamp and InitMutator in InitGame" % game)
+
         print()
 
     print()
@@ -3365,8 +3397,9 @@ def cmd_mutatorcheck(args):
         return 1
     print("verdict: the mutator chain is live on all three builds - InitGame/Login/PostLogin/RestartPlayer/"
           "Logout all call into it, MutatorIsAllowed is !WorldInfo.IsDemoBuild() so it is open in retail, "
-          "and the hook signatures are identical everywhere; so ModifyLogin/ModifyPlayer/NotifyLogin are a "
-          "supported in-game way to accept a guest, give it a pawn and set up its state, loadable with "
+          "InitMutator runs AFTER the MaxPlayers clamp so a mutator can correct the player count, and the "
+          "hook signatures are identical everywhere; so ModifyLogin/ModifyPlayer/NotifyLogin/InitMutator are "
+          "a supported in-game way to accept a guest, give it a pawn and set up its state, loadable with "
           "?Mutator= and needing no binary patch - provided the class can be cooked in and the option "
           "survives the campaign's own travel URLs, neither of which is measured here")
     return 0

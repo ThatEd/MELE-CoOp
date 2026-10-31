@@ -1274,7 +1274,6 @@ def t_capacity_chain():
         return "fail", "the campaign ceiling is no longer 1:\n%s" % out.strip()
     return "ok", "InitGame clamps to MaxPlayersAllowed; AtCapacity reads MaxPlayers; Login uses MaxedOut"
 
-
 @case("the mutator chain is a supported in-game hook into the join path, open in retail")
 def t_mutator_route():
     """Is there a way to hook the join path without patching a binary? Yes, and it has always shipped.
@@ -1331,7 +1330,9 @@ def t_mutator_route():
                     game, want, params, parms, body)
         if "WorldInfo.IsDemoBuild" not in body:
             return "fail", "%s gate no longer mentions IsDemoBuild:\n%s" % (game, body)
-    return "ok", "6/6 join-path hooks wired x3, gate is !IsDemoBuild, signatures identical"
+        if "mutator runs AFTER the clamp" not in body:
+            return "fail", "%s InitMutator no longer runs after the clamp:\n%s" % (game, body)
+    return "ok", "6/6 join-path hooks wired x3, gate is !IsDemoBuild, InitMutator after the clamp"
 
 
 def main():

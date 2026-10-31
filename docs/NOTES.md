@@ -5885,3 +5885,40 @@ Nine sessions of design went into "where do we put the co-op logic". `GameInfo` 
 in `Login`, `Mutator.ModifyPlayer` in `SetPlayerDefaults`, and `Mutator.NotifyLogin` in
 `GenericPlayerInitialization`, on every build, with identical signatures, gated only on not being a demo. The
 extension point was already there and had a name; what was missing was reading a virtual call correctly.
+
+## 2026-10-31 (ordering): InitMutator runs after the clamp, so a mutator can fix the player count itself
+
+The mutator route only helps if a mutator can run *after* `InitGame` has clamped `MaxPlayers` to 1. Measured
+by bytecode offset inside `InitGame`:
+
+| build | `MaxPlayers`/`MaxPlayersAllowed` | `AddMutator` | `InitMutator` |
+|---|---|---|---|
+| ME1 / ME2 | `+0x29` | `+0x302` | **`+0x487`** |
+| ME3 | `+0x2b` | `+0x31c` | **`+0x4b0`** |
+
+`InitMutator` sits roughly 0x450 bytes past the clamp, on all three builds. So a mutator's `InitMutator` can
+write `MaxPlayers` after the ceiling has already done its damage - which means **the whole capacity problem can
+be solved from inside the supported extension path**, with no int patching and no binary modification.
+
+That reduces the LE3 co-op plan to a single deliverable:
+
+1. a `Mutator` subclass, loaded with `?Mutator=<class>`
+2. `InitMutator` sets `MaxPlayers` to the intended count
+3. `ModifyLogin` accepts the guest
+4. `ModifyPlayer` hands the guest a squadmate pawn
+5. `NotifyLogin` sets up per-player state
+
+Steps 2-5 are four overrides with signatures measured identical across all three builds. The engine supplies
+movement (`ServerMove`, never replaced), transforms (`Actor`/`Pawn` replication), roster membership
+(`AddMember(Pawn)`) and map changes (`ProcessServerTravel` broadcast).
+
+### Rule 105. Offset order inside a function is a real measurement.
+"It runs after the clamp" was an assumption about UE3's `InitGame` until the two markers' bytecode offsets were
+compared. A 0x450-byte gap is not a subtle ordering; it is the difference between the mutator route working
+and not working, and it cost one scan to establish.
+
+### Rule 106. The remaining risks are all outside the packages.
+The mutator route's three unknowns - can the class be cooked, does `?Mutator=` survive the campaign's own
+travel URLs, does a mutator's effect replicate - are all things no amount of package reading can answer. That
+is the point at which offline work is genuinely done, and it should be said plainly rather than papered over
+with another measurement.

@@ -222,9 +222,18 @@ matters, and the chain is populated from the travel URL.
 | `FindPlayerStart` | `(Player, InTeam, IncomingName, out ReturnValue)` | `0x24` |
 
 **So the three things the design needs are already hook names:** accept the guest is `ModifyLogin`, give the
-guest a pawn is `ModifyPlayer`, set up the guest's per-player state is `NotifyLogin`. Plus `InitMutator`,
-which runs during `InitGame` *after* the `MaxPlayers` clamp — so a mutator can correct `MaxPlayers` from
-inside the supported path rather than by patching an int.
+guest a pawn is `ModifyPlayer`, set up the guest's per-player state is `NotifyLogin`.
+
+**And `InitMutator` runs after the capacity clamp**, which closes the loop with §2b. Measured by bytecode
+offset inside `InitGame`:
+
+| build | clamp at | `AddMutator` at | `InitMutator` at |
+|---|---|---|---|
+| LE1 / LE2 | `+0x29` | `+0x302` | **`+0x487`** |
+| LE3 | `+0x2b` | `+0x31c` | **`+0x4b0`** |
+
+So a mutator can raise `MaxPlayers` *after* `InitGame` has already clamped it to 1 — from inside the supported
+path, with no int patching at all.
 
 Combined with §2b, that makes the LE3 path: load a mutator with `?Mutator=<class>`, have `InitMutator` raise
 the effective player count, `ModifyLogin` accept the guest, and `ModifyPlayer` hand it a squadmate pawn.
