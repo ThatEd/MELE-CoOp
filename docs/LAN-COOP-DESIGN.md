@@ -422,6 +422,71 @@ the *named* integer variables, which is why the names are not the whole set.
 
 Reproduce with `python -I tools/melepkg/mele_props.py plotcheck`.
 
+## 4d. Accepting a second player is a class override, not a binary patch
+
+`joincheck` answers the question the whole plan rests on: is the code that decides about a joining
+player still in script, and does a second player have anywhere to come from?
+
+**The entire UE3 join chain is script-implemented on `Engine.GameInfo` on all three builds** —
+`PreLogin`, `Login`, `PostLogin`, `AtCapacity`, `RestartPlayer`, `SpawnDefaultPawnFor`,
+`ChoosePlayerStart`, `FindPlayerStart`, `SpawnPlayerController`, 9 of 9, with real bytecode rather than
+native stubs. So the acceptance decision is reachable from script everywhere, and co-op does not need a
+native patch to *decide* about a second player.
+
+What differs is how much of that each campaign game class already replaces:
+
+| build | campaign class | script overrides | touches the join chain |
+|---|---|---|---|
+| LE1 | `BioSPGame` | 18 | `SpawnDefaultPawnFor`, `FindPlayerStart` |
+| LE2 | `BioSPGame` | 4 | **nothing** |
+| LE3 | `SFXGame` | 80 | `RestartPlayer`, `SpawnDefaultPawnFor` |
+
+ME2 is the outlier in the other direction: its campaign class overrides only `Reset`,
+`SetupPartyMemberAttributes`, `SpawnGameOverGUI` and `StartMatch`, so its join path is the stock
+`GameInfo` one — the least modified, and therefore the one to test the plain listen-server path on.
+
+**On LE3 the runtime campaign GameInfo is `SFXGameInfoSP`**, a subclass of `SFXGame` living in
+`BIO_COMMON.pcc`. Its class default object sets exactly **one** property:
+`GameReplicationInfoClass=SFXGRISP`. Everything else, including the `MaxPlayersAllowed=1` clamp in §5,
+is inherited from `SFXGame`.
+
+And `BIO_COMMON.pcc`'s own export list begins with the path `..\BIOGame\MPContent\BIO_COMMON.upk` —
+the package the campaign game class ships in is a **multiplayer content package**. That is not an
+inference: it is the first name in the export table.
+
+`SFXGame` still carries the multiplayer machinery, all with bytecode:
+
+| function | shape |
+|---|---|
+| `InitializeTeams` | `(idx: int) -> void` |
+| `ChangeTeam` | `(Other, N: int, bNewTeam: bool) -> bool` |
+| `GetPlayerCount` | `(PC, out PlayerCount: int) -> int` |
+| `GetDownedPlayerCount` | present |
+| `OnJoinInProgress` / `RegisterJoinInProgressDelegate` | present |
+| `CalculatedNetSpeed` | `() -> int` |
+| `SpawnPlayerForResume`, `SpawnEnemySquad`, `RestartFromWave` | present |
+| **`SpawnNewPlayerPawn`** | 17 parameters, parms block **0x90**, `-> Object` |
+
+`SpawnNewPlayerPawn(bCombatPawn, bInjuredPawn, bUseCasualAppearance, ForcedCasualID,
+bCreateAndShowWeapons, PC, SpawnLocation, SpawnRotation, out ReturnValue, Engine, firstName, Origin,
+Notoriety, out ResultPawn, PlayerArchetype, faceCode, CharacterGUID)` takes a **`PlayerController` and a
+`PlayerArchetype`** and returns a pawn. That is the guest's spawn: it does not have to be invented, and
+its parameters cover appearance (`PlayerArchetype`, `faceCode`, `ForcedCasualID`) and provenance
+(`Origin`, `Notoriety`, `CharacterGUID`) which is exactly what a squadmate-as-player needs.
+
+So the picture for LE3 is: **the pawn spawn exists and is script-visible; the multiplayer team,
+player-count and join-in-progress scaffolding exists; the campaign class is packaged from MP content;
+and the only thing turned off is capacity.** That is a much better starting position than "write a
+co-op mod from scratch", and it makes raising capacity plus calling the existing spawn the first
+experiment rather than the tenth.
+
+Caveats, stated rather than implied: `MaxPlayersAllowed=1` is still an active clamp (§5), the join path
+being in script says nothing about a client surviving a level load, and `SFXGameInfoMP_LobbyUnusedDummy`
+shipping in `SFXGame.pcc` is evidence that MP was disabled deliberately rather than removed — worth
+knowing before assuming a reintroduction is free.
+
+Reproduce with `python -I tools/melepkg/mele_props.py joincheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from

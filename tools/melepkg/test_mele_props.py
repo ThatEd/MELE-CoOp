@@ -725,6 +725,46 @@ def t_plot_state_budget():
     return "ok", ("1,066 / 1,356 flags over 2,019 / 2,051 slots (~8 KB); LE3 = 7 arrays, 17,655 slots")
 
 
+@case("the join path is script on every build, and LE3 still has a guest-pawn spawn")
+def t_join_chain_is_script():
+    """Whether accepting a second player needs a native patch or a class override.
+
+    The UE3 join chain is implemented in script on `Engine.GameInfo`, so a mod can decide about a
+    second player in script on all three builds. That is the difference between "co-op is a class
+    override" and "co-op is a binary patch", so it is pinned rather than assumed.
+
+    On LE3 the campaign game class is `SFXGameInfoSP`, which inherits the multiplayer machinery
+    `SFXGame` still carries - teams, a player count, join-in-progress delegates and
+    `SpawnNewPlayerPawn`, which takes a `PlayerController` and a `PlayerArchetype` and returns a pawn.
+    The guest pawn therefore has an existing, script-visible spawn path; what is missing is a caller
+    that accepts a second player.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_joincheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_joincheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        line = [l for l in out.splitlines() if l.strip().startswith(game) and "9/9 in script" in l]
+        if not line:
+            return "fail", "%s join chain is not fully in script:\n%s" % (game, out.strip())
+        for fn in ("Login", "AtCapacity", "RestartPlayer"):
+            if fn not in line[0]:
+                return "fail", "%s lost %s from its join chain" % (game, fn)
+    if "SFXGameInfoSP lives in BIO_COMMON.pcc" not in out:
+        return "fail", "LE3 campaign game class moved:\n%s" % out.strip()
+    if "MPContent" not in out:
+        return "fail", "the MPContent provenance of BIO_COMMON.pcc is gone:\n%s" % out.strip()
+    if "SpawnNewPlayerPawn: 17 parameter(s)" not in out:
+        return "fail", "SpawnNewPlayerPawn changed shape:\n%s" % out.strip()
+    return "ok", "9/9 chain functions in script x3; LE3 SpawnNewPlayerPawn(17 params, 0x90)"
+
+
 def main():
     failures = 0
     skips = 0

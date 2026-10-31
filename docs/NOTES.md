@@ -4961,3 +4961,103 @@ the struct that holds both.
 **Rule 70. When a level's streaming depends on state, the state must arrive first.** That ordering is
 invisible in any per-function reading and obvious from one signature; it is the kind of constraint that
 turns into "the guest is standing in geometry that does not exist" bug reports later.
+
+## 2026-10-31 (the join path): script on all three builds, and LE3 still has MP scaffolding
+
+`joincheck` is new. It answers the question everything else rests on: is the code that decides about a
+joining player still in script, and does a second player have anywhere to come from?
+
+### The chain is script, 9 of 9, on every build
+
+`Engine.GameInfo` implements the whole UE3 join chain in script with real bytecode, not native stubs:
+
+| function | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| `PreLogin` | script | script | script |
+| `Login` | script (2,126 B) | script | script (2,165 B) |
+| `PostLogin` | script | script | script |
+| `AtCapacity` | script | script | script (177 B) |
+| `RestartPlayer` | script (1,357 B) | script | script |
+| `SpawnDefaultPawnFor` | script | script | script |
+| `ChoosePlayerStart` / `FindPlayerStart` | script | script | script |
+| `SpawnPlayerController` | script | script | script |
+
+So accepting a second player is a **class override, not a native patch**. That was assumed before; now
+it is measured.
+
+### What each campaign class already replaces
+
+| build | campaign class | package | script overrides | join-chain members |
+|---|---|---|---|---|
+| ME1 | `BioSPGame` | `SFXGame.pcc` | 18 | `SpawnDefaultPawnFor`, `FindPlayerStart` |
+| ME2 | `BioSPGame` | `SFXGame.pcc` | **4** | **none** |
+| ME3 | `SFXGame` | `SFXGame.pcc` | 80 | `RestartPlayer`, `SpawnDefaultPawnFor` |
+
+ME1's 18 include `SpawnPlayer`, `SpawnPawn`, `SpawnHenchman`, `SpawnPlayerSquadMembers`,
+`CalculateHenchmanSpawn`, `SetupPartyMemberAttributes`, `FindStartingNavPoint`,
+`AdjustHeightOfPawnSpawnedAtNavigationPoint` - it spawns its own squad, which is why ME1 is the build
+where "the client is a squadmate" is closest to what the game already does.
+
+ME2's 4 are `Reset`, `SetupPartyMemberAttributes`, `SpawnGameOverGUI`, `StartMatch`: its join path is
+plain `GameInfo`, so it is the cleanest place to test the stock listen-server path.
+
+### LE3's campaign game class is `SFXGameInfoSP`, and it ships from MP content
+
+- The runtime campaign GameInfo is **`SFXGameInfoSP`**, super `Core.SFXGame`, in **`BIO_COMMON.pcc`**
+  (also referenced from `BioP_End001.pcc`).
+- `BIO_COMMON.pcc`'s export list starts with the path `..\BIOGame\MPContent\BIO_COMMON.upk`. Not an
+  inference - it is the first entry in the export table. The campaign game class is packaged from a
+  **multiplayer content** package.
+- `Default__SFXGameInfoSP` sets exactly **one** property: `GameReplicationInfoClass = SFXGRISP`.
+  Everything else, including `MaxPlayersAllowed=1`, is inherited from `SFXGame`.
+- `SFXGameInfoSP` itself overrides only `AwardCreditPercent`, `AwardCredits`, `AwardItem`, `AwardXP`,
+  `FindPlayerStart`, `PostBeginPlay`.
+
+So the clamp is on the *base* class, not on the class actually used, which is why raising it is a one
+property edit on `SFXGame` rather than a per-game rewrite.
+
+### The guest pawn already has a spawn function
+
+`SFXGame` still carries, all with bytecode:
+
+- `SpawnNewPlayerPawn` - **17 parameters, parms block 0x90**, `-> Object`:
+  `bCombatPawn, bInjuredPawn, bUseCasualAppearance, ForcedCasualID, bCreateAndShowWeapons, PC,
+  SpawnLocation, SpawnRotation, ReturnValue, Engine, firstName, Origin, Notoriety, ResultPawn,
+  PlayerArchetype, faceCode, CharacterGUID`.
+- `SpawnPlayerForResume`, `SpawnEnemySquad`, `RestartFromWave`
+- `InitializeTeams(idx)`, `ChangeTeam(Other, N, bNewTeam) -> bool`
+- `GetPlayerCount(PC, out PlayerCount) -> int`, `GetDownedPlayerCount`
+- `OnJoinInProgress`, `RegisterJoinInProgressDelegate`, `UnRegisterJoinInProgressDelegate`
+- `CalculatedNetSpeed() -> int`
+
+`SpawnNewPlayerPawn` takes a `PlayerController` and a `PlayerArchetype` and returns a pawn - it is the
+multiplayer player-spawn function, and its parameters cover appearance (`PlayerArchetype`, `faceCode`,
+`ForcedCasualID`) and provenance (`Origin`, `Notoriety`, `CharacterGUID`). A squadmate-as-player needs
+exactly that. The pawn does not have to be invented.
+
+`BioPawn.OnJoinInProgress(Action)` exists too, so the pawn side of a late join is script-visible as well.
+
+And `SFXGameInfoMP_LobbyUnusedDummy` (super `SFXGame`) ships in `SFXGame.pcc` under a name that says
+what happened to it: MP was **disabled deliberately**, not removed. That matters before assuming a
+reintroduction is free - and it is also the honest caveat on everything above.
+
+### Rules
+
+**Rule 71. Check the acceptance path before designing around its absence.** Five commands and a design
+document assumed a second player had to be forced in. `Login`, `AtCapacity` and the whole spawn chain
+were in script the whole time; the only thing standing in the way is an integer.
+
+**Rule 72. Read the export list's first entry.** `BIO_COMMON.pcc` names the MPContent path it was built
+from in export zero. Provenance is often written down, and one line of it reframes a build.
+
+**Rule 73. "Disabled" is not "removed".** `SFXGameInfoMP_LobbyUnusedDummy`, teams, a player count, a
+net-speed calculator and a 17-parameter player-spawn function all ship in a single-player campaign. The
+work is turning them back on, and finding out why they were turned off.
+
+**Rule 74. A signature with a `PlayerController` in it is an invitation.** `SpawnNewPlayerPawn(PC,
+... -> Pawn)` is the function the co-op guest needs, already written and already reachable. When a
+subsystem looks missing, search the argument lists for the type you wish existed.
+
+**Rule 75. The clamps are on the base class.** `SFXGameInfoSP` sets one property and inherits the
+`MaxPlayersAllowed=1` that the design has been planning around. Patch where the value lives, not where
+the class you were looking at happens to be.

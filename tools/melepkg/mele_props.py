@@ -75,6 +75,7 @@ Usage:
     python -I tools/melepkg/mele_props.py squadadd                     # how the campaign recruits
     python -I tools/melepkg/mele_props.py storycheck                   # what advances the campaign
     python -I tools/melepkg/mele_props.py plotcheck                    # how big story state is
+    python -I tools/melepkg/mele_props.py joincheck                     # is the join path in script
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -1507,6 +1508,192 @@ def cmd_savecheck(args):
     return 0
 
 
+def _script_functions(mt, t, class_name):
+    """The functions a class implements in script, by name, using the export table's outer convention.
+
+    Function exports point at their owning class with `outer_index == class_index + 1`, so the class has
+    to be looked up first. `serial_size > 4` separates a real body from a native stub with no bytecode:
+    the distinction matters throughout, because only what has bytecode can be overridden by a subclass.
+    """
+    owner = [e for e in t["exports"] if e["object_name"] == class_name]
+    if not owner:
+        return {}, []
+    rows = [e for e in t["exports"]
+            if e["outer_index"] == owner[0]["index"] + 1
+            and mt.describe_index(e["class_index"], t["exports"], t["imports"]).endswith("Function")]
+    return {e["object_name"]: e for e in rows}, rows
+
+
+def cmd_joincheck(args):
+    """Can a second player be accepted in script, on each build, and where does the pawn come from?
+
+    `coopcheck` measured who *may* join (capacity). This measures whether the join path is still in
+    script at all, which decides whether co-op needs a native patch or a class override.
+
+    The UE3 join chain - `PreLogin`, `Login`, `PostLogin`, `AtCapacity`, `RestartPlayer`,
+    `SpawnDefaultPawnFor`, `ChoosePlayerStart`, `FindPlayerStart`, `SpawnPlayerController` - is
+    implemented in script on `Engine.GameInfo` on all three builds, so the decision about a second
+    player is reachable from script everywhere. What differs is how much of it each campaign class
+    already replaces:
+
+        ME1  BioSPGame  18 script overrides, including SpawnPlayer and SpawnPlayerSquadMembers
+        ME2  BioSPGame   4 script overrides, none of them in the join chain
+        ME3  SFXGame    80 script overrides, including RestartPlayer and SpawnNewPlayerPawn
+
+    On LE3 the runtime campaign GameInfo is `SFXGameInfoSP` (super `SFXGame`), and it ships inside
+    `BIO_COMMON.pcc`, whose export list starts with the path `..\\BIOGame\\MPContent\\BIO_COMMON.upk` -
+    the campaign game class is packaged from multiplayer content. Its class default object sets exactly
+    one property, `GameReplicationInfoClass=SFXGRISP`, so everything else - including the
+    `MaxPlayersAllowed=1` clamp - is inherited from `SFXGame`, which still carries teams
+    (`InitializeTeams`, `ChangeTeam`), a player count (`GetPlayerCount`), join-in-progress delegates and
+    `SpawnNewPlayerPawn`, which takes a `PlayerController` and a `PlayerArchetype` and returns a pawn.
+
+    So the guest's pawn does not have to be invented: the function that spawns a multiplayer player is
+    still present and script-visible. What is missing is a caller that accepts a second player.
+
+    Needs only named packages, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    chain = ("PreLogin", "Login", "PostLogin", "AtCapacity", "RestartPlayer", "SpawnDefaultPawnFor",
+             "ChoosePlayerStart", "FindPlayerStart", "SpawnPlayerController")
+    print("1. The join chain on Engine.GameInfo: script-implemented or native-only")
+    for game in ("ME1", "ME2", "ME3"):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no Engine.pcc" % game)
+            print("   %-4s Engine.pcc not found" % game)
+            continue
+        t = mt.build(path)
+        funcs, _rows = _script_functions(mt, t, "GameInfo")
+        scripted = [n for n in chain if n in funcs and funcs[n]["serial_size"] > 4]
+        native = [n for n in chain if n in funcs and funcs[n]["serial_size"] <= 4]
+        missing = [n for n in chain if n not in funcs]
+        print("   %-4s %d/%d in script: %s" % (game, len(scripted), len(chain), ", ".join(scripted)))
+        if native:
+            print("        native-only (cannot be overridden in script): %s" % ", ".join(native))
+        if missing:
+            print("        absent: %s" % ", ".join(missing))
+        if "Login" not in funcs or funcs["Login"]["serial_size"] <= 4:
+            problems.append("%s: GameInfo.Login is not in script - a second player cannot be accepted "
+                            "without a native patch" % game)
+        if "AtCapacity" not in funcs or funcs["AtCapacity"]["serial_size"] <= 4:
+            problems.append("%s: GameInfo.AtCapacity is not in script - the capacity refusal is not "
+                            "reachable" % game)
+
+    print()
+    print("2. What each campaign game class already overrides")
+    for game, package, klass in (("ME1", "SFXGame.pcc", "BioSPGame"),
+                                 ("ME2", "SFXGame.pcc", "BioSPGame"),
+                                 ("ME3", "SFXGame.pcc", "SFXGame")):
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", package)
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no %s" % (game, package))
+            continue
+        t = mt.build(path)
+        funcs, rows = _script_functions(mt, t, klass)
+        scripted = sorted(n for n, e in funcs.items() if e["serial_size"] > 4)
+        in_chain = [n for n in chain if n in funcs]
+        print("   %-4s %-10s %2d script override(s) of %d function(s); join chain: %s"
+              % (game, klass, len(scripted), len(rows), ", ".join(in_chain) or "untouched"))
+        if game != "ME2" and not in_chain:
+            problems.append("%s: %s does not touch the join chain at all" % (game, klass))
+
+    print()
+    print("3. LE3's campaign game class, and the multiplayer machinery behind it")
+    me3_dir = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole")
+        if os.path.isdir(cand):
+            me3_dir = cand
+            break
+    if me3_dir is None:
+        problems.append("ME3 install not found - the LE3 half of this check did not run")
+    else:
+        common = os.path.join(me3_dir, "BIO_COMMON.pcc")
+        if not os.path.isfile(common):
+            problems.append("ME3: no BIO_COMMON.pcc - the campaign game class was not located")
+        else:
+            t = mt.build(common)
+            mp_paths = [e["object_name"] for e in t["exports"]
+                        if e["object_name"] and "MPContent" in e["object_name"]]
+            print("   SFXGameInfoSP lives in BIO_COMMON.pcc; MPContent paths inside it: %s"
+                  % (mp_paths or "none"))
+            if not mp_paths:
+                problems.append("ME3: BIO_COMMON.pcc no longer carries an MPContent path - the "
+                                "campaign game class is not packaged from multiplayer content")
+            funcs, _rows = _script_functions(mt, t, "SFXGameInfoSP")
+            print("   SFXGameInfoSP script overrides: %s"
+                  % ", ".join(sorted(n for n, e in funcs.items() if e["serial_size"] > 4)))
+            cdo = find_object(t, "Default__SFXGameInfoSP")
+            if cdo is None:
+                problems.append("ME3: no Default__SFXGameInfoSP")
+            else:
+                tags, end, _why = parse_object(t, t["buf"], cdo)
+                want = cdo["serial_offset"] - t["displacement"] + cdo["serial_size"]
+                props = {tg["name"]: tg["value"] for tg in tags if tg["name"] != "None"}
+                print("   Default__SFXGameInfoSP sets %d property: %s"
+                      % (len(props), ", ".join("%s=%s" % kv for kv in props.items())))
+                if end != want:
+                    problems.append("ME3: Default__SFXGameInfoSP did not close exactly")
+                if "GameReplicationInfoClass" not in props:
+                    problems.append("ME3: SFXGameInfoSP no longer points at its own replication info")
+        sfx = os.path.join(me3_dir, "SFXGame.pcc")
+        if not os.path.isfile(sfx):
+            problems.append("ME3: no SFXGame.pcc")
+        else:
+            t = mt.build(sfx)
+            funcs, _rows = _script_functions(mt, t, "SFXGame")
+            wanted = ("InitializeTeams", "ChangeTeam", "GetPlayerCount", "GetDownedPlayerCount",
+                      "OnJoinInProgress", "RegisterJoinInProgressDelegate", "CalculatedNetSpeed",
+                      "SpawnNewPlayerPawn", "SpawnPlayerForResume")
+            present = [n for n in wanted if n in funcs and funcs[n]["serial_size"] > 4]
+            print("   SFXGame still carries: %s" % ", ".join(present))
+            if "SpawnNewPlayerPawn" in funcs:
+                sig = mt.signature(t, t["buf"], funcs["SpawnNewPlayerPawn"])
+                # Child exports in declaration order; this list can include locals, so it is reported
+                # as a shape and only its length is asserted.
+                print("   SpawnNewPlayerPawn: %d parameter(s), parms block 0x%x -> %s"
+                      % (len(sig["params"]), sig["parms_size"], sig["returns"]))
+                print("     %s" % ", ".join("%s@0x%02x" % (n, off)
+                                            for n, _t, _s, off in sig["params"]))
+                if len(sig["params"]) < 10:
+                    problems.append("ME3: SpawnNewPlayerPawn dropped to %d parameter(s) - re-read the "
+                                    "guest spawn plan" % len(sig["params"]))
+            else:
+                problems.append("ME3: SFXGame lost SpawnNewPlayerPawn - the guest pawn has no "
+                                "script-visible spawn path")
+            for lost in ("InitializeTeams", "ChangeTeam", "GetPlayerCount"):
+                if lost not in present:
+                    problems.append("ME3: SFXGame lost %s" % lost)
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: the join chain is script on all three builds, so accepting a second player is a "
+          "class override and not a native patch; LE3 already has a script-visible guest-pawn spawn "
+          "(SpawnNewPlayerPawn) and team/player-count functions, and its campaign game class ships "
+          "inside a multiplayer content package")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -1568,6 +1755,10 @@ def main():
     p = sub.add_parser("plotcheck",
                        help="how much story state there is, and whether it can be shipped whole")
     p.set_defaults(func=cmd_plotcheck)
+
+    p = sub.add_parser("joincheck",
+                       help="is the join path in script, and where does a second player's pawn come from")
+    p.set_defaults(func=cmd_joincheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")
