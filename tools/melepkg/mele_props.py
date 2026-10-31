@@ -76,6 +76,7 @@ Usage:
     python -I tools/melepkg/mele_props.py storycheck                   # what advances the campaign
     python -I tools/melepkg/mele_props.py plotcheck                    # how big story state is
     python -I tools/melepkg/mele_props.py joincheck                     # is the join path in script
+    python -I tools/melepkg/mele_props.py spawncheck                    # what a guest pawn needs
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -1694,6 +1695,159 @@ def cmd_joincheck(args):
     return 0
 
 
+def _struct_named(mt, t, name):
+    """The `UScriptStruct` export called `name`, or None. A struct, not a class or a property."""
+    for e in t["exports"]:
+        if e["object_name"] == name and \
+                mt.describe_index(e["class_index"], t["exports"], t["imports"]).endswith("ScriptStruct"):
+            return e
+    return None
+
+
+def _function_on(mt, t, class_name, func_name):
+    """A named function declared directly on `class_name`, using the export table's outer convention."""
+    return _script_functions(mt, t, class_name)[0].get(func_name)
+
+
+def cmd_spawncheck(args):
+    """What a second player's pawn needs, and whether the campaign's own spawn already accepts it.
+
+    `joincheck` established that accepting a second player is script-reachable. This answers the next
+    question, which is the one that decides how much work "the client takes a squadmate" is: does the
+    campaign's own pawn spawn take a *character description*, or only a `PlayerController`?
+
+    Two payloads matter, and both are found by resolving `StructProperty.Struct` rather than guessing:
+
+    * **`PlayerInfoEx`** - the player identity block, held by `SFXSaveGame` on all three builds and used
+      by 3 / 6 / 17 properties respectively. Its fields are the character: `FirstName`, `FaceCode`,
+      `CharacterClass`, `MorphHead`, `BonusTalentClass`, `bIsFemale`, `Origin`, `Notoriety`, and
+      `CharacterGUID` on LE3 only.
+    * **`PlotTableSaveRecord`** - the plot save payload, held **only** by `SFXSaveGame.PlotRecord` on
+      every build, with the same fields everywhere: seven arrays plus a `QuestProgressCounter`.
+      No function takes it as a parameter, so it is read and written through the save object.
+
+    And then the difference that matters:
+
+        LE1  BioSPGame.SpawnDefaultPawnFor(NewPlayer, SpawnPoint, BioPlayerController, Pawn)
+        LE2  SFXGame.SpawnDefaultPawnFor(NewPlayer, StartSpot, ..., PlayerInfo, ...)   29 params
+        LE3  SFXGame.SpawnDefaultPawnFor(NewPlayer, StartSpot, ..., PlayerInfo,
+                                         ResetPlayerInfoEx, ..., CharacterGUID)      33 params
+
+    LE2 and LE3 already take a `PlayerInfo` struct plus the identity fields, so a guest is the same
+    call with a different character description. **LE1's campaign spawn takes four opaque objects and
+    no identity at all**, and its identity levers are elsewhere (`SpawnPlayer`, `SpawnPawn`,
+    `SpawnHenchman`, `SpawnPlayerSquadMembers` on the same class). That is a real per-build
+    difference in effort, not a detail.
+
+    Needs only named packages, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    report = {}
+
+    cache = {}
+
+    def game_pkg(game, name="SFXGame.pcc"):
+        key = (game, name)
+        if key not in cache:
+            path = None
+            for root in pkg.game_dirs():
+                cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", name)
+                if os.path.isfile(cand):
+                    path = cand
+                    break
+            cache[key] = mt.build(path) if path else None
+        return cache[key]
+
+    print("1. The player-identity payload, and the plot payload, per build")
+    for game in ("ME1", "ME2", "ME3"):
+        t = game_pkg(game)
+        if t is None:
+            problems.append("%s: no SFXGame.pcc" % game)
+            continue
+        rows = []
+        for struct_name in ("PlayerInfoEx", "PlotTableSaveRecord"):
+            e = _struct_named(mt, t, struct_name)
+            if e is None:
+                problems.append("%s: no %s struct" % (game, struct_name))
+                continue
+            fields = [r[0] for r in mt.struct_fields(t, t["buf"], e)]
+            report.setdefault(struct_name, {})[game] = fields
+            print("   %-4s %-20s %2d field(s): %s"
+                  % (game, struct_name, len(fields), ", ".join(fields)))
+            if struct_name == "PlayerInfoEx":
+                for required in ("FirstName", "FaceCode", "Origin", "Notoriety", "bIsFemale"):
+                    if required.lower() not in [f.lower() for f in fields]:
+                        problems.append("%s: PlayerInfoEx lost %s" % (game, required))
+            else:
+                for required in ("BoolVariables", "IntVariables", "FloatVariables", "QuestIDs"):
+                    if required not in fields:
+                        problems.append("%s: PlotTableSaveRecord lost %s" % (game, required))
+
+    print()
+    print("2. Who holds the plot payload")
+    for game in ("ME1", "ME2", "ME3"):
+        t = game_pkg(game)
+        if t is None:
+            continue
+        target_struct = _struct_named(mt, t, "PlotTableSaveRecord")
+        if target_struct is None:
+            continue
+        holders = []
+        for prop in t["exports"]:
+            if mt.describe_index(prop["class_index"], t["exports"], t["imports"]) != "Core.StructProperty":
+                continue
+            target, kind = mt.property_struct_export(t, t["buf"], prop)
+            if kind == "export" and target is target_struct:
+                holders.append((mt.describe_index(prop["outer_index"], t["exports"], t["imports"]),
+                                prop["object_name"]))
+        print("   %-4s %s" % (game, ", ".join("%s.%s" % h for h in holders) or "nobody"))
+        if not any(h[1] == "PlotRecord" for h in holders):
+            problems.append("%s: no PlotRecord property of type PlotTableSaveRecord" % game)
+        if len(holders) != 1:
+            problems.append("%s: plot payload has %d holders, expected 1" % (game, len(holders)))
+
+    print()
+    print("3. The campaign's own pawn spawn - does it take a character description?")
+    for game, klass in (("ME1", "BioSPGame"), ("ME2", "SFXGame"), ("ME3", "SFXGame")):
+        t = game_pkg(game)
+        if t is None:
+            continue
+        fn = _function_on(mt, t, klass, "SpawnDefaultPawnFor")
+        if fn is None:
+            problems.append("%s: %s has no SpawnDefaultPawnFor" % (game, klass))
+            continue
+        sig = mt.signature(t, t["buf"], fn)
+        params = [n for n, _t, _s, _o in sig["params"]]
+        has_identity = "PlayerInfo" in params
+        print("   %-4s %-10s.SpawnDefaultPawnFor %2d param(s), parms 0x%x, PlayerInfo: %s"
+              % (game, klass, len(sig["params"]), sig["parms_size"], has_identity))
+        report.setdefault("spawn", {})[game] = (len(sig["params"]), has_identity)
+        if game in ("ME2", "ME3") and not has_identity:
+            problems.append("%s: %s.SpawnDefaultPawnFor no longer takes a PlayerInfo - the guest "
+                            "spawn plan changes" % (game, klass))
+        if game == "ME1" and has_identity:
+            problems.append("ME1: BioSPGame.SpawnDefaultPawnFor gained a PlayerInfo parameter - "
+                            "re-read the LE1 plan")
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    sizes = {g: v for g, v in report.get("spawn", {}).items()}
+    print("verdict: the player identity payload is the same struct on all three builds (7/8/9 fields, "
+          "LE3 adding CharacterGUID); the plot payload is one struct held only by SFXSaveGame.PlotRecord; "
+          "LE2/LE3 spawn a player from a character description (%d/%d params) while LE1 spawns from four "
+          "opaque objects" % (sizes.get("ME2", (0, False))[0], sizes.get("ME3", (0, False))[0]))
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -1759,6 +1913,10 @@ def main():
     p = sub.add_parser("joincheck",
                        help="is the join path in script, and where does a second player's pawn come from")
     p.set_defaults(func=cmd_joincheck)
+
+    p = sub.add_parser("spawncheck",
+                       help="what a second player's pawn needs, and whether the campaign spawn takes it")
+    p.set_defaults(func=cmd_spawncheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

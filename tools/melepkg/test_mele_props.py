@@ -765,6 +765,58 @@ def t_join_chain_is_script():
     return "ok", "9/9 chain functions in script x3; LE3 SpawnNewPlayerPawn(17 params, 0x90)"
 
 
+@case("a guest pawn needs only a character description on LE2/LE3, and LE1 has no such path")
+def t_spawn_payload():
+    """What "the client takes a squadmate" actually requires, measured rather than assumed.
+
+    Two payloads and one function decide it:
+
+    * `PlayerInfoEx` is the player identity block - `FirstName`, `FaceCode`, `CharacterClass`,
+      `MorphHead`, `BonusTalentClass`, `bIsFemale`, `Origin`, `Notoriety`, and `CharacterGUID` on LE3.
+      Seven, eight and nine fields respectively.
+    * `PlotTableSaveRecord` is the plot save payload, and it is the **same struct on all three builds**:
+      seven arrays plus a `QuestProgressCounter`. It is held only by `SFXSaveGame.PlotRecord` everywhere
+      and by no function parameter, so it is read and written through the save object.
+
+    And the campaign's own spawn takes the identity block on LE2/LE3 but not on LE1, which is the
+    per-build difference in effort that this test exists to keep visible.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_spawncheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_spawncheck returned %d:\n%s" % (rc, out.strip())
+    for game, count in (("ME1", 7), ("ME2", 8), ("ME3", 9)):
+        line = [l for l in out.splitlines() if l.strip().startswith(game) and "PlayerInfoEx" in l]
+        if not line:
+            return "fail", "%s PlayerInfoEx row missing:\n%s" % (game, out.strip())
+        if "%2d field(s)" % count not in line[0]:
+            return "fail", "%s PlayerInfoEx field count changed: %s" % (game, line[0].strip())
+    for game in ("ME1", "ME2", "ME3"):
+        line = [l for l in out.splitlines() if l.strip().startswith(game) and "PlotTableSaveRecord" in l]
+        if not line:
+            return "fail", "%s plot payload row missing" % game
+        for field in ("BoolVariables", "IntVariables", "FloatVariables", "QuestIDs", "CodexIDs"):
+            if field not in line[0]:
+                return "fail", "%s plot payload lost %s" % (game, field)
+        holder = [l for l in out.splitlines()
+                  if l.strip().startswith(game) and "PlotRecord" in l]
+        if not holder or "SFXSaveGame.PlotRecord" not in holder[0]:
+            return "fail", "%s plot payload is not held by SFXSaveGame.PlotRecord" % game
+    if "ME1  BioSPGame .SpawnDefaultPawnFor  5 param(s), parms 0x28, PlayerInfo: False" not in out:
+        return "fail", "LE1 campaign spawn changed shape:\n%s" % out.strip()
+    if "ME3  SFXGame   .SpawnDefaultPawnFor 33 param(s), parms 0xf4, PlayerInfo: True" not in out:
+        return "fail", "LE3 campaign spawn changed shape:\n%s" % out.strip()
+    if "ME2  SFXGame   .SpawnDefaultPawnFor 29 param(s), parms 0xdc, PlayerInfo: True" not in out:
+        return "fail", "LE2 campaign spawn changed shape:\n%s" % out.strip()
+    return "ok", "PlayerInfoEx 7/8/9 fields; plot payload 1 struct, 1 holder; LE2/LE3 spawn take it"
+
+
 def main():
     failures = 0
     skips = 0

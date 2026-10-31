@@ -5100,3 +5100,90 @@ guessing it would put an unverified type at the centre of the sync design.
 The design had a section on how to serialise plot state. The engine already had `GetPlayerPlotData` and
 `SetPlayerPlotData` over a struct, used by its own import paths. Grep the class that owns the state for
 `Get*`/`Set*` before inventing an encoding.
+
+## 2026-10-31 (correction and payloads): `GetPlayerPlotData` is not the plot sync
+
+The previous entry said `GetPlayerPlotData` / `SetPlayerPlotData` on `BioGlobalVariableTable` were the
+plot sync pair: "get on the host, ship the struct, set on the guest". **That was wrong, and the way it
+went wrong is worth recording** - I read the function *names* and the `StructProperty` end of each
+parameter, and stopped there. Resolving the parameter's struct reference shows both take
+**`PlayerInfoEx`**, which is the player *identity* block. The name says plot; the payload is character.
+
+### Why it was possible to be wrong, and what closed it
+
+`StructProperty` serial data does not name its struct in the export table, so every `StructProperty`
+looked alike. The reference is a package index at **serial +44** of a 48-byte `UStructProperty`, and
+that offset is not a guess - it is the only byte offset that resolves for essentially every struct
+property in each build:
+
+| build | `StructProperty` exports | +44 resolves | next best offset |
+|---|---|---|---|
+| ME1 `SFXGame.pcc` | 2,539 | **2,539 (100%)** | +0 at 1.3% |
+| ME2 `SFXGame.pcc` | 2,752 | **2,752 (100%)** | - |
+| ME3 `SFXGame.pcc` | 4,503 | **4,480 (99.5%)** | +0 at 1.5% |
+
+The samples are textbook - `ViewRotation -> Rotator`, `LastOrigin -> Vector`, `Cover -> CoverInfo`,
+`m_pov -> TPOV`, `nData_NATIVE_MIRROR -> Core.Pointer`. And ME3's 23 misses are all `StructProperty`
+exports whose serial is **50 bytes** rather than 48, i.e. a wider form of the same record; those are
+reported as unreadable rather than guessed at.
+
+So `mele_tables.property_struct()` now exists and returns the name plus how it resolved
+(`export`, `import`, or a reason it did not). A wrong type here would silently mislabel a payload, so the
+function refuses rather than guesses.
+
+### What the two payloads actually are
+
+| payload | who holds it | ME1 | ME2 | ME3 |
+|---|---|---|---|---|
+| `PlayerInfoEx` (identity) | `SFXSaveGame` | 7 fields | 8 | 9 |
+| `PlotTableSaveRecord` (plot) | `SFXSaveGame.PlotRecord` | 10 fields | 10 | 12 |
+
+`PlayerInfoEx`: `FirstName`, `FaceCode`, `CharacterClass` (absent on ME1), `MorphHead`,
+`BonusTalentClass`, `bIsFemale`, `Origin`, `Notoriety`, plus `CharacterGUID` on ME3 only.
+
+`PlotTableSaveRecord`: `BoolVariables`, `IntVariables`, `FloatVariables`, `QuestProgress`, `QuestIDs`,
+`CodexEntries`, `CodexIDs`, `QuestProgressCounter`, `PlotCodex`, `PlotQuest` - **identical on all three
+builds**. ME3 reads 12 because it also declares `IntVariablePair` and `FloatVariablePair` *inside* the
+struct; those are nested type declarations, not extra data.
+
+And the plot payload has exactly **one holder on every build**: `SFXSaveGame.PlotRecord`. No function in
+any build takes a `PlotTableSaveRecord` parameter, so it is reached through the save object, not through
+a getter. That is the actual plot sync surface.
+
+### The measurement that matters most: LE1 cannot spawn from a description
+
+`SpawnDefaultPawnFor`, the campaign's own pawn spawn:
+
+| build | class | parameters | parms | takes `PlayerInfo` |
+|---|---|---|---|---|
+| ME1 | `BioSPGame` | 5 | `0x28` | **no** |
+| ME2 | `SFXGame` | 29 | `0xdc` | **yes** |
+| ME3 | `SFXGame` | 33 | `0xf4` | **yes** |
+
+ME2's and ME3's take `PlayerInfo` (a `PlayerInfoEx`) plus every identity field - `IsFemale`,
+`CharacterClass`, `FirstName`, `Origin`, `Notoriety`, `FaceCode`, `NewMorphHead`, `BonusTalent`,
+`PawnType`. ME3 adds `ResetPlayerInfoEx` and `CharacterGUID`, and separately has `SpawnNewPlayerPawn`
+(17 params, `0x90`).
+
+ME1's takes `(NewPlayer, SpawnPoint, BioPlayerController, Pawn)` - four opaque objects, no identity.
+Its identity levers are the other functions on the same class: `SpawnPlayer`, `SpawnPawn`,
+`SpawnHenchman`, `SpawnPlayerSquadMembers`, `CalculateHenchmanSpawn`, `SetupPartyMemberAttributes`.
+
+**So on LE2/LE3 the guest pawn is the campaign's own spawn called with a different character
+description; on LE1 there is no such call to make.** That is a genuine difference in effort, and it
+should temper any promise of LE1 parity.
+
+### Rules
+
+**Rule 77. A function's name is not its parameter's type.** `GetPlayerPlotData(PlayerData: PlayerInfoEx)`
+is exactly the trap: "PlotData" in the name, identity in the payload. Resolve the type or say unknown.
+
+**Rule 78. When every record looks alike, find the field that makes them different.** All
+`StructProperty` serials looked identical because the naming field was not being read. One offset
+measurement - 100% on two builds, 99.5% on the third, with a 1.5% background rate elsewhere - turned
+"opaque struct" into a resolvable type, and every payload in this section followed from it.
+
+**Rule 79. Two builds accepting a parameter is not three builds accepting it.** LE2 and LE3 spawn a
+player from a character description; LE1 spawns from four objects and knows nothing about who the player
+is. The scope is LE3 first, so this does not block anything today, but it is the reason LE1 is not "the
+same work again".

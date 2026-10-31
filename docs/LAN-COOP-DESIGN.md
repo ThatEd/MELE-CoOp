@@ -422,28 +422,50 @@ the *named* integer variables, which is why the names are not the whole set.
 
 Reproduce with `python -I tools/melepkg/mele_props.py plotcheck`.
 
-**How it actually gets synced on LE3.** The plot manager has a symmetric pair over a struct, already
-used by the game's own ME1/ME2 import paths:
+**How it actually gets synced on LE3.** The plot payload is `PlotTableSaveRecord`, held by
+`SFXSaveGame.PlotRecord` and by **nothing else** — no function in any of the three builds takes it as a
+parameter, so it is read and written through the save object rather than through a getter. And it is
+**the same struct on all three builds**: `BoolVariables`, `IntVariables`, `FloatVariables`,
+`QuestProgress`, `QuestIDs`, `CodexEntries`, `CodexIDs`, `QuestProgressCounter` (LE3 adds two nested
+type declarations inside it, `IntVariablePair` and `FloatVariablePair`, which is why its field count
+reads 12 rather than 10). One payload shape for the whole trilogy.
 
-| function | signature |
-|---|---|
-| `GetPlayerPlotData` | `(out PlayerData: Struct) -> void` |
-| `SetPlayerPlotData` | `(PlayerData: Struct) -> void` |
-| `CopyPlots` | `(toCopy: Array) -> void` |
-| `ApplyCanonPlots` | `(aCanonPlotVariables: Array) -> void` |
+An earlier version of this section named `GetPlayerPlotData` / `SetPlayerPlotData` on
+`BioGlobalVariableTable` as the plot sync pair. **That was wrong.** Resolving the parameter's
+`StructProperty` type shows they take `PlayerInfoEx` — the *player identity* block (`FirstName`,
+`FaceCode`, `CharacterClass`, `MorphHead`, `BonusTalentClass`, `bIsFemale`, `Origin`, `Notoriety`,
+plus `CharacterGUID` on LE3). The function name says plot; the payload is character. They are the
+right pair for **who the guest is**, not for what the story has done.
 
-So the sync is: call `GetPlayerPlotData` on the host, ship the struct, call `SetPlayerPlotData` on the
-guest. No delta log, no per-flag enumeration, and no new format — the game already has the getter, the
-setter and the struct. The struct's own name is **not** resolved by the offline reader (both ends are a
-48-byte `StructProperty` and the words inside disagree), so it is very probably `PlotTableSaveRecord`
-but that is stated as probable, not measured.
-
-The same class also exposes named accessors for the campaign's branch points —
+The same class does expose named accessors for the campaign's branch points —
 `MajorPlot_ME1_RachniiQueenSaved`, `MajorPlot_ME1_VirmireSurvivor_IsAsh`, `MajorPlot_ME1_WrexStatus`,
 `MajorPlot_ME1_SavedTheCouncil`, `MajorPlot_ME2_*` — which are the flags an automated test should assert
 on after a guest joins, rather than "the level loaded".
 
-## 4d. Accepting a second player is a class override, not a binary patch
+## 4d. A guest pawn needs a character description, and LE1 does not accept one
+
+`spawncheck` answers the question behind "the client takes a squadmate": does the campaign's own pawn
+spawn take a *character description*, or only a controller?
+
+| build | campaign spawn | params | parms | takes `PlayerInfo` |
+|---|---|---|---|---|
+| LE1 | `BioSPGame.SpawnDefaultPawnFor(NewPlayer, SpawnPoint, BioPlayerController, Pawn)` | 5 | `0x28` | **no** |
+| LE2 | `SFXGame.SpawnDefaultPawnFor(NewPlayer, StartSpot, …, PlayerInfo, …)` | 29 | `0xdc` | **yes** |
+| LE3 | `SFXGame.SpawnDefaultPawnFor(NewPlayer, StartSpot, …, PlayerInfo, ResetPlayerInfoEx, …, CharacterGUID)` | 33 | `0xf4` | **yes** |
+
+The identity payload is `PlayerInfoEx`, held by `SFXSaveGame`, and **7 / 8 / 9 fields** — `FirstName`,
+`FaceCode`, `CharacterClass` (absent on LE1), `MorphHead`, `BonusTalentClass`, `bIsFemale`, `Origin`,
+`Notoriety`, plus `CharacterGUID` on LE3 only.
+
+So on LE2 and LE3 the guest pawn is the campaign's own spawn called with a different character
+description, and the struct it wants is one the save system already writes. On **LE1 the campaign spawn
+takes four opaque objects and no identity at all** — its identity levers are elsewhere on the same class
+(`SpawnPlayer`, `SpawnPawn`, `SpawnHenchman`, `SpawnPlayerSquadMembers`). That is a real difference in
+effort between the builds, which is worth knowing before promising LE1 parity.
+
+Reproduce with `python -I tools/melepkg/mele_props.py spawncheck`.
+
+## 4e. Accepting a second player is a class override, not a binary patch
 
 `joincheck` answers the question the whole plan rests on: is the code that decides about a joining
 player still in script, and does a second player have anywhere to come from?

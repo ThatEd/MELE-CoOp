@@ -722,6 +722,21 @@ PROPERTY_SIZE = {
 # DECLARATION order - the export table does not, because exports are stored in name order.
 UPROPERTY_NEXT = 16
 
+# `UStructProperty.Struct` is a package index at serial +44 of a 48-byte UStructProperty. Measured
+# by resolving +44 for EVERY StructProperty export in each build's SFXGame.pcc against the standard
+# package-index convention (positive = export, negative = import):
+#
+#     ME1  2,539/2,539 exact     ME2  2,752/2,752 exact     ME3  4,480/4,503
+#
+# and the samples are what they should be - `ViewRotation -> Rotator`, `LastOrigin -> Vector`,
+# `Cover -> CoverInfo`, `PlotRecord -> PlotTableSaveRecord`. Every other byte offset resolves on
+# under 2% of properties, which is the background rate, so +44 is the field and not a coincidence.
+#
+# ME3's 23 misses are all StructProperty exports with a 50-byte serial rather than 48; that wider
+# form carries something extra and is reported as unreadable rather than guessed at.
+UPROPERTY_STRUCT = 44
+UPROPERTY_STRUCT_WIDTH = 48
+
 
 PROPERTY_ALIGN = {
     # Alignment of each property struct inside the parms block. NOT `alignof` for everything:
@@ -742,6 +757,52 @@ PARMS_ALIGN = 4
 
 # An out-parameter of property type is appended at its natural 4-alignment regardless of type.
 OUT_PARAM_ALIGN = 4
+
+
+def property_struct_export(table, buf, prop_export):
+    """The export or import a `StructProperty` points at, or None with a reason.
+
+    Shared by `property_struct` and by callers that need the target itself rather than its name -
+    "which property is typed as *this* struct" needs identity, not a string.
+    """
+    if prop_export["serial_size"] < UPROPERTY_STRUCT + 4:
+        return None, "serial too small (%d bytes)" % prop_export["serial_size"]
+    if prop_export["serial_size"] != UPROPERTY_STRUCT_WIDTH:
+        return None, "unexpected width (%d bytes, not %d)" % (
+            prop_export["serial_size"], UPROPERTY_STRUCT_WIDTH)
+    disp = buffer_base(table["header"])
+    at = prop_export["serial_offset"] - disp + UPROPERTY_STRUCT
+    if at < 0 or at + 4 > len(buf):
+        return None, "field outside the buffer"
+    v = struct.unpack_from("<i", buf, at)[0]
+    kind, target = resolve_index(v, table["exports"], table["imports"])
+    if target is None:
+        return None, "package index %d does not resolve" % v
+    if kind == "import":
+        # An import carries its own class as a name, not a package index: `Core.Vector` is imported
+        # with type_name `ScriptStruct`. Anything else is not a struct.
+        if not (target.get("type_name") or "").endswith("ScriptStruct"):
+            return None, "imports %s as a %s" % (target.get("object_name"), target.get("type_name"))
+        return target, "import"
+    cls = describe_index(target["class_index"], table["exports"], table["imports"])
+    if not cls.endswith("ScriptStruct"):
+        return None, "points at %s, which is a %s" % (target["object_name"], cls.split(".")[-1])
+    return target, "export"
+
+
+def property_struct(table, buf, prop_export):
+    """The script struct a `StructProperty` is typed as, or None with a reason.
+
+    `StructProperty` payloads are opaque without this: `PlotRecord` and `ME1PlotRecord` are both
+    "a struct", and only their types distinguish the plot save record from the imported LE1 one.
+
+    Returns (name, kind) where kind is `"export"`, `"import"` or a short reason the field did not
+    resolve - never a guess, because a wrong type here would silently mislabel a payload.
+    """
+    target, kind = property_struct_export(table, buf, prop_export)
+    if target is None:
+        return None, kind
+    return target.get("object_name"), kind
 
 
 def _align(n, a):
