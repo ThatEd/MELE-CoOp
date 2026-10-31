@@ -242,12 +242,14 @@ campaign state, which matters because the first thing to get working is a full c
 its dialogue. S3 is the real answer and needs `BioPlayerSquad` (present in all three, measured) plus
 the henchman spawn path — which is per-build (section 5).
 
-**What the packages now say about this choice (measured, 2026-10-30):** the roster is a plain `TArray`
-with no declaration capping it at two, and `AddMember` exists on `BioBaseSquad` on all three builds —
-so nothing in the file structure forbids a third entry. What differs is the **element**:
-`TArray<MemberData>` on ME1/ME2 (a struct carrying `SquadMember` plus per-member order state, 17
-fields on ME1 and 7 on ME2) versus `TArray<Object>` on ME3, where `MemberData` does not exist. So S2
-is three different edits, and ME3's is the simplest because there is no orders struct to fill in.
+**What the packages now say about this choice (measured, 2026-10-30, element class added 2026-10-31):**
+the roster is a plain `TArray` with no declaration capping it at two, and `AddMember` exists on
+`BioBaseSquad` on all three builds — so nothing in the file structure forbids a third entry. What
+differs is the **element**: `TArray<MemberData>` on ME1/ME2 (a struct carrying `SquadMember` plus
+per-member order state, 17 fields on ME1 and 7 on ME2) versus **`TArray<Pawn>`** on ME3, where
+`MemberData` does not exist and the roster entry *is* the pawn. So the *store* is three different shapes
+and ME3's is the simplest, because there is no orders struct to fill in — but the *call* is one,
+`AddMember(Pawn) -> int`, on every build (§4f).
 
 **And none of them should be an array edit at all.** The campaign's own recruitment action,
 `BioSeqAct_AddToParty.Activated`, runs through a `Bio2DA` numbered-row table on ME2 (5 table members
@@ -530,6 +532,49 @@ knowing before assuming a reintroduction is free.
 
 Reproduce with `python -I tools/melepkg/mele_props.py joincheck`.
 
+## 4f. The roster is one call, but two different things
+
+`coopcheck` measured the store and it reads like three different edits: `Members` is
+`TArray<MemberData>` on LE1/LE2 and an object array on LE3 with `MemberData` absent. Resolving the
+array's inner property makes the LE3 half precise — it is **`TArray<Pawn>`**, not `TArray<Object>` — and
+that changes what a roster entry *is*:
+
+| build | store | what one entry is |
+|---|---|---|
+| LE1 | `TArray<MemberData>` | a **saved record** of a squad member |
+| LE2 | `TArray<MemberData>` | a **saved record** |
+| LE3 | **`TArray<Pawn>`** | **the pawn itself** |
+
+The API in front of the store is the same everywhere, which is why this is not three edits:
+
+| build | `AddMember` | `RemoveMember` |
+|---|---|---|
+| LE1 | `(Pawn) -> int` | `(pPawn) -> bool` |
+| LE2 | `(Pawn, bCheckPlaypens) -> int` | `(pPawn) -> bool` |
+| LE3 | `(Pawn, bCheckPlaypens) -> int` | `(pPawn) -> bool` |
+
+**`AddMember` takes a pawn on every build and returns its index.** Adding the guest is one call whichever
+build is running; on LE1/LE2 the engine converts pawn → `MemberData` on the way in, on LE3 it stores the
+pawn and the entry *is* the guest. That is a real design difference — on LE3 the roster holds the pawn
+alive, on LE1/LE2 it holds a description of it — but it is not three implementations.
+
+What genuinely differs is notification and control transfer:
+
+| capability | LE1 | LE2 | LE3 |
+|---|---|---|---|
+| `MemberAdded` (notify on add) | **yes** (base + player squad) | no | no |
+| `MemberRemoved` | yes | yes | yes |
+| `GetSpareController` / `SetSpareController` / `SwapSpareController` | **yes** | no | no |
+| `BioPlayerSquad.SetPlayerPawn(PlayerPawn)` | no | no | **yes** |
+
+Two of those are worth pulling out. **LE1 has a spare-controller slot** (`SetSpareController(newCtrl)`,
+`SwapSpareController(oPawn, oOriginalController, oNewController)`) — an explicit second-controller
+mechanism, the only one in the trilogy, and the natural place a second player was once going to live.
+**LE1/LE2 have no `MemberAdded`**, so on those builds adding a member runs no notification path at all,
+which means anything that listens for a squad change has to be driven explicitly rather than observed.
+
+Reproduce with `python -I tools/melepkg/mele_props.py rostercheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from
@@ -542,7 +587,7 @@ memory.
 | `GetSeamlessTravelActorList` | declared on `PlayerController`, `GameInfo`, `Mutator` | same | same | **declared but never called** — no build enables seamless travel |
 | `bUseSeamlessTravel` (declared) | yes | yes | yes | …but **set by 0 of 6,685 CDOs**: campaign travel is a hard reload |
 | `MaxPlayers` / `MaxPlayersAllowed` on the campaign game class | not set (inherits 16/32) | not set (16/32) | **`MaxPlayersAllowed=1`** | ME3 needs the clamp raised; ME1/ME2 have nothing to raise |
-| `BioBaseSquad.Members` element type | `TArray<MemberData>` | `TArray<MemberData>` | `TArray<Object>` | adding a roster entry is a **different edit per build** |
+| `BioBaseSquad.Members` element type | `TArray<MemberData>` (record) | `TArray<MemberData>` (record) | **`TArray<Pawn>` (the pawn)** | the store differs; `AddMember(Pawn) -> int` is the same call on all three (§4f) |
 | `MemberData` struct | 17 fields | 7 fields | **absent** | ME1's per-member order state has no ME3 counterpart |
 | `BioPlayerSquad` / `BioBaseSquad` | yes | yes | yes | squad container is shared |
 | squadmate pawn | *(none)* | `SFXPawn_Henchman : SFXPawn` | `SFXPawn_Henchman : SFXPawn_PlayerParty` | **per-build**, and ME3 re-parents it |
@@ -778,9 +823,10 @@ this page:
 4. **ME3 clamps capacity to one.** The base `GameInfo` allows 32 players on every build, and ME3's
    campaign class serialises `MaxPlayersAllowed = 1` — an active clamp a co-op mod must raise.
    ME1/ME2 set neither field and inherit 32, so there is nothing to raise there.
-5. **The squad roster changes container type on ME3.** `Members` is `TArray<MemberData>` on ME1/ME2
-   and `TArray<Object>` on ME3, where the `MemberData` struct does not exist at all. Adding a roster
-   entry is three different edits, and no declaration caps the roster at two.
+5. **The squad roster stores a record on LE1/LE2 and the pawn itself on LE3.** `Members` is
+   `TArray<MemberData>` on ME1/ME2 and `TArray<Pawn>` on ME3, where the `MemberData` struct does not
+   exist at all. The store is three shapes; the call in front of it, `AddMember(Pawn) -> int`, is the
+   same on all three, and no declaration caps the roster at two.
 
 The remaining holes are real: the downed-*player* state has to be supplied on all three builds (the
 revive radius and health values exist; the state does not); LE1 has no `SFXPawn_Henchman`; ME3

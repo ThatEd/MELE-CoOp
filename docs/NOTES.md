@@ -5187,3 +5187,77 @@ measurement - 100% on two builds, 99.5% on the third, with a 1.5% background rat
 player from a character description; LE1 spawns from four objects and knows nothing about who the player
 is. The scope is LE3 first, so this does not block anything today, but it is the reason LE1 is not "the
 same work again".
+
+## 2026-10-31 (roster): one call, two different things stored
+
+The roster has been described in this log as "a different edit per build" since the element type was
+first measured. The element type was right and the conclusion was wrong, because it looked at the store
+and not at the API in front of it.
+
+### The store, named properly
+
+`Members` is an array; its element is a child property. Resolving *that* property's type gives the answer
+the export table does not state outright:
+
+| build | `Members` | element |
+|---|---|---|
+| ME1 | `TArray<StructProperty>` | struct `MemberData` (17 fields) |
+| ME2 | `TArray<StructProperty>` | struct `MemberData` (7 fields) |
+| ME3 | `TArray<ObjectProperty>` | **class `Pawn`** (imported from `Core`) |
+
+So ME3's roster is **`TArray<Pawn>`**, not "`TArray<Object>`". A roster entry there **is the pawn**,
+where on ME1/ME2 it is a `MemberData` record *describing* a squad member. That is the real difference:
+LE3's roster holds the guest alive; LE1/LE2's holds a description of it.
+
+### The API, which is the same everywhere
+
+| build | `AddMember` | `RemoveMember` |
+|---|---|---|
+| ME1 | `(Pawn) -> int` | `(pPawn) -> bool` |
+| ME2 | `(Pawn, bCheckPlaypens) -> int` | `(pPawn) -> bool` |
+| ME3 | `(Pawn, bCheckPlaypens) -> int` | `(pPawn) -> bool` |
+
+**`AddMember` takes a pawn on every build and returns its index.** Adding the guest to the roster is one
+call whichever build is running; the pawn → `MemberData` conversion on LE1/LE2 happens inside the
+engine, not in the caller. So "S2 is three different edits" was wrong - S2 is one call plus a per-build
+decision about what the entry means.
+
+### Where the builds genuinely diverge
+
+| capability | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| `MemberAdded` notify | **base + player squad** | none | none |
+| `MemberRemoved` notify | yes | yes | yes |
+| `GetSpareController` / `SetSpareController(newCtrl)` / `SwapSpareController(oPawn, oOriginalController, oNewController)` | **yes** | no | no |
+| `BioPlayerSquad.SetPlayerPawn(PlayerPawn)` | no | no | **yes** |
+
+**ME1 has an explicit spare-controller slot and it is the only build that does.** `SetSpareController`
+takes a controller, `SwapSpareController` moves a pawn from one controller to another given the original
+and the new one. **Measured scope of the claim:** these three functions are declared on
+`BioPlayerSquad` in ME1's `SFXGame.pcc` and the string `SpareController` appears in **no other name in
+any of the 19,430 packages** - ME2 and ME3 have zero. So no property, class or function anywhere is named
+after them. That does not exclude a bytecode call site, which a name search cannot see, so "declared and
+named nowhere else" is the claim, not "never called".
+
+It is still a second-player mechanism sitting in the campaign's own squad class, and the closest thing in
+the trilogy to "player two's controller". It also explains why ME1's `CreatePlayer` crash earlier in this
+log was surprising: the machinery is there, dormant.
+
+**LE1 notifies on add, LE2/LE3 do not.** On LE2/LE3 `MemberAdded` does not exist, so adding a member runs
+no notification path and anything reacting to a squad change - HUD, powers, save records - has to be
+driven explicitly. That is a gap a co-op mod has to fill, not one it can hook.
+
+### Rules
+
+**Rule 80. Measure the API, not just the container.** `TArray<MemberData>` vs `TArray<Pawn>` looks like a
+rewrite and is one function call. The element type describes the storage; the functions describe the work.
+
+**Rule 81. An array's element is a child property, and its type is one field away.** `Members` says
+`ArrayProperty` and nothing else. The element class/struct is at +44 of the *inner* property, and reading
+it turned "TArray<Object>" into "TArray<Pawn>" - a statement about what the game does rather than what
+the type is called.
+
+**Rule 82. A dormant mechanism is a lead.** `SetSpareController` / `SwapSpareController` exist on LE1's
+`BioPlayerSquad` and the word `SpareController` appears nowhere else in 19,430 packages. That is either a
+feature that was built and switched off, or a stub - and both are cheaper to investigate than to
+reimplement.

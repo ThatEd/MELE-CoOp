@@ -305,14 +305,17 @@ def t_me3_capacity_clamp():
     return "ok", "ME3 campaign clamps to 1; ME1/ME2 inherit 32 and need no raise"
 
 
-@case("the squad roster element type differs: struct array (ME1/ME2) vs object array (ME3)")
+@case("the squad roster element differs: a MemberData record (ME1/ME2) vs the Pawn itself (ME3)")
 def t_roster_element_type():
     """`Members` is not the same container on ME3, and `MemberData` does not exist there.
 
     On ME1/ME2 `BioBaseSquad.Members` is a `TArray<MemberData>` - a struct holding `SquadMember`
-    plus per-member order/formation state. On ME3 the same property is a `TArray<Object>` and the
-    struct is gone. So code that adds a roster entry is a different edit per build, and a
-    `MemberData` field offset ported from ME2 to ME3 has nothing to apply to.
+    plus per-member order/formation state. On ME3 the same property is a `TArray<Pawn>`: the element
+    class resolves, via `property_class`, to the imported `Pawn` class, so a roster entry there **is**
+    the pawn rather than a description of one. A `MemberData` field offset ported from ME2 to ME3 has
+    nothing to apply to.
+
+    The store differs, but `rostercheck` (a separate case) pins that the call in front of it does not.
 
     The field counts are asserted as well, because "present but unreadable" would otherwise pass.
     """
@@ -330,7 +333,9 @@ def t_roster_element_type():
         return "fail", "ME2 roster shape changed:\n%s" % out.strip()
     if "ME3  Members is TArray<ObjectProperty>, MemberData ABSENT" not in out:
         return "fail", "ME3 roster shape changed:\n%s" % out.strip()
-    return "ok", "ME1/ME2 TArray<MemberData> (17/7 fields); ME3 TArray<Object>, no MemberData"
+    if "element class: Pawn (import)" not in out:
+        return "fail", "ME3 roster element is no longer Pawn:\n%s" % out.strip()
+    return "ok", "ME1/ME2 TArray<MemberData> (17/7 fields); ME3 TArray<Pawn>, no MemberData"
 
 
 @case("ME1 persists the actor graph and ME2/ME3 do not")
@@ -815,6 +820,45 @@ def t_spawn_payload():
     if "ME2  SFXGame   .SpawnDefaultPawnFor 29 param(s), parms 0xdc, PlayerInfo: True" not in out:
         return "fail", "LE2 campaign spawn changed shape:\n%s" % out.strip()
     return "ok", "PlayerInfoEx 7/8/9 fields; plot payload 1 struct, 1 holder; LE2/LE3 spawn take it"
+
+
+@case("the roster stores a record on LE1/LE2 and the pawn itself on LE3, behind one shared call")
+def t_roster_store_and_api():
+    """`Members` differs per build, and that reads like three different edits. It is one.
+
+    The store: `TArray<MemberData>` on LE1/LE2, `TArray<Pawn>` on LE3 - `MemberData` is absent from LE3
+    entirely, and its roster entry *is* the pawn.
+
+    The API in front of the store: `AddMember(Pawn) -> int` on every build, and `RemoveMember(pPawn) ->
+    bool`. So adding a guest is the same call everywhere; only the engine's array code differs. What
+    does differ per build is notification and control transfer - `MemberAdded` exists on LE1 only, LE1
+    alone has a spare-controller trio, LE3 alone has `SetPlayerPawn`.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_rostercheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_rostercheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2"):
+        line = [l for l in out.splitlines()
+                if l.strip().startswith(game) and "Members is" in l]
+        if not line or "element struct MemberData" not in line[0]:
+            return "fail", "%s roster store changed:\n%s" % (game, out.strip())
+    me3 = [l for l in out.splitlines() if l.strip().startswith("ME3") and "Members is" in l]
+    if not me3 or "element class Pawn" not in me3[0]:
+        return "fail", "LE3 roster no longer holds Pawns:\n%s" % out.strip()
+    if "BioBaseSquad   AddMember            (Pawn" not in out:
+        return "fail", "AddMember no longer starts with a Pawn:\n%s" % out.strip()
+    if "ME1  MemberAdded(notification); spare-controller slot" not in out:
+        return "fail", "LE1 notification/spare-controller surface changed:\n%s" % out.strip()
+    if "ME3  no MemberAdded - adding a member is silent; SetPlayerPawn" not in out:
+        return "fail", "LE3 surface changed:\n%s" % out.strip()
+    return "ok", "MemberData on LE1/LE2 vs Pawn on LE3; AddMember(Pawn) on all three"
 
 
 def main():

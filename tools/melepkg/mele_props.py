@@ -903,6 +903,10 @@ def cmd_coopcheck(args):
         nfields = len(mt.struct_fields(t, t["buf"], md[0])) if md else 0
         print("   %-4s Members is TArray<%s>, MemberData %s (%d fields)"
               % (game, inner.split(".")[-1], "present" if md else "ABSENT", nfields))
+        if inner.endswith("ObjectProperty"):
+            elem, kind = mt.property_class(t, t["buf"], kids[0])
+            print("        element class: %s (%s)" % (elem if kind in ("export", "import")
+                                                      else "unknown", kind))
         if inner.endswith("StructProperty") and not md:
             problems.append("%s: Members holds a struct but MemberData is absent" % game)
         if inner.endswith("StructProperty") and md and not nfields:
@@ -1848,6 +1852,158 @@ def cmd_spawncheck(args):
     return 0
 
 
+def _class_export(mt, t, class_name):
+    """The `UClass` export called `class_name`.
+
+    A class export carries `class_index == 0` in this serialized table - its own class is `Core.Class`,
+    which is an import the export record does not point at - so name alone is not enough: a property
+    called `Squad` and a class called `Squad` are both exports. Matching on `class_index == 0` is the
+    discriminator the rest of this module already relies on.
+    """
+    for e in t["exports"]:
+        if e["object_name"] == class_name and e["class_index"] == 0:
+            return e
+    return None
+
+
+def cmd_rostercheck(args):
+    """How a squad roster entry is added, and what has to happen for a guest to occupy one.
+
+    `coopcheck` measured the *store*: `Members` is `TArray<MemberData>` on LE1/LE2 and `TArray<Object>`
+    on LE3, `MemberData` absent. That reads like three different edits. It is not, because the API in
+    front of the store is the same on every build:
+
+        ME1  BioBaseSquad.AddMember(Pawn) -> int
+        ME2  BioBaseSquad.AddMember(Pawn, bCheckPlaypens) -> int
+        ME3  BioBaseSquad.AddMember(Pawn, bCheckPlaypens) -> int
+
+    **All three take a pawn and return its index.** So "add a third roster entry" is one call on every
+    build; only the backing array differs, and it is the engine's array code that differs, not the
+    caller's. `RemoveMember(pPawn) -> bool` is likewise shared, and `GetMember`/`GetMemberIndex` exist on
+    LE1/LE2 (LE3 has `GetMember` on the base class but no `GetMemberIndex`).
+
+    The interesting asymmetry is in the **notification and control-transfer hooks**:
+
+    * `MemberAdded` exists on LE1 only (`BioBaseSquad` and `BioPlayerSquad` both). LE2/LE3 have
+      `MemberRemoved` and no `MemberAdded`, so on those builds adding a member runs no notification path.
+    * LE1 also carries a spare-controller trio on `BioPlayerSquad`: `GetSpareController`,
+      `SetSpareController(newCtrl)`, `SwapSpareController(oPawn, oOriginalController, oNewController)`.
+      That is an explicit second-controller slot, and it is the only build that has one.
+    * LE3 carries `BioPlayerSquad.SetPlayerPawn(PlayerPawn)`, a direct way to tell the player squad which
+      pawn is the player's.
+
+    Needs only named packages, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    builds = {}
+
+    def game_tables(game):
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "SFXGame.pcc")
+            if os.path.isfile(cand):
+                return mt.build(cand)
+        return None
+
+    print("1. The store: what one roster entry is")
+    for game in ("ME1", "ME2", "ME3"):
+        t = game_tables(game)
+        if t is None:
+            problems.append("%s: no SFXGame.pcc" % game)
+            continue
+        mem = [e for e in t["exports"] if e["object_name"] == "Members"
+               and mt.describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.ArrayProperty"]
+        if not mem:
+            problems.append("%s: no Members ArrayProperty" % game)
+            continue
+        kids = [k for k in t["exports"] if k["outer_index"] == mem[0]["index"] + 1]
+        if not kids:
+            problems.append("%s: Members has no element property" % game)
+            continue
+        inner_cls = mt.describe_index(kids[0]["class_index"], t["exports"], t["imports"])
+        # A struct-typed array names its element struct, an object-typed one names its element class.
+        # Both live at +44 of the INNER property, not of the array.
+        if inner_cls.endswith("StructProperty"):
+            elem, kind = mt.property_struct(t, t["buf"], kids[0])
+            role = "struct"
+        elif inner_cls.endswith("ObjectProperty"):
+            elem, kind = mt.property_class(t, t["buf"], kids[0])
+            role = "class"
+        else:
+            elem, kind, role = None, "not a struct or object array", "?"
+        builds.setdefault(game, {})["members"] = (inner_cls.split(".")[-1], elem, role)
+        print("   %-4s Members is TArray<%s>, element %s %s (%s)"
+              % (game, inner_cls.split(".")[-1], role,
+                 elem if kind in ("export", "import") else "unknown", kind))
+        if game == "ME3" and elem != "Pawn":
+            problems.append("ME3: Members element is %r, not Pawn - the roster stopped holding pawns"
+                            % elem)
+
+    print()
+    print("2. The API: how an entry is added, and what notifies")
+    for game in ("ME1", "ME2", "ME3"):
+        t = game_tables(game)
+        if t is None:
+            continue
+        print("   %s" % game)
+        for cls_name in ("BioBaseSquad", "BioPlayerSquad"):
+            cls = _class_export(mt, t, cls_name)
+            if cls is None:
+                continue
+            funcs = _script_functions(mt, t, cls_name)[0]
+            for fn in ("AddMember", "RemoveMember", "MemberAdded", "MemberRemoved",
+                       "GetMember", "GetMemberIndex", "GetSpareController", "SetSpareController",
+                       "SwapSpareController", "SetPlayerPawn"):
+                e = funcs.get(fn)
+                if e is None or e["serial_size"] <= 4:
+                    continue
+                sig = mt.signature(t, t["buf"], e)
+                params = [n for n, _ty, _s, _o in sig["params"]]
+                print("      %-14s %-20s (%s)" % (cls_name, fn, ", ".join(params)))
+                builds.setdefault(game, {}).setdefault("api", {})[fn] = params
+                if fn == "AddMember" and (not params or params[0] != "Pawn"):
+                    problems.append("%s: %s.AddMember no longer takes a Pawn first - the "
+                                    "one-call-per-build claim fails" % (game, cls_name))
+        api = builds.get(game, {}).get("api", {})
+        if "AddMember" not in api:
+            problems.append("%s: no AddMember anywhere - a guest cannot join the roster" % game)
+
+    print()
+    print("3. The per-build differences that matter")
+    for game in ("ME1", "ME2", "ME3"):
+        api = builds.get(game, {}).get("api", {})
+        notes = []
+        if "MemberAdded" in api:
+            notes.append("MemberAdded(notification)")
+        else:
+            notes.append("no MemberAdded - adding a member is silent")
+        if "SetSpareController" in api:
+            notes.append("spare-controller slot")
+        if "SetPlayerPawn" in api:
+            notes.append("SetPlayerPawn")
+        print("   %-4s %s" % (game, "; ".join(notes)))
+        if game == "ME1" and "SetSpareController" not in api:
+            problems.append("ME1: the spare-controller trio is gone - re-read the LE1 plan")
+        if game == "ME3" and "SetPlayerPawn" not in api:
+            problems.append("ME3: BioPlayerSquad.SetPlayerPawn is gone")
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    stores = builds.get("ME1", {}).get("members", (None, None, None))
+    print("verdict: ME1/ME2 store a MemberData record per roster entry while ME3 stores the Pawn itself, ""so on LE3 the roster entry IS the guest pawn; the API in front of both is AddMember(Pawn) -> "
+          "int on every build, which means adding a guest is one call either way; only LE1 notifies on "
+          "add, only LE1 has a spare-controller slot, and only LE3 has SetPlayerPawn")
+    return 0
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -1917,6 +2073,10 @@ def main():
     p = sub.add_parser("spawncheck",
                        help="what a second player's pawn needs, and whether the campaign spawn takes it")
     p.set_defaults(func=cmd_spawncheck)
+
+    p = sub.add_parser("rostercheck",
+                       help="how a squad roster entry is added, and what a guest needs to occupy one")
+    p.set_defaults(func=cmd_rostercheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

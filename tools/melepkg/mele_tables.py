@@ -805,6 +805,40 @@ def property_struct(table, buf, prop_export):
     return target.get("object_name"), kind
 
 
+def property_class(table, buf, prop_export):
+    """The class an `ObjectProperty` holds, or None with a reason.
+
+    `UObjectProperty.PropertyClass` sits at the same serial +44 as `UStructProperty.Struct`, and the
+    measurement is just as clean: +44 resolves for 4,678/4,678 object properties in ME1's
+    `SFXGame.pcc`, 5,299/5,299 in ME2's and 7,985/7,993 in ME3's, with the targets being either a
+    `UClass` export or an import whose type is `Class` - `pTable -> Bio2DA`, `m_pTargetActor -> Actor`.
+
+    This is what turns "`Members` is `TArray<Object>`" into "`Members` is `TArray<Pawn>`", which is a
+    different statement about what a roster entry *is*.
+    """
+    if prop_export["serial_size"] < UPROPERTY_STRUCT + 4:
+        return None, "serial too small (%d bytes)" % prop_export["serial_size"]
+    if prop_export["serial_size"] != UPROPERTY_STRUCT_WIDTH:
+        return None, "unexpected width (%d bytes, not %d)" % (
+            prop_export["serial_size"], UPROPERTY_STRUCT_WIDTH)
+    disp = buffer_base(table["header"])
+    at = prop_export["serial_offset"] - disp + UPROPERTY_STRUCT
+    if at < 0 or at + 4 > len(buf):
+        return None, "field outside the buffer"
+    v = struct.unpack_from("<i", buf, at)[0]
+    kind, target = resolve_index(v, table["exports"], table["imports"])
+    if target is None:
+        return None, "package index %d does not resolve" % v
+    if kind == "import":
+        if (target.get("type_name") or "") != "Class":
+            return None, "references import %s, a %s, not a class" % (
+                target.get("object_name"), target.get("type_name"))
+        return target.get("object_name"), "import"
+    if target["class_index"] != 0:
+        return None, "points at %s, which is not a class" % target["object_name"]
+    return target["object_name"], "export"
+
+
 def _align(n, a):
     return (n + a - 1) // a * a
 
