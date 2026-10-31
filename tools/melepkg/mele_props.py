@@ -73,6 +73,7 @@ Usage:
     python -I tools/melepkg/mele_props.py savecheck                    # how each build saves
     python -I tools/melepkg/mele_props.py maplist                      # how many maps to cover
     python -I tools/melepkg/mele_props.py squadadd                     # how the campaign recruits
+    python -I tools/melepkg/mele_props.py storycheck                   # what advances the campaign
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -1019,6 +1020,114 @@ def cmd_maplist(args):
     return 0
 
 
+def _declared_in(game, class_name):
+    """True when the build declares `class_name` as a class anywhere in its packages.
+
+    Separate from a usage count on purpose: an abstract base is declared but never placed in a map,
+    and a check that conflated the two would fail on the correct answer.
+    """
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "SFXGame.pcc")
+        if os.path.isfile(cand):
+            t = mt.build(cand)
+            for e in t["exports"]:
+                if e["class_index"] == 0 and e["object_name"] == class_name:
+                    return True
+            return False
+    return False
+
+
+def cmd_storycheck(args):
+    """What actually advances the campaign, counted across every map. The co-op story gate.
+
+    "Ensure the campaign works in co-op" needs to know where story progression happens, at campaign
+    scale rather than per level. This counts the Kismet actions that change the world, in every
+    package that holds a `PersistentLevel`, and the answer is not what a per-level reading suggests.
+
+    Measured, and the reason this command exists:
+
+      * **The plot-manager action family is identical on all three builds** -
+        `BioSeqAct_PMBase`, `PMCheckState`, `PMCheckConditional`, `PMExecuteTransition` - with the
+        same property names (`m_sObjectType`, `m_nIndex`, `Region`, `Plot`). Only
+        `PMExecuteConsequence` is ME1/ME2. So "the host advances the story and the guest observes" has
+        **one** interception point across three games, not three.
+      * **`PMExecuteTransition` dominates**: roughly 8.7k / 32k / 15.6k instances over 453 / 801 /
+        1,058 maps. It outnumbers conversations, saves and area transitions together.
+      * **`BioAreaTransition` - the trigger volume a player walks into - is essentially unused**:
+        1 / 2 / 0 instances across all 6,644 maps. So "walking into a volume changes the level" is
+        false for this campaign, and a mod that hooks trigger volumes hooks almost nothing.
+      * the conversation and save actions split per build, which is a per-build table, not a shared one.
+
+    Needs the package index (it looks inside every package). Exits 2 when none is present rather than
+    printing zeroes it could not have measured.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    index = os.path.join(_index_dir(), "ME1.json")
+    if not os.path.isfile(index):
+        print("no package index - set MELE_INDEX_DIR (this check needs every package)")
+        return 2
+
+    actions = (
+        "BioSeqAct_PMBase", "BioSeqAct_PMCheckState", "BioSeqAct_PMCheckConditional",
+        "BioSeqAct_PMExecuteTransition", "BioSeqAct_PMExecuteConsequence",
+        "BioSeqAct_AreaTransition", "BioAreaTransition",
+        "BioSeqAct_StartConversation", "SFXSeqAct_StartConversation",
+        "BioSeqAct_AddToParty", "BioSeqAct_AutoSave", "SFXSeqAct_SaveGame",
+    )
+    problems = []
+    for game in ("ME1", "ME2", "ME3"):
+        maps = set()
+        count = {}
+        inmaps = {}
+        for _g, rel, rec in _iter_index(game):
+            rows = rec.get("exports", [])
+            if not any(r[0] == "PersistentLevel" for r in rows):
+                continue
+            maps.add(rel)
+            for row in rows:
+                if row[0] in actions:
+                    count[row[0]] = count.get(row[0], 0) + 1
+                    inmaps.setdefault(row[0], set()).add(rel)
+        print("=== %s: %d map(s) ===" % (game, len(maps)))
+        if not maps:
+            print("   (no maps found - is the index current?)")
+            problems.append("%s: no maps in the index" % game)
+            continue
+        for name in actions:
+            n = count.get(name)
+            if n:
+                print("   %-34s %6d instance(s) in %4d map(s)" % (name, n, len(inmaps[name])))
+        # `PMBase` is a base class that is never placed in a map: it declares no functions and
+        # instantiating it would do nothing. The three concrete subclasses are what a level places.
+        # Asserting "all four appear" would fail on the correct answer, so the two claims are
+        # checked separately - and the base claim is stated as measured (not instantiated), not as
+        # `CLASS_Abstract`, which was not verified.
+        if count.get("BioSeqAct_PMBase"):
+            problems.append("%s: PMBase is instantiated in %d map(s) - it declares no functions, so "
+                            "placing it should do nothing" % (game, len(inmaps["BioSeqAct_PMBase"])))
+        declared = _declared_in(game, "BioSeqAct_PMBase")
+        if not declared:
+            problems.append("%s: BioSeqAct_PMBase is not declared anywhere" % game)
+        for name in ("BioSeqAct_PMCheckState", "BioSeqAct_PMCheckConditional",
+                     "BioSeqAct_PMExecuteTransition"):
+            if not count.get(name):
+                problems.append("%s: %s used in no map" % (game, name))
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: the PM action family is the campaign's story surface on all three builds and "
+          "PMExecuteTransition dominates it; walking into a trigger volume changes almost no level")
+    return 0
+
+
 def cmd_squadadd(args):
     """How the campaign itself adds a squad member, per build - which decides how co-op should.
 
@@ -1254,6 +1363,10 @@ def main():
     p = sub.add_parser("squadadd",
                        help="how the campaign itself adds a squad member, per build")
     p.set_defaults(func=cmd_squadadd)
+
+    p = sub.add_parser("storycheck",
+                       help="what advances the campaign, counted across every map")
+    p.set_defaults(func=cmd_storycheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

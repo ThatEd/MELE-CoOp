@@ -304,7 +304,8 @@ the client's pawn does not survive it — it must be destroyed and re-created on
 | **powers** | target + power id request; host resolves | cooldown timers (host owns) | double-fire or no fire |
 | **enemies** | host only | client never simulates AI | client sees enemies as puppets; acceptable |
 | **conversation** | host drives `BioConversation`; client receives camera + node | who *owns* a choice when both could pick | client sees the conversation; picking is a **contention** question, not a missing call — see below |
-| **map events / triggers** | host drives; client receives state | client never fires Kismet | client walking through a trigger does nothing — this is the **deliberate** design, see `TRIGGER-DELAY.md` |
+| **map events / triggers** | host drives; client receives state | client never fires Kismet | client walking through a trigger does nothing — **deliberate**, and cheap to enforce because `BioAreaTransition` is used 3 times in 6,644 maps |
+| **story progression** | host only | client never advances the plot | the campaign advances through `BioSeqAct_PMExecuteTransition` — **56,568 instances across 2,312 map placements** (453 + 801 + 1,058), one shared action family on all three builds |
 | **galaxy map / travel** | host only; client follows | client never starts a jump | client is frozen or in a stale level if the host travels — and the pawn **is** destroyed, see below |
 | **saves** | host only | client has none | client crash costs nothing |
 | **cinematics / matinee** | host drives | client is a passenger | looks right |
@@ -328,6 +329,51 @@ Three rows are the holes, and they are stated as such:
   a machine that is not authoritative. `EWhoTriggers` already has `WT_PlayerOnly` (value 0 on all
   three, measured) and ME3 adds `WT_PlayerOnlyLocal` at 1 — **and ME3 renumbers everything after it**,
   so the same integer means a different policy per build. See `TRIGGER-DELAY.md`.
+
+## 4b. Story progression: one shared surface, and it is not a trigger volume
+
+The campaign does not advance when the player walks through a door. Counting the Kismet actions that
+change the world, in every package holding a `PersistentLevel` (1,811 / 2,156 / 2,677 maps):
+
+| action | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| **`BioSeqAct_PMExecuteTransition`** | **8,752 / 453 maps** | **32,209 / 801** | **15,607 / 1,058** |
+| `BioSeqAct_PMCheckState` | 4,913 / 473 | 12,019 / 815 | 14,422 / 1,014 |
+| `BioSeqAct_PMCheckConditional` | 1,824 / 227 | 12,613 / 386 | 12,686 / 722 |
+| `BioSeqAct_AreaTransition` | 837 / 43 | 271 / 157 | 30 / 22 |
+| **`BioAreaTransition`** (trigger volume) | **1 / 1** | **2 / 2** | **0 / 0** |
+
+**`BioSeqAct_PMBase` and its three concrete subclasses carry identical class names and identical
+property names on all three builds:**
+
+```
+BioSeqAct_PMBase              m_sObjectType(Str)  m_nIndex(Int)  Region(Byte)  Plot(Byte)
+BioSeqAct_PMCheckState        OutValue(Bool)      State(Byte)
+BioSeqAct_PMCheckConditional  Param(Int)          OutValue(Bool)  Conditional(Byte)
+BioSeqAct_PMExecuteTransition Param(Int)          Transition(Byte)
+```
+
+(ME1/ME2's base adds `m_sVarName`, `m_nPrevRegionIndex`, `m_nPrevPlotIndex`; ME3 drops those three.
+`PMExecuteConsequence` is ME1/ME2 only. `PMBase` is declared and never placed in a map, because it
+declares no functions.)
+
+So **"the host advances the story and the guest observes" has one interception point across three
+games**, and it sits at the story layer rather than the engine layer - a stronger place to enforce
+authority than the mutator hook in §2, which can only decide what an actor is, not what the campaign
+believes.
+
+**And the trigger volume is not it.** `BioAreaTransition` - a `TriggerVolume` with `sMoveToArea` /
+`sMoveToStartPoint` - is used **once in ME1, twice in ME2 and never in ME3**. A mod that hooks trigger
+volumes to follow the host's level change hooks essentially nothing. The shared, cheap seam for a
+level change is still `AreaName` + `StartPoint` (the same two names on the Kismet action and on the
+volume, on all three builds), but the campaign reaches it far less often than it reaches the plot
+manager.
+
+Conversations and saves *do* split per build, and ME2 is the awkward one - it carries **both**
+`BioSeqAct_StartConversation` and `SFXSeqAct_StartConversation`, so hooking one covers part of that
+game and silently misses the rest. ME1 uses `BioSeqAct_AutoSave`; ME2/ME3 use `SFXSeqAct_SaveGame`.
+
+Reproduce with `python -I tools/melepkg/mele_props.py storycheck`.
 
 ## 5. The per-build table, measured
 

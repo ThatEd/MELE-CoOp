@@ -612,6 +612,67 @@ def t_cited_tools_exist():
     return "ok", "%d tools/ citation(s) checked, all present or explicitly marked absent" % checked
 
 
+@case("the plot-manager action family is the campaign's shared story surface")
+def t_story_surface_is_shared():
+    """Where the campaign's story actually advances, at campaign scale.
+
+    This is the measurement behind "the host advances the story and the guest observes". It has one
+    interception point across three games rather than three: `BioSeqAct_PMBase` and its three concrete
+    subclasses (`PMCheckState`, `PMCheckConditional`, `PMExecuteTransition`) carry the same class names
+    and the same property names on ME1/ME2/ME3.
+
+    Two findings that a per-level reading gets wrong and this asserts:
+
+    * `PMExecuteTransition` dominates - thousands of instances over hundreds of maps, more than
+      conversations, saves and area transitions combined.
+    * `BioAreaTransition`, the trigger volume a player walks into, is essentially unused (1 / 2 / 0
+      across all 6,644 maps). A mod that hooks trigger volumes to follow the host's level change hooks
+      almost nothing; the plot manager is what moves a career forward.
+
+    `PMBase` is declared, has a class default object, declares no functions, and is instantiated in
+    **zero** maps - placing it would do nothing, so levels place the concrete subclasses. A check that
+    expected it in maps would fail on the correct data. (It is *not* claimed to be `CLASS_Abstract`:
+    the class flags were not read, and the zero-instance count is the measured fact.)
+    """
+    import io
+    import contextlib
+    index = os.path.join(mp._index_dir(), "ME1.json")
+    if not os.path.isfile(index):
+        return "skip", "no package index (storycheck needs every package; set MELE_INDEX_DIR)"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_storycheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_storycheck returned %d:\n%s" % (rc, out.strip())
+    if "PM action family is the campaign's story surface" not in out:
+        return "fail", "verdict missing:\n%s" % out.strip()
+    import re
+    for game in ("ME1", "ME2", "ME3"):
+        # Each block runs from its own header to the next, so capture between markers rather than
+        # splitting on the header text (which leaves only the header remainder).
+        m = re.search(r"=== %s:([^\n]*)\n(.*?)(?==== ME|\Z)" % game, out, re.S)
+        if not m:
+            return "fail", "%s block missing:\n%s" % (game, out.strip())
+        section = m.group(2)
+        if "BioSeqAct_PMExecuteTransition" not in section:
+            return "fail", "%s lost PMExecuteTransition" % game
+        if "BioSeqAct_PMCheckState" not in section:
+            return "fail", "%s lost PMCheckState" % game
+    # The trigger-volume claim is the one that corrects a natural assumption, so pin it too.
+    me1 = out.split("=== ME1:")[1].split("===")[0]
+    if "BioAreaTransition" in me1:
+        line = [l for l in me1.splitlines() if "BioAreaTransition" in l][0]
+        n = int(line.split()[1])
+        if n > 50:
+            return "fail", ("ME1 BioAreaTransition is used %d times - the 'almost unused' claim is "
+                            "wrong" % n)
+    return "ok", ("PM family shared on all three; ME1 area-trigger volume used 1 time across 1,811 "
+                  "maps")
+
+
 def main():
     failures = 0
     skips = 0

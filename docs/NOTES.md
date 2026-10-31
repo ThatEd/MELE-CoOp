@@ -4718,3 +4718,94 @@ to re-measure puts the next person back where the last one started.
 **Two copies of parsing code is a drift bug waiting to be filed.** The ported modules are byte-
 identical by hash, not by intent, and the two fixes it surfaced were made in the original rather than
 the copy.
+## 2026-10-31 (story surface): the campaign advances through the plot manager, and area triggers are nearly unused
+
+The first campaign-scale measurement rather than a per-level one. Re-runnable:
+`python -I tools/melepkg/mele_props.py storycheck` (needs the package index).
+
+"Ensure the campaign works fully in co-op" needs to know **where** story progression happens and
+**how many places** it happens in. Counting the Kismet actions that change the world, in every package
+that holds a `PersistentLevel` - 1,811 / 2,156 / 2,677 maps:
+
+| action | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| `BioSeqAct_PMCheckState` | 4,913 / 473 maps | 12,019 / 815 | 14,422 / 1,014 |
+| `BioSeqAct_PMCheckConditional` | 1,824 / 227 | 12,613 / 386 | 12,686 / 722 |
+| **`BioSeqAct_PMExecuteTransition`** | **8,752 / 453** | **32,209 / 801** | **15,607 / 1,058** |
+| `BioSeqAct_PMExecuteConsequence` | 38 / 15 | — | — |
+| `BioSeqAct_AreaTransition` | 837 / 43 | 271 / 157 | 30 / 22 |
+| **`BioAreaTransition`** (trigger volume) | **1 / 1** | **2 / 2** | **0 / 0** |
+| `BioSeqAct_StartConversation` | 762 / 283 | 821 / 280 | — |
+| `SFXSeqAct_StartConversation` | — | 940 / 389 | 1,944 / 692 |
+| `BioSeqAct_AddToParty` | 426 / 52 | 402 / 138 | 244 / 201 |
+| `BioSeqAct_AutoSave` | 178 / 159 | — | — |
+| `SFXSeqAct_SaveGame` | — | 800 / 413 | 983 / 499 |
+
+### 1. The story surface is shared, and it is the plot manager
+
+`BioSeqAct_PMBase` and its three concrete subclasses carry **identical class names and identical
+property names on all three builds**:
+
+    BioSeqAct_PMBase            m_sObjectType(Str) m_nIndex(Int) Region(Byte) Plot(Byte)
+    BioSeqAct_PMCheckState      OutValue(Bool) State(Byte)
+    BioSeqAct_PMCheckConditional Param(Int) OutValue(Bool) Conditional(Byte)
+    BioSeqAct_PMExecuteTransition Param(Int) Transition(Byte)
+
+ME1/ME2's base adds `m_sVarName`, `m_nPrevRegionIndex`, `m_nPrevPlotIndex`; ME3 drops those three.
+`PMExecuteConsequence` is ME1/ME2 only.
+
+So **"the host advances the story and the guest observes" has one interception point across three
+games**, not three. That is a stronger and more useful statement than the engine-level "one mutator, 32
+identical hooks" claim, because it sits at the story layer where the authority question actually lives.
+`PMBase` itself is never placed in a map (it declares no functions); the three subclasses are.
+
+### 2. Walking into a trigger volume changes almost no level, and that corrects an assumption
+
+`BioAreaTransition` - a `TriggerVolume` carrying `sMoveToArea` / `sMoveToStartPoint` - is instantiated
+**once in ME1, twice in ME2, and never in ME3**, across 6,644 maps. A mod that hooks trigger volumes to
+follow the host's level change hooks essentially nothing.
+
+`BioSeqAct_AreaTransition` (the Kismet action, `AreaName` + `StartPoint`) is used 837 / 271 / 30 times -
+real, but two orders of magnitude below `PMExecuteTransition`. ME3 adds an `Arguments` StrProperty to
+it that ME1/ME2 do not have.
+
+The level-change seam that *is* shared and cheap to intercept is still `AreaName` + `StartPoint`, which
+are the same two property names on the Kismet action and on the trigger volume, on all three builds.
+It is just that the campaign reaches it far less often than it reaches the plot manager.
+
+### 3. Conversations and saves split per build; the plot manager does not
+
+| surface | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| conversation | `BioSeqAct_StartConversation` | **both** `Bio…` and `SFX…` | `SFXSeqAct_StartConversation` only |
+| save | `BioSeqAct_AutoSave` | `SFXSeqAct_SaveGame` | `SFXSeqAct_SaveGame` |
+| recruitment | `BioSeqAct_AddToParty` | same | same |
+
+ME2 carrying **both** conversation actions is the awkward case: a mod that hooks one of them covers
+part of that game and silently misses the rest.
+
+### 4. The plot enums are stubs, so story state is not enumerable from them
+
+`EBioPlotAutoSet` and `EBioRegionAutoSet` have **two members each** (`Plot_Unset`, `Plot_MAX` /
+`Region_Unset`, `Region_MAX`). They are formal types for a value space that is defined in the plot
+manager's data, not in the enum. So the size of story state cannot be read from the enum, and a
+co-op sync plan cannot budget for it from here - it has to come from the plot manager tables.
+
+`EPlotChoice` (4 members: `None`, `KaidenDies`, `AshleyDies`, `MAX`) and `SFXPlotType` (Float,
+Integer, Boolean) are ME3-only and are the one place the plot value's *type* is stated.
+
+### Rule 63
+
+**Progression is where the game says it is, not where the fiction says it is.** Every instinct says a
+campaign moves forward when the player walks through a door; for this trilogy it moves forward when a
+Kismet node tells the plot manager to advance - `PMExecuteTransition` alone runs 56,568 times across
+2,312 map placements - while the door volume is used 3 times in total across 6,644 maps. The
+measurement took one command and would have prevented an implementation that hooked the wrong class on
+all three builds.
+
+### Rule 64
+
+**A shared base class is not a shared surface.** `BioSeqAct_PMBase` is in all three builds and is
+placed in zero maps, because it declares no functions. "The class exists everywhere" and "the class is
+used anywhere" are separate measurements, and assuming the first implies the second is how a per-build
+table acquires a row that is really a constant.
