@@ -5061,3 +5061,42 @@ subsystem looks missing, search the argument lists for the type you wish existed
 **Rule 75. The clamps are on the base class.** `SFXGameInfoSP` sets one property and inherits the
 `MaxPlayersAllowed=1` that the design has been planning around. Patch where the value lives, not where
 the class you were looking at happens to be.
+
+## 2026-10-31 (plot sync primitives): LE3 has a whole-state get/set pair
+
+Follow-on from the plot-state shape. The question was whether syncing LE3's story state means poking
+flags one at a time or handing over a blob. `BioGlobalVariableTable` answers it: it has a symmetric
+pair over a struct.
+
+| function | signature | parms block |
+|---|---|---|
+| `GetPlayerPlotData` | `(out PlayerData: Struct) -> void` | 0x10 |
+| `SetPlayerPlotData` | `(PlayerData: Struct) -> void` | 0x10 |
+| `CopyPlots` | `(toCopy: Array) -> void` | 0x10 |
+| `ApplyCanonPlots` | `(aCanonPlotVariables: Array) -> void` | 0x10 |
+| `CopyME2PlotData` | `(LegacyImportSaveGame: Object) -> void` | 0x8 |
+| `ClearAllVariables` | `(bPersistME1ME2plots: bool) -> void` | 0x4 |
+
+So on LE3 the co-op plot sync is: **call `GetPlayerPlotData` on the host, ship the struct, call
+`SetPlayerPlotData` on the guest.** No per-flag enumeration, no delta log, and no new serialization
+format - the game already has the getter, the setter and the struct, and uses the same pair for its own
+ME1/ME2 import paths (`CopyME2PlotData`, `MergeME1PlotRecord`, `DoME3NewGamePlusImport`).
+
+Also present on the same class, and worth knowing for QA rather than for shipping: `MajorPlot_*`
+accessors for the campaign's named branch points - `MajorPlot_ME1_RachniiQueenSaved`,
+`MajorPlot_ME1_VirmireSurvivor_IsAsh`, `MajorPlot_ME1_WrexStatus`, `MajorPlot_ME1_SavedTheCouncil`,
+`MajorPlot_ME2_DestroyedMaelonsData`, `MajorPlot_ME2_SavedMaelonsData`,
+`MajorPlot_ME2_HerteticsStatus`, `MajorPlot_ME2_CollectorBaseStatus`,
+`MajorPlot_ME2_NumberOfSuicideMissionSurvivors`, `MajorPlot_ME2_Romance`. Those are the flags a bot can
+assert on after a guest joins, which is a much better test than "the level loaded".
+
+**Unknown, and left as unknown:** the struct that `PlayerData` is typed as. The parameter's serial does
+not name it in a way this reader resolves - both getter and setter are `StructProperty` at 48 bytes and
+the words inside do not agree with each other, so the struct name is not being read here. It is very
+probably `PlotTableSaveRecord` (same class family, same save path), but "probably" is not measured, and
+guessing it would put an unverified type at the centre of the sync design.
+
+### Rule 76. Look for the getter/setter pair before designing a format.
+The design had a section on how to serialise plot state. The engine already had `GetPlayerPlotData` and
+`SetPlayerPlotData` over a struct, used by its own import paths. Grep the class that owns the state for
+`Get*`/`Set*` before inventing an encoding.

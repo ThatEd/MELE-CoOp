@@ -422,6 +422,27 @@ the *named* integer variables, which is why the names are not the whole set.
 
 Reproduce with `python -I tools/melepkg/mele_props.py plotcheck`.
 
+**How it actually gets synced on LE3.** The plot manager has a symmetric pair over a struct, already
+used by the game's own ME1/ME2 import paths:
+
+| function | signature |
+|---|---|
+| `GetPlayerPlotData` | `(out PlayerData: Struct) -> void` |
+| `SetPlayerPlotData` | `(PlayerData: Struct) -> void` |
+| `CopyPlots` | `(toCopy: Array) -> void` |
+| `ApplyCanonPlots` | `(aCanonPlotVariables: Array) -> void` |
+
+So the sync is: call `GetPlayerPlotData` on the host, ship the struct, call `SetPlayerPlotData` on the
+guest. No delta log, no per-flag enumeration, and no new format — the game already has the getter, the
+setter and the struct. The struct's own name is **not** resolved by the offline reader (both ends are a
+48-byte `StructProperty` and the words inside disagree), so it is very probably `PlotTableSaveRecord`
+but that is stated as probable, not measured.
+
+The same class also exposes named accessors for the campaign's branch points —
+`MajorPlot_ME1_RachniiQueenSaved`, `MajorPlot_ME1_VirmireSurvivor_IsAsh`, `MajorPlot_ME1_WrexStatus`,
+`MajorPlot_ME1_SavedTheCouncil`, `MajorPlot_ME2_*` — which are the flags an automated test should assert
+on after a guest joins, rather than "the level loaded".
+
 ## 4d. Accepting a second player is a class override, not a binary patch
 
 `joincheck` answers the question the whole plan rests on: is the code that decides about a joining
