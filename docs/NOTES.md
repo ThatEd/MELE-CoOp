@@ -4990,9 +4990,9 @@ it is measured.
 
 | build | campaign class | package | script overrides | join-chain members |
 |---|---|---|---|---|
-| ME1 | `BioSPGame` | `SFXGame.pcc` | 18 | `SpawnDefaultPawnFor`, `FindPlayerStart` |
-| ME2 | `BioSPGame` | `SFXGame.pcc` | **4** | **none** |
-| ME3 | `SFXGame` | `SFXGame.pcc` | 80 | `RestartPlayer`, `SpawnDefaultPawnFor` |
+| ME1 | `BioSPGame` | `SFXGame.pcc` | 17 of 18 declared | `SpawnDefaultPawnFor`, `FindPlayerStart` |
+| ME2 | `BioSPGame` | `SFXGame.pcc` | **4 of 4** | **none** |
+| ME3 | `SFXGame` | `SFXGame.pcc` | **70 of 80 declared** | `RestartPlayer`, `SpawnDefaultPawnFor` |
 
 ME1's 18 include `SpawnPlayer`, `SpawnPawn`, `SpawnHenchman`, `SpawnPlayerSquadMembers`,
 `CalculateHenchmanSpawn`, `SetupPartyMemberAttributes`, `FindStartingNavPoint`,
@@ -5627,3 +5627,65 @@ of a class's functions says nothing about which of the engine's contracts it uph
 `Possess` is replaced on `BioPlayerController` *and* on `SFXPlayerController`. Two independent overrides of
 the same function is the game saying that possession is where its own behaviour lives - and therefore where a
 mod's has to go too.
+
+## 2026-10-31 (correction): a native function still carries a stub body, so 20% of "script" was not script
+
+Found while trying to read a native function index: the field the bytecode module documents at `serial +32`
+is not there, the **bytecode starts at +32**, and the header is
+
+    +0   FName index        +4   constant 13240      +8, +12  zeros
+    +16  FName index        +20  FName index         +24  (unknown, correlates with +28)
+    +28  bytecode length    +32  bytecode ...
+
+which is why reading an int32 at +32 produced values like `-1711265017`: that was the first instruction, not
+a name.
+
+### What that exposed
+
+`mele_props` had been treating `serial_size > 4` as "this is implemented in script". A native function still
+emits a return, so its body is **2-3 bytes**:
+
+| body | count on ME1 `Engine.pcc` | count on ME3 |
+|---|---|---|
+| `04 0b 53` | 559 | 543 |
+| `0b 53` | 531 | 514 |
+| `0b 04 0b 53` | 12 | 13 |
+
+**1,102 of 5,416 functions on ME1 and 1,070 of 5,279 on ME3 are that shape - about 20%.** So one fifth of
+everything this project called a "script function" is a declaration with a stub, and every count built on
+the old test was inflated by roughly that much.
+
+### What changed, and what did not
+
+`mele_tables.function_bytecode()`, `function_body()` and `is_implemented()` now use the proven extent, and
+`mele_props._implemented()` filters on it. The corrected counts:
+
+| measurement | before | after |
+|---|---|---|
+| ME1 `BioSPGame` overrides | 18 | **17 of 18** |
+| ME3 `SFXGame` overrides | 80 | **70 of 80** |
+| ME1 `PlayerController` script functions | 364 | **329** |
+| ME3 `BioPlayerController` script functions | 272 | **236** |
+| ME1 `PlayerController` `Client*` functions | 65 | **59** |
+| ME3 `SFXGRI` functions | 32 | **27 of 32** |
+| ME3 `SFXPRI` functions | 27 | **23 of 27** |
+
+**Every substantive claim survived**, because each rested on a specific function's body length rather than on
+a count: `Login` is 2,127 bytes, `ServerMove` 1,905, `AtCapacity` 139, `SpawnDefaultPawnFor` 209-2,442,
+`Possess` 336, `SpawnNewPlayerPawn` 494. The 9/9 join chain is still 9/9. `ServerMove` is still never
+replaced. `Possess` is still the seam. Only the totals moved.
+
+### Rule 96. A declaration is not an implementation.
+`serial_size > 4` looked like a safe test for "has a body" and is not, because UE3 gives a native function a
+stub body so the interpreter has a return to execute. The extent is proven by closure; the *content* is what
+separates a stub from an implementation, and the stub shapes are exactly three byte strings.
+
+### Rule 97. When a documented offset produces nonsense, suspect the document, not the data.
+Reading an int32 at `serial +32` gave `671089225`, `-1711265017`, `1800887823` - values that are stable per
+function and meaningless as indices. That is not a corrupt field; it is bytecode being read as a field. The
+tell was that the same garbage appeared for several unrelated functions, which a real index would not.
+
+### Rule 98. Recount after fixing a measurement, and check which claims depended on the number.
+Six counts in this log were inflated by 10-20%. None of the conclusions changed, because each had been
+phrased around a specific function whose body is hundreds of bytes - but that was luck as much as design. A
+count that is only ever used as "a lot" is a count that cannot be wrong; a count used in a comparison can.

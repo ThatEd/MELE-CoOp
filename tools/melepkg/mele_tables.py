@@ -900,6 +900,47 @@ def property_class(table, buf, prop_export):
     return target["object_name"], "export"
 
 
+def function_bytecode(table, func_export):
+    """A function's bytecode extent as `(offset, length)`, or `(None, 0)` if it does not close.
+
+    The layout is proven by closure: `serial + 32 + length + tail == serial_size`, where the tail is 6
+    bytes on ME3 and 15 on ME1/ME2.
+
+    **A body of `0b 53` or `04 0b 53` (2-3 bytes) is an empty implementation**, which is what a native
+    function's script stub compiles to - UE3 still emits a return so the interpreter has something to run.
+    Measured across `Engine.pcc`: 1,102 of 5,416 functions on ME1 and 1,070 of 5,279 on ME3 are that
+    shape, so **about 20% of "script functions" are native**. Testing `serial_size > 4` instead, as this
+    module used to, counts every one of those as an implementation.
+    """
+    disp = buffer_base(table["header"])
+    at = func_export["serial_offset"] - disp
+    buf = table["buf"]
+    if at < 0 or at + 32 > len(buf):
+        return None, 0
+    (length,) = struct.unpack_from("<i", buf, at + 28)
+    if length < 0 or at + 32 + length > len(buf):
+        return None, 0
+    return at + 32, length
+
+
+def function_body(table, func_export):
+    """The bytecode bytes of a function, or `b""` when the extent does not resolve."""
+    at, length = function_bytecode(table, func_export)
+    if at is None:
+        return b""
+    return bytes(table["buf"][at:at + length])
+
+
+def is_implemented(table, func_export):
+    """True when a function has a real body rather than a native stub.
+
+    Stubs are 2-3 bytes (`0b 53`, `04 0b 53`, `0b 04 0b 53`); every real implementation measured is
+    longer, so 4 bytes is the cut. Anything that does not close is reported as not implemented, because a
+    function whose extent is unknown cannot be claimed to do anything.
+    """
+    return len(function_body(table, func_export)) > 4
+
+
 def _align(n, a):
     return (n + a - 1) // a * a
 

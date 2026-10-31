@@ -480,11 +480,15 @@ native patch to *decide* about a second player.
 
 What differs is how much of that each campaign game class already replaces:
 
-| build | campaign class | script overrides | touches the join chain |
+| build | campaign class | script overrides (with a real body) | touches the join chain |
 |---|---|---|---|
-| LE1 | `BioSPGame` | 18 | `SpawnDefaultPawnFor`, `FindPlayerStart` |
-| LE2 | `BioSPGame` | 4 | **nothing** |
-| LE3 | `SFXGame` | 80 | `RestartPlayer`, `SpawnDefaultPawnFor` |
+| LE1 | `BioSPGame` | 17 of 18 declared | `SpawnDefaultPawnFor`, `FindPlayerStart` |
+| LE2 | `BioSPGame` | 4 of 4 | **nothing** |
+| LE3 | `SFXGame` | **70 of 80** | `RestartPlayer`, `SpawnDefaultPawnFor` |
+
+The "of N declared" matters: a UE3 native function still carries a 2–3 byte stub body (`0b 53`), so 10 of
+`SFXGame`'s 80 declared functions are declarations rather than implementations. An earlier count here said
+80 because it tested serial size rather than bytecode length.
 
 ME2 is the outlier in the other direction: its campaign class overrides only `Reset`,
 `SetupPartyMemberAttributes`, `SpawnGameOverGUI` and `StartMatch`, so its join path is the stock

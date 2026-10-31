@@ -950,7 +950,7 @@ def t_gri_surface():
         return "fail", "ME3 no longer points at SFXGRISP:\n%s" % out.strip()
     if "SFXGRISP                  0 property(ies),  0 function(s)" not in out:
         return "fail", "SFXGRISP is no longer a pure alias:\n%s" % out.strip()
-    if "35 property(ies), 32 function(s)" not in out:
+    if "35 property(ies), 32 function(s) (27 with a real body)" not in out:
         return "fail", "SFXGRI shape changed:\n%s" % out.strip()
     if "closure EXACT" not in out:
         return "fail", "Default__SFXGRI no longer closes exactly:\n%s" % out.strip()
@@ -964,7 +964,7 @@ def t_gri_surface():
         return "fail", "SFXGRI.CopyProperties changed:\n%s" % out.strip()
     if "5. The per-player replication info, SFXPRI" not in out:
         return "fail", "SFXPRI section missing:\n%s" % out.strip()
-    if "10 property(ies), 27 function(s)" not in out:
+    if "10 property(ies), 27 function(s) of which 23 have a real body" not in out:
         return "fail", "SFXPRI shape changed:\n%s" % out.strip()
     if "ReplicatedScoreInfo" not in out:
         return "fail", "SFXPRI no longer replicates score info:\n%s" % out.strip()
@@ -1120,6 +1120,69 @@ def t_replication_surface():
         return "fail", "SFXPlayerController.Possess no longer has the stock signature:\n%s" % out.strip()
     return "ok", ("1.8% of engine properties replicate; 5/5 join RPCs x3; ServerMove never replaced; "
                   "Possess is the seam, squad-aware on LE2/LE3 only; Projectile replicates nothing")
+
+
+@case("a native function carries a 2-3 byte stub, so bytecode length is the script test")
+def t_native_stub_discriminator():
+    """`serial_size > 4` cannot tell an implementation from a declaration, and this module used it.
+
+    A UE3 native function still emits a return, so its body is `0b 53` (2 bytes) or `04 0b 53` (3 bytes).
+    Measured across `Engine.pcc`: 1,102 of 5,416 functions on ME1 and 1,070 of 5,279 on ME3 are that
+    shape - **about 20% of what the old test called "script functions" is native**.
+
+    `mt.is_implemented` uses the bytecode length instead. The check here is that the two populations are
+    both non-empty and that the stub shapes are exactly the three known ones, because a change to those
+    would silently reclassify a fifth of the engine.
+    """
+    import collections
+    import io
+    import contextlib
+    mt = mp.load_tables()
+    pkg = mt.load_pkg()
+    base = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "Engine.pcc")
+        if os.path.isfile(cand):
+            base = cand
+            break
+    if not base:
+        return "skip", "install absent"
+    t = mt.build(base)
+    funcs = [e for e in t["exports"]
+             if mt.describe_index(e["class_index"], t["exports"], t["imports"]) == "Core.Function"]
+    if len(funcs) < 1000:
+        return "fail", "only %d function(s) found in Engine.pcc" % len(funcs)
+    shapes = collections.Counter()
+    stubs = real = 0
+    for e in funcs:
+        body = mt.function_body(t, e)
+        if len(body) <= 4:
+            stubs += 1
+            shapes[body.hex(" ")] += 1
+        else:
+            real += 1
+    if not stubs or not real:
+        return "fail", "no separation between stubs and implementations: %d / %d" % (stubs, real)
+    unexpected = {k: v for k, v in shapes.items() if k not in ("0b 53", "04 0b 53", "0b 04 0b 53", "")}
+    if unexpected:
+        return "fail", "unexpected stub body shape(s): %s" % unexpected
+    share = 100.0 * stubs / len(funcs)
+    if not 10.0 < share < 30.0:
+        return "fail", "stub share is %.1f%%, outside the measured 10-30%% band" % share
+    # And the functions this project relies on really are implemented, not stubs.
+    for cls, fn in (("GameInfo", "Login"), ("GameInfo", "AtCapacity"),
+                    ("PlayerController", "ServerMove"), ("GameInfo", "SpawnDefaultPawnFor")):
+        owner = mp._class_export(mt, t, cls)
+        if owner is None:
+            return "fail", "%s missing from Engine.pcc" % cls
+        fns, _rows = mp._script_functions(mt, t, cls)
+        e = fns.get(fn)
+        if e is None:
+            return "fail", "%s.%s missing" % (cls, fn)
+        if not mt.is_implemented(t, e):
+            return "fail", "%s.%s is only a stub - a claim in the docs rests on it" % (cls, fn)
+    return "ok", ("%d of %d Engine.pcc function(s) are stubs (%.0f%%); shapes %s; the join chain is real"
+                  % (stubs, len(funcs), share, dict(shapes.most_common(3))))
 
 
 def main():

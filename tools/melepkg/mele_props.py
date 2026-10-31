@@ -1518,11 +1518,14 @@ def cmd_savecheck(args):
 
 
 def _script_functions(mt, t, class_name):
-    """The functions a class implements in script, by name, using the export table's outer convention.
+    """The functions a class declares, by name, using the export table's outer convention.
 
     Function exports point at their owning class with `outer_index == class_index + 1`, so the class has
-    to be looked up first. `serial_size > 4` separates a real body from a native stub with no bytecode:
-    the distinction matters throughout, because only what has bytecode can be overridden by a subclass.
+    to be looked up first. Returns every function the class declares, including native ones - callers
+    that need "actually implemented" must filter with `_implemented`.
+
+    This used to filter on `serial_size > 4`, which is wrong: a native function still carries a 2-3 byte
+    stub body (`0b 53`), so on its own serial size cannot tell an implementation from a declaration.
     """
     owner = [e for e in t["exports"] if e["object_name"] == class_name]
     if not owner:
@@ -1531,6 +1534,11 @@ def _script_functions(mt, t, class_name):
             if e["outer_index"] == owner[0]["index"] + 1
             and mt.describe_index(e["class_index"], t["exports"], t["imports"]).endswith("Function")]
     return {e["object_name"]: e for e in rows}, rows
+
+
+def _implemented(mt, t, functions):
+    """The subset of a function dict that has a real bytecode body, i.e. is not a native stub."""
+    return {n: e for n, e in functions.items() if mt.is_implemented(t, e)}
 
 
 def cmd_joincheck(args):
@@ -1584,18 +1592,19 @@ def cmd_joincheck(args):
             continue
         t = mt.build(path)
         funcs, _rows = _script_functions(mt, t, "GameInfo")
-        scripted = [n for n in chain if n in funcs and funcs[n]["serial_size"] > 4]
-        native = [n for n in chain if n in funcs and funcs[n]["serial_size"] <= 4]
+        live = _implemented(mt, t, funcs)
+        scripted = [n for n in chain if n in live]
+        native = [n for n in chain if n in funcs and n not in live]
         missing = [n for n in chain if n not in funcs]
         print("   %-4s %d/%d in script: %s" % (game, len(scripted), len(chain), ", ".join(scripted)))
         if native:
             print("        native-only (cannot be overridden in script): %s" % ", ".join(native))
         if missing:
             print("        absent: %s" % ", ".join(missing))
-        if "Login" not in funcs or funcs["Login"]["serial_size"] <= 4:
+        if "Login" not in live:
             problems.append("%s: GameInfo.Login is not in script - a second player cannot be accepted "
                             "without a native patch" % game)
-        if "AtCapacity" not in funcs or funcs["AtCapacity"]["serial_size"] <= 4:
+        if "AtCapacity" not in live:
             problems.append("%s: GameInfo.AtCapacity is not in script - the capacity refusal is not "
                             "reachable" % game)
 
@@ -1615,7 +1624,7 @@ def cmd_joincheck(args):
             continue
         t = mt.build(path)
         funcs, rows = _script_functions(mt, t, klass)
-        scripted = sorted(n for n, e in funcs.items() if e["serial_size"] > 4)
+        scripted = sorted(_implemented(mt, t, funcs))
         in_chain = [n for n in chain if n in funcs]
         print("   %-4s %-10s %2d script override(s) of %d function(s); join chain: %s"
               % (game, klass, len(scripted), len(rows), ", ".join(in_chain) or "untouched"))
@@ -1647,7 +1656,7 @@ def cmd_joincheck(args):
                                 "campaign game class is not packaged from multiplayer content")
             funcs, _rows = _script_functions(mt, t, "SFXGameInfoSP")
             print("   SFXGameInfoSP script overrides: %s"
-                  % ", ".join(sorted(n for n, e in funcs.items() if e["serial_size"] > 4)))
+                  % ", ".join(sorted(_implemented(mt, t, funcs))))
             cdo = find_object(t, "Default__SFXGameInfoSP")
             if cdo is None:
                 problems.append("ME3: no Default__SFXGameInfoSP")
@@ -1670,7 +1679,8 @@ def cmd_joincheck(args):
             wanted = ("InitializeTeams", "ChangeTeam", "GetPlayerCount", "GetDownedPlayerCount",
                       "OnJoinInProgress", "RegisterJoinInProgressDelegate", "CalculatedNetSpeed",
                       "SpawnNewPlayerPawn", "SpawnPlayerForResume")
-            present = [n for n in wanted if n in funcs and funcs[n]["serial_size"] > 4]
+            live = _implemented(mt, t, funcs)
+            present = [n for n in wanted if n in live]
             print("   SFXGame still carries: %s" % ", ".join(present))
             if "SpawnNewPlayerPawn" in funcs:
                 sig = mt.signature(t, t["buf"], funcs["SpawnNewPlayerPawn"])
@@ -1963,7 +1973,7 @@ def cmd_rostercheck(args):
                        "GetMember", "GetMemberIndex", "GetSpareController", "SetSpareController",
                        "SwapSpareController", "SetPlayerPawn"):
                 e = funcs.get(fn)
-                if e is None or e["serial_size"] <= 4:
+                if e is None or not mt.is_implemented(t, e):
                     continue
                 sig = mt.signature(t, t["buf"], e)
                 params = [n for n, _ty, _s, _o in sig["params"]]
@@ -2259,8 +2269,11 @@ def cmd_gricheck(args):
                 continue
             net = sorted(p["object_name"] for p in ps
                          if (prop_flags(t, p) or 0) & cpf_net)
-            print("   %-4s %-24s %2d property(ies), %2d function(s); replicated: %s"
-                  % (game, cls_name, len(ps), len(fs), ", ".join(net) or "none"))
+            # Declared vs implemented, because a native function still carries a 2-3 byte stub body and
+            # counting those as implementations overstates what the class does in script.
+            live = [f for f in fs if mt.is_implemented(t, f)]
+            print("   %-4s %-24s %2d property(ies), %2d function(s) (%d with a real body); replicated: %s"
+                  % (game, cls_name, len(ps), len(fs), len(live), ", ".join(net) or "none"))
             owner = [e for e in t["exports"] if e["object_name"] == cls_name and e["class_index"] == 0]
             if owner:
                 # The qualified form, because `describe_index` prints the source file for an import and
@@ -2381,8 +2394,9 @@ def cmd_gricheck(args):
             fs = [k for k in kids
                   if mt.describe_index(k["class_index"], t["exports"], t["imports"]) == "Core.Function"]
             net = sorted(p["object_name"] for p in ps if (prop_flags(t, p) or 0) & cpf_net)
-            print("   %d property(ies), %d function(s); replicated: %s"
-                  % (len(ps), len(fs), ", ".join(net)))
+            live = [f for f in fs if mt.is_implemented(t, f)]
+            print("   %d property(ies), %d function(s) of which %d have a real body; replicated: %s"
+                  % (len(ps), len(fs), len(live), ", ".join(net)))
             names = {f["object_name"] for f in fs}
             for wanted in ("FindLocalPRI", "ServerAddActiveMatchConsumable", "AddPlayerMedal",
                            "ReplicateScoreInfo", "SetReadyInLobby"):
@@ -2720,9 +2734,9 @@ def cmd_netcheck(args):
         print()
         print("   the stock client-join handshake on PlayerController")
         funcs = _script_functions(mt, t, "PlayerController")[0]
-        present = [n for n in handshake if n in funcs and funcs[n]["serial_size"] > 4]
-        clients = sorted(n for n, e in funcs.items()
-                         if n.startswith("Client") and e["serial_size"] > 4)
+        live = _implemented(mt, t, funcs)
+        present = [n for n in handshake if n in live]
+        clients = sorted(n for n in live if n.startswith("Client"))
         print("     %d/%d present: %s" % (len(present), len(handshake), ", ".join(present)))
         print("     %d Client* function(s) with bytecode" % len(clients))
         for required in handshake:
@@ -2754,7 +2768,7 @@ def cmd_netcheck(args):
                 continue
             ct, _ce = found
             funcs, _rows = _script_functions(mt, ct, name)
-            scripted = {n: e for n, e in funcs.items() if e["serial_size"] > 4}
+            scripted = _implemented(mt, ct, funcs)
             replaced = [n for n in ("ServerMove", "ClientRestart", "Possess", "UnPossess")
                         if n in scripted]
             print("     %-24s %3d script fn, replaces: %s"
@@ -2767,7 +2781,7 @@ def cmd_netcheck(args):
         funcs, _rows = _script_functions(mt, t, "PlayerController")
         for required in ("ServerMove", "ClientRestart"):
             e = funcs.get(required)
-            if e is None or e["serial_size"] <= 4:
+            if e is None or not mt.is_implemented(t, e):
                 problems.append("%s: PlayerController.%s is not scripted" % (game, required))
         print()
         print("   the possession signatures a mod has to match")
@@ -2781,7 +2795,7 @@ def cmd_netcheck(args):
                     continue
                 fns, _r = _script_functions(mt, ct, cls_name)
                 e = fns.get(fn_name)
-                if e is None or e["serial_size"] <= 4:
+                if e is None or not mt.is_implemented(ct, e):
                     continue
                 sig = mt.signature(ct, ct["buf"], e)
                 params = [(n, ty) for n, ty, _s, _o in sig["params"]]
