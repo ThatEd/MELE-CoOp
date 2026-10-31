@@ -242,10 +242,29 @@ the effective player count, `ModifyLogin` accept the guest, and `ModifyPlayer` h
 **What this does not settle, stated as such:**
 
 1. **The class has to be loadable.** A mutator whose class is not reachable from a cooked package will not
-   spawn. Cooking is a toolchain question this environment cannot answer.
+   spawn. *Mostly resolved below: LE3 ships two working examples.*
 2. **The campaign builds its own travel URLs.** Whether a `?Mutator=` on the initial URL survives into the
    campaign's own map changes is unmeasured, and it is the main risk in this route.
 3. **Nothing here proves a mutator's effect replicates** to a client. It proves the hook is called.
+
+**And LE3 already ships a working example.** `SFXGame.pcc` defines `SFXMutator : Engine.Mutator` (overrides
+`SetGameSpeed`) and `SFXMutator_DifficultySpeed : SFXMutator` (overrides `MutatorIsAllowed` and
+`SetGameSpeed`). `Default__SFXMutator_DifficultySpeed` sets exactly one property, `GroupNames`, whose single
+element decodes to the UTF-16 string **`DifficultySpeed`** — and **`GameInfo.AddMutator` reads
+`Mutator.GroupNames`**, verified by locating the property's dword inside its 619-byte body. So the chain is
+demonstrated by shipped content:
+
+```
+?Mutator=DifficultySpeed
+  -> InitGame parses the 'Mutator' option
+  -> AddMutator resolves the name via Mutator.GroupNames
+  -> MutatorIsAllowed (!WorldInfo.IsDemoBuild()) permits it
+  -> InitMutator runs, after the MaxPlayers clamp
+  -> ModifyLogin / ModifyPlayer / NotifyLogin fire
+```
+
+So the class *can* be cooked and the name *is* resolved, by the same code path a mod would use. Only risk 2
+remains fully open.
 
 Reproduce with `python -I tools/melepkg/mele_props.py mutatorcheck`.
 

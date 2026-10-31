@@ -5922,3 +5922,51 @@ The mutator route's three unknowns - can the class be cooked, does `?Mutator=` s
 travel URLs, does a mutator's effect replicate - are all things no amount of package reading can answer. That
 is the point at which offline work is genuinely done, and it should be said plainly rather than papered over
 with another measurement.
+
+## 2026-10-31 (the shipped template): LE3 already contains a working mutator, and the loader reads its name
+
+The mutator route is not hypothetical on LE3 - the build ships two subclasses and a loader that resolves their
+names.
+
+| class | super | overrides |
+|---|---|---|
+| `SFXMutator` | `Engine.Mutator` | `SetGameSpeed(NewSpeed, NextMut)` - 57 bytes |
+| `SFXMutator_DifficultySpeed` | `SFXMutator` | `MutatorIsAllowed()`, `SetGameSpeed(NewSpeed, NextMut, GRI, GlobalSpeed)` - 86 and 263 bytes |
+
+ME3 is the only build with them; ME1 and ME2 declare `Mutator` but subclass it nowhere.
+
+### The name is how `?Mutator=` finds it
+
+`Default__SFXMutator_DifficultySpeed` sets exactly one property, `GroupNames`, and the array's single element
+decodes to the UTF-16 string **`DifficultySpeed`** (read from the serial: count 1, then a negative FString
+length -16 and 16 UTF-16 code units). `GameInfo.AddMutator` then **reads `Mutator.GroupNames`** - verified by
+finding the property's dword inside its 619-byte body.
+
+So the chain is complete and measured end to end:
+
+    ?Mutator=DifficultySpeed
+      -> InitGame parses the 'Mutator' option
+      -> GameInfo.AddMutator reads Mutator.GroupNames to resolve the name to a class
+      -> MutatorIsAllowed (!WorldInfo.IsDemoBuild()) permits it
+      -> InitMutator runs, after the MaxPlayers clamp
+      -> ModifyLogin / ModifyPlayer / NotifyLogin fire on the join path
+
+### A lookup trap worth recording
+
+There are **two** exports named `GroupNames` in `Engine.pcc`: `GroupNames.GroupNames` (a `StrProperty`, the
+element type inside the array) and `Mutator.GroupNames` (the `ArrayProperty`). A by-name lookup returns the
+first, which is the wrong one, and the check then reports that `AddMutator` does not read the field. The
+lookup has to match on the owner as well as the name - the same class-name-vs-property-name collision that bit
+`_script_functions` earlier, in a different place.
+
+### Rule 107. "It ships" beats "it could work".
+Three separate assumptions were load-bearing in the mutator route: that a class can be cooked, that the URL
+option is honoured, and that the loader resolves it. Two of those turned out to already be demonstrated by a
+class in the shipped package - `SFXMutator_DifficultySpeed` is cooked, named, and loaded by the same code path a
+mod would use. Only the third (does the campaign's own travel carry the option) remains unmeasured, and that
+is a much smaller question than the one I started with.
+
+### Rule 108. Names are not unique; owner plus name is.
+`GroupNames`, `WorldInfo`, `Squad` - each is both a class/property name and a nested member name in these
+packages. Every lookup that matters should filter by owner, and the ones that do not are the ones that quietly
+return the wrong export.

@@ -3387,6 +3387,73 @@ def cmd_mutatorcheck(args):
             else:
                 problems.append("%s: could not locate both the clamp and InitMutator in InitGame" % game)
 
+        # 4. A shipped example, so the route is not hypothetical. The mutator subclasses live in the
+        # campaign package, not Engine.pcc, so that table has to be opened too.
+        print("   a shipped Mutator subclass, as a template")
+        campaign_table = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "SFXGame.pcc")
+            if os.path.isfile(cand):
+                campaign_table = mt.build(cand)
+                break
+        found_example = False
+        if campaign_table is not None:
+            for sub in ("SFXMutator", "SFXMutator_DifficultySpeed"):
+                owner = _class_export(mt, campaign_table, sub)
+                if owner is None:
+                    continue
+                found_example = True
+                fns, _rows = _script_functions(mt, campaign_table, sub)
+                live = _implemented(mt, campaign_table, fns)
+                print("     %-28s super=%-16s %d override(s): %s"
+                      % (sub, mt.qualified_name(campaign_table, owner["super_index"]), len(live),
+                         ", ".join(sorted(live))))
+                if sub != "SFXMutator_DifficultySpeed":
+                    continue
+                # The group name is what ?Mutator= matches, and it lives in the CDO.
+                cdo = find_object(campaign_table, "Default__" + sub)
+                if cdo is None:
+                    problems.append("%s: no Default__%s" % (game, sub))
+                    continue
+                tags, _end, _why = parse_object(campaign_table, campaign_table["buf"], cdo)
+                groups = [tg for tg in tags if tg["name"] == "GroupNames"]
+                if not groups:
+                    problems.append("%s: %s no longer sets GroupNames, so it cannot be named in a travel "
+                                    "URL" % (game, sub))
+                elif not groups[0].get("value") or groups[0]["value"] == "<array of 0>":
+                    problems.append("%s: %s.GroupNames is empty" % (game, sub))
+                else:
+                    print("     %s.GroupNames is set (%s) - the name ?Mutator= matches"
+                          % (sub, groups[0]["value"]))
+                    # And the loader has to read that field, or the name means nothing. Two exports are
+                    # named `GroupNames`: `GroupNames.GroupNames` (a StrProperty, one element's type) and
+                    # `Mutator.GroupNames` (the ArrayProperty). Taking the first name match picks the wrong
+                    # one, so the lookup prefers the entry declared on `Mutator`.
+                    prop = None
+                    for candidate in t["exports"]:
+                        if candidate["object_name"] != "GroupNames":
+                            continue
+                        if mt.describe_index(candidate["outer_index"], t["exports"],
+                                             t["imports"]) == "export:Mutator":
+                            prop = candidate
+                            break
+                    loader_reads = False
+                    if prop is not None:
+                        dword = prop["index"] + 1
+                        add = _function_on(mt, t, "GameInfo", "AddMutator")
+                        if add is not None:
+                            body = mt.function_body(t, add)
+                            loader_reads = any(
+                                struct.unpack_from("<i", body, i)[0] == dword
+                                for i in range(0, max(0, len(body) - 3)))
+                            print("     GameInfo.AddMutator (body=%d) %s Mutator.GroupNames"
+                                  % (len(body), "reads" if loader_reads else "does NOT read"))
+                    if not loader_reads:
+                        problems.append("%s: GameInfo.AddMutator no longer reads Mutator.GroupNames, so a "
+                                        "mutator cannot be named - the ?Mutator= route is broken" % game)
+        if not found_example:
+            print("     (no shipped Mutator subclass in this build's SFXGame.pcc)" )
+
         print()
 
     print()
@@ -3397,11 +3464,12 @@ def cmd_mutatorcheck(args):
         return 1
     print("verdict: the mutator chain is live on all three builds - InitGame/Login/PostLogin/RestartPlayer/"
           "Logout all call into it, MutatorIsAllowed is !WorldInfo.IsDemoBuild() so it is open in retail, "
-          "InitMutator runs AFTER the MaxPlayers clamp so a mutator can correct the player count, and the "
-          "hook signatures are identical everywhere; so ModifyLogin/ModifyPlayer/NotifyLogin/InitMutator are "
-          "a supported in-game way to accept a guest, give it a pawn and set up its state, loadable with "
-          "?Mutator= and needing no binary patch - provided the class can be cooked in and the option "
-          "survives the campaign's own travel URLs, neither of which is measured here")
+          "InitMutator runs AFTER the MaxPlayers clamp so a mutator can correct the player count, the hook "
+          "signatures are identical everywhere, and ME3 ships SFXMutator/SFXMutator_DifficultySpeed as "
+          "working examples named by a CDO GroupNames entry; so ModifyLogin/ModifyPlayer/NotifyLogin/"
+          "InitMutator are a supported in-game way to accept a guest, give it a pawn and set up its state, "
+          "loadable with ?Mutator= and needing no binary patch - provided the class can be cooked in and the "
+          "option survives the campaign's own travel URLs, neither of which is measured here")
     return 0
 
 

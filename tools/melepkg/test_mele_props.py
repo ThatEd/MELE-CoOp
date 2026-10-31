@@ -1332,7 +1332,13 @@ def t_mutator_route():
             return "fail", "%s gate no longer mentions IsDemoBuild:\n%s" % (game, body)
         if "mutator runs AFTER the clamp" not in body:
             return "fail", "%s InitMutator no longer runs after the clamp:\n%s" % (game, body)
-    return "ok", "6/6 join-path hooks wired x3, gate is !IsDemoBuild, InitMutator after the clamp"
+    # The shipped template, and the loader that makes its name mean something.
+    if "SFXMutator_DifficultySpeed   super=export:SFXMutator 2 override(s): MutatorIsAllowed, SetGameSpeed" not in out:
+        return "fail", "the shipped mutator template changed:\n%s" % out.strip()
+    if "GameInfo.AddMutator (body=619) reads Mutator.GroupNames" not in out:
+        return "fail", "AddMutator no longer reads GroupNames, so ?Mutator= cannot name anything:\n%s" % out.strip()
+    return "ok", ("6/6 join-path hooks x3, gate !IsDemoBuild, InitMutator after the clamp, and the shipped "
+                  "SFXMutator template is named through Mutator.GroupNames which AddMutator reads")
 
 
 def main():
