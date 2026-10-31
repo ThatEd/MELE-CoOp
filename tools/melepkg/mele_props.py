@@ -82,6 +82,7 @@ Usage:
     python -I tools/melepkg/mele_props.py prefixcheck                   # does routing know about MP
     python -I tools/melepkg/mele_props.py netcheck                      # what the engine carries for free
     python -I tools/melepkg/mele_props.py travelcheck                   # what a level change runs
+    python -I tools/melepkg/mele_props.py capacitycheck                 # the chain that refuses a guest
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -2992,6 +2993,214 @@ def cmd_travelcheck(args):
     return 0
 
 
+def cmd_capacitycheck(args):
+    """The exact mechanism that refuses a second player, from the option string to the refusal.
+
+    `coopcheck` reported that ME3's campaign class sets `MaxPlayersAllowed=1` and called that "an active
+    clamp". That was right in effect and wrong in mechanism, and the difference matters because it decides
+    where a fix goes.
+
+    Measured, identically on all three builds:
+
+        GameInfo.AtCapacity(bSpectator) -> bool        138 / 138 / 139 bytes
+            references NumPlayers and MaxPlayers, and NumSpectators and MaxSpectators.
+            It does NOT reference MaxPlayersAllowed.
+
+        GameInfo.InitGame(Options, out ErrorMessage)   real body, and its bytecode contains the literals
+            'MaxPlayers' and 'MaxSpectators'. It references MaxPlayers AND MaxPlayersAllowed - the
+            stock UE3 clamp of the requested value against the ceiling.
+
+        GameInfo.Login(...)                            2,079 / 2,079 / 2,127 bytes
+            references NumPlayers, and its strings include '.MaxedOutMessage'.
+
+    So the chain is: **`InitGame` parses `?MaxPlayers=` out of the options string, clamps it to
+    `MaxPlayersAllowed`, and stores the result in `MaxPlayers`; `AtCapacity` then compares `NumPlayers`
+    against `MaxPlayers` to decide; `Login` uses `MaxPlayers`/`.MaxedOutMessage` to refuse.**
+
+    Which gives three routes, in order of how much they change:
+
+    1. raise `MaxPlayersAllowed` on the campaign game class (the CDO value `SFXGame` sets to 1) - one int,
+       and the clamp then permits whatever is requested;
+    2. pass `?MaxPlayers=2` in the travel URL - but this alone does nothing while the ceiling is 1, because
+       `InitGame` clamps it straight back;
+    3. set `MaxPlayers` after `InitGame` has run - works, but leaves the ceiling inconsistent with the
+       value, which is the sort of state that produces confusing failures later.
+
+    **Route 1 is the one the design should take**, and the reason is now measured rather than assumed.
+
+    Also measured, because it is the value the comparison actually reads: `Default__GameInfo.MaxPlayers` is
+    16 / 16 / 4 and `MaxPlayersAllowed` is 32 / 32 / 32; `Default__SFXGame` sets **only**
+    `MaxPlayersAllowed=1`, so its `MaxPlayers` is the inherited 4 until `InitGame` clamps it.
+
+    Needs only `Engine.pcc` and the campaign package, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    property_classes = frozenset((
+        "Core.BoolProperty", "Core.ByteProperty", "Core.IntProperty", "Core.FloatProperty",
+        "Core.ObjectProperty", "Core.StructProperty", "Core.StrProperty", "Core.NameProperty",
+        "Core.ArrayProperty", "Core.ClassProperty", "Core.MapProperty",
+        "Core.InterfaceProperty", "Core.DelegateProperty", "Core.ComponentProperty",
+        "Core.FixedArrayProperty",
+    ))
+
+    def references(t, dword):
+        """Function names whose bytecode contains `dword`, as `Owner.Function`.
+
+        Heuristic, and the module's own measurement puts a random 4-byte window on a valid package index at
+        about 10% here, so a hit is a lead. What makes these leads trustworthy is that they agree with each
+        other across three builds and with the string literals found in the same bodies.
+        """
+        buf, exports, imports = t["buf"], t["exports"], t["imports"]
+        out = set()
+        for f in exports:
+            if not mt.describe_index(f["class_index"], exports, imports).endswith("Function"):
+                continue
+            at, length = mt.function_bytecode(t, f)
+            if at is None:
+                continue
+            body = buf[at:at + length]
+            if any(struct.unpack_from("<i", body, i)[0] == dword
+                   for i in range(0, max(0, len(body) - 3))):
+                out.add("%s.%s" % (mt.describe_index(f["outer_index"], exports, imports)
+                                   .replace("export:", ""), f["object_name"]))
+        return out
+
+    for game in ("ME1", "ME2", "ME3"):
+        engine = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", "Engine.pcc")
+            if os.path.isfile(cand):
+                engine = cand
+                break
+        if engine is None:
+            problems.append("%s: no Engine.pcc" % game)
+            continue
+        t = mt.build(engine)
+        exports, imports = t["exports"], t["imports"]
+        print("== %s" % game)
+
+        def dword(name):
+            hits = [e for e in exports if e["object_name"] == name
+                    and mt.describe_index(e["outer_index"], exports, imports) == "export:GameInfo"]
+            if not hits:
+                problems.append("%s: GameInfo.%s is gone" % (game, name))
+                return None
+            return hits[0]["index"] + 1
+
+        dw_max = dword("MaxPlayers")
+        dw_allow = dword("MaxPlayersAllowed")
+        dw_num = dword("NumPlayers")
+        if dw_max is None or dw_allow is None or dw_num is None:
+            continue
+        max_users = references(t, dw_max)
+        allow_users = references(t, dw_allow)
+        num_users = references(t, dw_num)
+        print("   GameInfo.MaxPlayers        read by: %s" % ", ".join(sorted(max_users)))
+        print("   GameInfo.MaxPlayersAllowed read by: %s" % ", ".join(sorted(allow_users)))
+        print("   GameInfo.NumPlayers        read by %d function(s)" % len(num_users))
+
+        funcs, _rows = _script_functions(mt, t, "GameInfo")
+        if "GameInfo.AtCapacity" not in max_users:
+            problems.append("%s: AtCapacity no longer reads MaxPlayers - the refusal path changed" % game)
+        if "GameInfo.AtCapacity" in allow_users:
+            problems.append("%s: AtCapacity now reads MaxPlayersAllowed directly - re-read the chain"
+                            % game)
+        if "GameInfo.InitGame" not in allow_users or "GameInfo.InitGame" not in max_users:
+            problems.append("%s: InitGame no longer reads both capacity values, so the clamp is not where "
+                            "this check says it is" % game)
+
+        at = funcs.get("AtCapacity")
+        if at is None:
+            problems.append("%s: no GameInfo.AtCapacity" % game)
+        else:
+            body = mt.function_body(t, at)
+            sig = mt.signature(t, t["buf"], at)
+            params = [n for n, _ty, _s, _o in sig["params"]]
+            print("   AtCapacity(%s) body=%d" % (", ".join(params), len(body)))
+            if "bSpectator" not in params:
+                problems.append("%s: AtCapacity lost its bSpectator parameter - it is the spectator half "
+                                "of the same gate" % game)
+        init = funcs.get("InitGame")
+        if init is None:
+            problems.append("%s: no GameInfo.InitGame" % game)
+        else:
+            strings = _bytecode_strings(mt, t, init)
+            print("   InitGame body=%d; capacity literals: %s"
+                  % (len(mt.function_body(t, init)),
+                     [s for s in strings if "Players" in s or "Spectators" in s] or "none"))
+            if not any(s in ("MaxPlayers",) for s in strings):
+                problems.append("%s: InitGame no longer parses a 'MaxPlayers' option" % game)
+        login = funcs.get("Login")
+        if login is not None:
+            strings = _bytecode_strings(mt, t, login)
+            print("   Login body=%d; refusal surface: %s"
+                  % (len(mt.function_body(t, login)),
+                     [s for s in strings if "MaxedOut" in s or s == "Team"] or "none"))
+            if not any("MaxedOut" in s for s in strings):
+                problems.append("%s: Login no longer uses a MaxedOut message" % game)
+
+        # The CDO values the comparison actually reads.
+        for package, cls in (("Engine.pcc", "GameInfo"), ("SFXGame.pcc", "SFXGame")):
+            path = None
+            for root in pkg.game_dirs():
+                cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", package)
+                if os.path.isfile(cand):
+                    path = cand
+                    break
+            if path is None:
+                continue
+            tt = mt.build(path)
+            cdo = find_object(tt, "Default__" + cls)
+            if cdo is None:
+                continue
+            tags, _end, _why = parse_object(tt, tt["buf"], cdo)
+            props = {tg["name"]: tg["value"] for tg in tags
+                     if tg["name"] in ("MaxPlayers", "MaxPlayersAllowed")}
+            if props:
+                print("   Default__%-12s %s" % (cls, props))
+        print()
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: the refusal is a three-step chain, identical on all three builds - InitGame parses "
+          "'MaxPlayers' from the options string and clamps it to MaxPlayersAllowed, AtCapacity compares "
+          "NumPlayers against MaxPlayers (and NumSpectators against MaxSpectators), and Login refuses with "
+          ".MaxedOutMessage; so the one value to raise is MaxPlayersAllowed on the campaign game class, and "
+          "?MaxPlayers= in the travel URL alone does nothing while the ceiling is 1")
+    return 0
+
+
+def _bytecode_strings(mt, t, func_export):
+    """Printable null-terminated runs inside a function's bytecode.
+
+    UE3 stores string literals inline as a token followed by ASCII and a NUL, so a run of printable bytes of
+    length >= 3 that ends in a NUL is a literal. This is not a decode - the opcode table is unproven - but
+    it is a measurement: the runs are inside a proven extent, and they name the options and messages the
+    function uses.
+    """
+    body = mt.function_body(t, func_export)
+    out, cur = [], bytearray()
+    for byte in body:
+        if 32 <= byte < 127:
+            cur.append(byte)
+        else:
+            if byte == 0 and len(cur) >= 3:
+                out.append(cur.decode("ascii"))
+            cur = bytearray()
+    if len(cur) >= 3:
+        out.append(cur.decode("ascii"))
+    return out
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -3085,6 +3294,10 @@ def main():
     p = sub.add_parser("travelcheck",
                        help="what a level change runs, and whether a guest is moved with it")
     p.set_defaults(func=cmd_travelcheck)
+
+    p = sub.add_parser("capacitycheck",
+                       help="the exact chain that refuses a second player, and where the clamp lives")
+    p.set_defaults(func=cmd_capacitycheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

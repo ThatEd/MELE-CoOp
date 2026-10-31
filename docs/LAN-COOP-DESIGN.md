@@ -156,6 +156,36 @@ rebuilding it must write the loader from that description: 76 generated `mov rax
 stubs, one per stock Bink export, with slot fill by name from `bink2w64_original.dll`. That is a gap
 worth closing.
 
+## 2b. The capacity refusal, measured end to end
+
+`coopcheck` reported that ME3's campaign class sets `MaxPlayersAllowed=1` and called it an active clamp. That
+was right in effect and wrong in mechanism, and `capacitycheck` now measures the whole chain — identically on
+all three builds:
+
+| step | function | what it reads |
+|---|---|---|
+| 1 | `GameInfo.InitGame(Options, out ErrorMessage)` — 1,454/1,454/**1,467** bytes, literals `'MaxPlayers'`, `'MaxSpectators'` | **`MaxPlayers` and `MaxPlayersAllowed`** — the stock clamp of the requested value against the ceiling |
+| 2 | `GameInfo.AtCapacity(bSpectator) -> bool` — 138/138/**139** bytes | **`NumPlayers` vs `MaxPlayers`**, and `NumSpectators` vs `MaxSpectators`. **Never `MaxPlayersAllowed`** |
+| 3 | `GameInfo.Login(…)` — 2,079/2,079/**2,127** bytes, literal `'.MaxedOutMessage'` | the refusal message |
+
+So the refusal is: **`InitGame` parses `?MaxPlayers=` out of the options string and clamps it to
+`MaxPlayersAllowed`; `AtCapacity` compares `NumPlayers` against the resulting `MaxPlayers`; `Login` refuses
+with `MaxedOutMessage`.**
+
+The CDO values the comparison actually sees: `Default__GameInfo.MaxPlayers` is 16 / 16 / **4** and
+`MaxPlayersAllowed` is 32 / 32 / 32; `Default__SFXGame` sets **only** `MaxPlayersAllowed=1`, so its
+`MaxPlayers` is the inherited 4 *until `InitGame` clamps it down to 1*.
+
+**Three routes, and only one of them is right:**
+
+1. **Raise `MaxPlayersAllowed` on the campaign game class** — one int, and the clamp then permits whatever is
+   requested. This is the one to take.
+2. Pass `?MaxPlayers=2` in the travel URL — **does nothing on its own**, because `InitGame` clamps it straight
+   back to 1. Worth knowing before spending a session wondering why the URL parameter is ignored.
+3. Set `MaxPlayers` after `InitGame` has run — works, but leaves the ceiling inconsistent with the value.
+
+Reproduce with `python -I tools/melepkg/mele_props.py capacitycheck`.
+
 ## 3. What must be decided before anything is coded
 
 Three decisions, and the first two are the reason this page exists.
@@ -529,7 +559,8 @@ and the only thing turned off is capacity.** That is a much better starting posi
 co-op mod from scratch", and it makes raising capacity plus calling the existing spawn the first
 experiment rather than the tenth.
 
-Caveats, stated rather than implied: `MaxPlayersAllowed=1` is still an active clamp (§5), the join path
+Caveats, stated rather than implied: `MaxPlayersAllowed=1` still caps the value `InitGame` will accept (§2b),
+the join path
 being in script says nothing about a client surviving a level load, and `SFXGameInfoMP_LobbyUnusedDummy`
 shipping in `SFXGame.pcc` is evidence that MP was disabled deliberately rather than removed — worth
 knowing before assuming a reintroduction is free.
@@ -842,7 +873,7 @@ memory.
 | `AddMutator` parms | `0x2c` | `0x2c` | `0x2c` | same call, same layout |
 | `GetSeamlessTravelActorList` | declared on `PlayerController`, `GameInfo`, `Mutator` | same | same | **declared but never called** — no build enables seamless travel |
 | `bUseSeamlessTravel` (declared) | yes | yes | yes | …but **set by 0 of 6,685 CDOs**: campaign travel is a hard reload |
-| `MaxPlayers` / `MaxPlayersAllowed` on the campaign game class | not set (inherits 16/32) | not set (16/32) | **`MaxPlayersAllowed=1`** | ME3 needs the clamp raised; ME1/ME2 have nothing to raise |
+| `MaxPlayers` / `MaxPlayersAllowed` on the campaign game class | not set (inherits 16/32) | not set (16/32) | **`MaxPlayersAllowed=1`**, `MaxPlayers` inherits 4 | ME3's ceiling needs raising; `InitGame` is what clamps `MaxPlayers` down to it (§2b) |
 | `BioBaseSquad.Members` element type | `TArray<MemberData>` (record) | `TArray<MemberData>` (record) | **`TArray<Pawn>` (the pawn)** | the store differs; `AddMember(Pawn) -> int` is the same call on all three (§4f) |
 | `MemberData` struct | 17 fields | 7 fields | **absent** | ME1's per-member order state has no ME3 counterpart |
 | `BioPlayerSquad` / `BioBaseSquad` | yes | yes | yes | squad container is shared |

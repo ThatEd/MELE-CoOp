@@ -5752,3 +5752,54 @@ work is at its caller.
 `HandleSeamlessTravelPlayer` is 1,343 bytes of code that nothing reaches. Reading a live 20-byte wrapper
 tells you little; finding a large function that is never called tells you the game was built for something
 it no longer does - and that is usually the feature co-op wants to reuse.
+
+## 2026-10-31 (the capacity chain): the clamp is InitGame's, and `?MaxPlayers=` on its own does nothing
+
+The "ME3 clamps capacity to one" finding has been load-bearing since it was measured, and it was stated as
+"an active clamp co-op must raise" without saying where the clamp bites. Reading the bytecode of the three
+functions involved fixes that, and the mechanism changes the advice.
+
+### The chain, identical on all three builds
+
+| step | function | reads |
+|---|---|---|
+| 1 | `GameInfo.InitGame(Options, out ErrorMessage)` - 1,454 / 1,454 / **1,467** bytes, string literals `'MaxPlayers'` and `'MaxSpectators'` | **`MaxPlayers` AND `MaxPlayersAllowed`** |
+| 2 | `GameInfo.AtCapacity(bSpectator) -> bool` - 138 / 138 / **139** bytes | **`NumPlayers` vs `MaxPlayers`**, `NumSpectators` vs `MaxSpectators`. **Never `MaxPlayersAllowed`.** |
+| 3 | `GameInfo.Login(...)` - 2,079 / 2,079 / **2,127** bytes, string literal `'.MaxedOutMessage'` | the refusal |
+
+So `InitGame` parses `?MaxPlayers=` out of the options string and clamps the requested value against
+`MaxPlayersAllowed`; `AtCapacity` compares `NumPlayers` against the resulting `MaxPlayers`; `Login` refuses
+with `MaxedOutMessage`. That is stock UE3, unchanged.
+
+### What that changes
+
+**`?MaxPlayers=2` in the travel URL does nothing on its own.** It is parsed and then clamped straight back to
+1 by the ceiling. If someone had tried it - and it is the obvious first thing to try - they would have seen a
+still-refusing server and concluded the whole approach failed.
+
+`MaxPlayers` on the campaign class is **4**, inherited from the base `GameInfo`; `SFXGame` sets only
+`MaxPlayersAllowed=1`. So `AtCapacity` would happily accept 4 players *if* `InitGame` had not already written
+1 into `MaxPlayers`. The ceiling is what does the damage, and it does it once, at start-up.
+
+Which means the correct fix is still the single int - raise `MaxPlayersAllowed` on the campaign game class -
+but now with the reason measured: it is the value `InitGame` clamps against, and `AtCapacity` reads the result.
+
+### A signature bug this exposed
+
+`AtCapacity` takes a **`bSpectator`** parameter. An earlier reading in this log recorded
+`AtCapacity() -> bool` with a 0x4 parms block - the parameter was dropped. It is a `BoolProperty` child with
+`CPF_Parm` set, sitting at the head of the `Next` chain, so `_fields_of(parms_only=True)` returns it
+correctly and the error came from reading a *different* build's function or a stale note. Either way the
+recorded signature was wrong: it is `AtCapacity(bSpectator) -> bool`, 0x8 parms, and the spectator half of
+the gate reads `NumSpectators`/`MaxSpectators`.
+
+### Rule 101. A flag is not a mechanism. Say which function reads which field.
+"MaxPlayersAllowed=1 clamps capacity" is a sentence that hides a chain, and the chain contained the thing
+that mattered: the ceiling is applied by `InitGame`, once, to a *different* field than the one `AtCapacity`
+compares. Naming the readers (`AtCapacity` reads `MaxPlayers`; `InitGame` reads both) turned a vague clamp
+into a place to put a patch - and into a warning about an approach that would silently fail.
+
+### Rule 102. The obvious first experiment may be pre-defeated.
+`?MaxPlayers=` is the natural thing to try, it is parsed by the engine, it looks like it works - and the
+ceiling undoes it in the same function. When a parameter is accepted and then ignored, look for the clamp
+before concluding the parameter is unheard.

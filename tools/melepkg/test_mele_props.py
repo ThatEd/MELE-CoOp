@@ -1228,6 +1228,53 @@ def t_travel_is_a_broadcast():
                   "forwarder; the seamless path is scripted and dead")
 
 
+@case("the capacity refusal is InitGame's clamp plus AtCapacity's comparison, not one flag")
+def t_capacity_chain():
+    """Where the second player is actually refused, from the option string to the message.
+
+    `coopcheck` called `MaxPlayersAllowed=1` "an active clamp" and that was right in effect but not in
+    mechanism: `AtCapacity` never reads it. The chain is
+
+        InitGame parses 'MaxPlayers' from the options string, clamps it to MaxPlayersAllowed,
+        AtCapacity(bSpectator) compares NumPlayers against MaxPlayers,
+        Login refuses using .MaxedOutMessage.
+
+    Identical on all three builds, which is why the assertion is per build rather than a single check. The
+    value to raise is still `MaxPlayersAllowed` on the campaign class - but a `?MaxPlayers=` in the travel
+    URL on its own is clamped straight back while the ceiling is 1, and that distinction decides the fix.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_capacitycheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_capacitycheck returned %d:\n%s" % (rc, out.strip())
+    for game in ("ME1", "ME2", "ME3"):
+        section = out.split("== %s" % game)
+        if len(section) < 2:
+            return "fail", "%s section missing:\n%s" % (game, out.strip())
+        body = section[1].split("== ME")[0]
+        if "GameInfo.AtCapacity" not in body.split("GameInfo.MaxPlayers")[1].split("\n")[0]:
+            return "fail", "%s AtCapacity no longer reads MaxPlayers:\n%s" % (game, body)
+        if "AtCapacity(bSpectator, ReturnValue)" not in body:
+            return "fail", "%s AtCapacity lost bSpectator:\n%s" % (game, body)
+        if "capacity literals: ['MaxPlayers', 'MaxSpectators']" not in body:
+            return "fail", "%s InitGame no longer parses those options:\n%s" % (game, body)
+        if ".MaxedOutMessage" not in body:
+            return "fail", "%s Login no longer refuses via MaxedOut:\n%s" % (game, body)
+    # AtCapacity must NOT read the ceiling - that is the whole point of the correction.
+    for line in out.splitlines():
+        if "MaxPlayersAllowed read by:" in line and "AtCapacity" in line:
+            return "fail", "AtCapacity reads MaxPlayersAllowed directly now:\n%s" % line.strip()
+    if "Default__SFXGame      {'MaxPlayersAllowed': 1}" not in out:
+        return "fail", "the campaign ceiling is no longer 1:\n%s" % out.strip()
+    return "ok", "InitGame clamps to MaxPlayersAllowed; AtCapacity reads MaxPlayers; Login uses MaxedOut"
+
+
 def main():
     failures = 0
     skips = 0
