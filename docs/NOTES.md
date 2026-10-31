@@ -5278,7 +5278,18 @@ wrong, because it counted a class the campaign barely uses.
 | ME2 | **338** | 33 | 147 |
 | ME3 | **255** | - | 44 |
 
-`BioStartLocation` is the campaign's spawn point. Recounted with it:
+`BioStartLocation` is the campaign's spawn point. **Confirmed from the engine's own finder rather than
+from a name match**: ME3's campaign class resolves it in its parameter list -
+
+    BioSPGame    .FindPlayerStart(Player, InTeam, IncomingName, out ReturnValue, oNav, ATStartPoint)
+    SFXGame      .FindPlayerStart(Player, InTeam, IncomingName, out ReturnValue, ChkActor, ATStart, Engine)
+    SFXGameInfoSP.FindPlayerStart(Player, InTeam, IncomingName, out ReturnValue, Engine, ATStart,
+                                  ChkActor, ChkBioStartLocation)
+
+- so `ChkBioStartLocation` is a parameter of the function that picks where the player appears, and LE1's
+version takes `oNav` / `ATStartPoint` on the nav-point path its `FindStartingNavPoint` implies.
+
+Recounted with it:
 
 | build | maps | maps with a spawn point | exactly one | two or more | most in one map |
 |---|---|---|---|---|---|

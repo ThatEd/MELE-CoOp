@@ -2093,6 +2093,34 @@ def cmd_startcheck(args):
                             "placement plan" % game)
 
     print()
+    print("2. The campaign's own FindPlayerStart, which names the class it returns")
+    overrides = (("ME1", "BioSPGame", "SFXGame.pcc"), ("ME2", "SFXGame", "SFXGame.pcc"),
+                 ("ME3", "SFXGameInfoSP", "BIO_COMMON.pcc"))
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    for game, klass, package in overrides:
+        path = None
+        for root in pkg.game_dirs():
+            cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", package)
+            if os.path.isfile(cand):
+                path = cand
+                break
+        if path is None:
+            problems.append("%s: no %s - FindPlayerStart not read" % (game, package))
+            continue
+        t = mt.build(path)
+        fn = _function_on(mt, t, klass, "FindPlayerStart")
+        if fn is None:
+            problems.append("%s: %s.FindPlayerStart not found in %s" % (game, klass, package))
+            continue
+        sig = mt.signature(t, t["buf"], fn)
+        params = [n for n, _ty, _s, _o in sig["params"]]
+        print("   %-4s %s.FindPlayerStart(%s)" % (game, klass, ", ".join(params)))
+        if game == "ME3" and "ChkBioStartLocation" not in params:
+            problems.append("ME3: FindPlayerStart no longer takes a ChkBioStartLocation - the spawn "
+                            "class is no longer confirmed by the signature")
+
+    print()
     if problems:
         print("PROBLEM(S):")
         for p in problems:

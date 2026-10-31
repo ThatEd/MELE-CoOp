@@ -592,6 +592,17 @@ Counted over every package holding a `PersistentLevel`:
 By class: LE1 `BioStartLocation` 251 / `BioStartPoint` 202 / `PlayerStart` 165; LE2 338 / 147 / 33;
 LE3 255 / – / 44.
 
+And the class is confirmed by the campaign's own `FindPlayerStart`, whose parameters name it:
+
+| build | `FindPlayerStart` |
+|---|---|
+| LE1 | `BioSPGame(Player, InTeam, IncomingName, out ReturnValue, oNav, ATStartPoint)` |
+| LE2 | `SFXGame(Player, InTeam, IncomingName, out ReturnValue, ChkActor, ATStart, Engine)` |
+| LE3 | `SFXGameInfoSP(Player, InTeam, IncomingName, out ReturnValue, Engine, ATStart, ChkActor, **ChkBioStartLocation**)` |
+
+So the spawn actor is not inferred from a name match or a count: on LE3 the engine's own finder has a
+parameter called `ChkBioStartLocation`, and LE1's takes `oNav` / `ATStartPoint`.
+
 Two things follow.
 
 1. **Most maps have no spawn point at all.** Most of the 6,644 packages are streaming sublevels that
