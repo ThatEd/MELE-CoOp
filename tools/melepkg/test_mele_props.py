@@ -962,7 +962,14 @@ def t_gri_surface():
             return "fail", "%s is no longer reported local-only:\n%s" % (flag, out.strip())
     if "CopyProperties       (OldGRI)" not in out:
         return "fail", "SFXGRI.CopyProperties changed:\n%s" % out.strip()
-    return "ok", "LE3 GRI 35 props / 32 fns behind an alias; 4 net props, capability flags local-only"
+    if "5. The per-player replication info, SFXPRI" not in out:
+        return "fail", "SFXPRI section missing:\n%s" % out.strip()
+    if "10 property(ies), 27 function(s)" not in out:
+        return "fail", "SFXPRI shape changed:\n%s" % out.strip()
+    if "ReplicatedScoreInfo" not in out:
+        return "fail", "SFXPRI no longer replicates score info:\n%s" % out.strip()
+    return "ok", ("LE3 GRI 35 props / 32 fns behind an alias; 4 net props, capability flags local-only; "
+                  "SFXPRI 10 props with server RPCs")
 
 
 @case("an import's package is its outer Package import, not its source_name")

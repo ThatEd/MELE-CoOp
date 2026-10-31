@@ -5479,3 +5479,36 @@ gricheck output uses the qualified form, and a test pins `Core.SFXGame -> SFXGam
 **This was not cosmetic.** "super `Core.SFXGame`" reads as "the class is in Core", which invites the
 conclusion that the campaign's game class is an engine class rather than BioWare content. The whole of the
 join/spawn reasoning depends on `SFXGameInfoSP : SFXGame` being a content hierarchy.
+
+## 2026-10-31 (per-player state): SFXPRI is the multiplayer player record, and it has server RPCs
+
+`Default__SFXGame` sets `PlayerReplicationInfoClass=<SFXPRI>`, so every player gets one. It is
+multiplayer-shaped:
+
+| | |
+|---|---|
+| 10 properties | `CreditsEarned`, `PointsEarned`, `ScoreLog`, `ScoreReplicationPeriod`, `LastPowerDamage`, `LastWeaponDamage`, `TotalPointsAtStartOfWave`, `ActiveMatchConsumables`, `MAX_CONSUMABLES_PER_MATCH`, `ReplicatedScoreInfo` |
+| 27 functions | `AddPoints`, `AddCredits`, `AddPlayerMedal`, `ReplicateScoreInfo`, `ReplicatedScoreUpdated`, `FindLocalPRI`, `CanSetReadyInLobby`, `SetReadyInLobby`, `ServerAddActiveMatchConsumable`, `ServerRemoveActiveMatchConsumable`, `StoreDamageCalculation`, `TriggerNewScoreTag`, ... |
+| replicated (3) | `ActiveMatchConsumables`, `MAX_CONSUMABLES_PER_MATCH`, `ReplicatedScoreInfo` |
+| super | `SFXPRI_NativeBase` (native, same package) |
+
+Three things matter for co-op:
+
+1. **`FindLocalPRI` exists**, which means the shipped code distinguishes the local player's replication info
+   from everyone else's. That is a multiplayer-serving primitive, and it is the one a HUD, an input path or a
+   local-only effect needs to reach "my player" out of several.
+2. **`ServerAddActiveMatchConsumable` / `ServerRemoveActiveMatchConsumable` are the server-authoritative RPC
+   pattern**, already in the campaign's player record. So a "the host decides, the client asks" call shape is
+   in the shipped code, not something to introduce.
+3. **Score, credits and medals are per player**, and `ReplicatedScoreInfo` replicates. Whether a *campaign*
+   wants those values is a design question; that the plumbing exists and is per-player is not.
+
+Compared with the session-level GRI (`gricheck` section 3), where the capability flags turn out to be
+local-only, the per-player record is the *replicated* half. So the split is: **per-player data replicates,
+per-session permissions do not.** That is an odd shape for a game that shipped MP - and it is the shape the
+mod has to work with.
+
+### Rule 90. `FindLocal` is the tell.
+An `X` and a `FindLocalX` together mean the game has several `X` and needs to identify which one is "mine".
+That pair is a cheaper signal of multiplayer readiness than any flag, because it exists only when there is
+more than one of something.

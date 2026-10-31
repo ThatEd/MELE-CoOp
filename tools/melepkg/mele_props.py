@@ -2363,6 +2363,36 @@ def cmd_gricheck(args):
             problems.append("ME3: SFXGRI.CopyProperties is gone - no GRI state-transfer primitive")
 
     print()
+    print("5. The per-player replication info, SFXPRI")
+    if sfx is None:
+        problems.append("ME3: no SFXGame.pcc - SFXPRI not read")
+    else:
+        t = mt.build(sfx)
+        pri = _class_export(mt, t, "SFXPRI")
+        if pri is None:
+            problems.append("ME3: no SFXPRI class")
+        else:
+            print("   super: %s" % mt.qualified_name(t, pri["super_index"]))
+            kids = [e for e in t["exports"] if e["outer_index"] == pri["index"] + 1]
+            ps = [k for k in kids
+                  if mt.describe_index(k["class_index"], t["exports"], t["imports"]) not in
+                  ("Core.Function", "Core.ScriptStruct", "Core.State", "Core.Class")]
+            fs = [k for k in kids
+                  if mt.describe_index(k["class_index"], t["exports"], t["imports"]) == "Core.Function"]
+            net = sorted(p["object_name"] for p in ps if (prop_flags(t, p) or 0) & cpf_net)
+            print("   %d property(ies), %d function(s); replicated: %s"
+                  % (len(ps), len(fs), ", ".join(net)))
+            names = {f["object_name"] for f in fs}
+            for wanted in ("FindLocalPRI", "ServerAddActiveMatchConsumable", "AddPlayerMedal",
+                           "ReplicateScoreInfo", "SetReadyInLobby"):
+                if wanted not in names:
+                    problems.append("ME3: SFXPRI lost %s - the per-player MP surface shrank" % wanted)
+            print("   server-authoritative RPCs: %s"
+                  % ", ".join(sorted(n for n in names if n.startswith("Server"))))
+            if len(net) < 3:
+                problems.append("ME3: SFXPRI replicates only %d propert(ies), was 3" % len(net))
+
+    print()
     if problems:
         print("PROBLEM(S):")
         for p in problems:

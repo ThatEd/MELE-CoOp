@@ -658,6 +658,22 @@ handed another's state wholesale.
 define `BioGameReplicationInfo`, and ME1's campaign points at it. What differs is order of magnitude —
 3 / 1 / 35 properties — and whether the campaign actually uses the class, which on ME2 it does not.
 
+**The per-player half replicates, and it is multiplayer-shaped too.** `PlayerReplicationInfoClass=<SFXPRI>` on
+`SFXGame`, so every player gets one — 10 properties and 27 functions covering `CreditsEarned`, `PointsEarned`,
+`ScoreLog`, `ScoreReplicationPeriod`, `ActiveMatchConsumables`, `ReplicatedScoreInfo`; `AddPoints`,
+`AddPlayerMedal`, `ReplicateScoreInfo`, `CanSetReadyInLobby`, `SetReadyInLobby`; and
+`ServerAddActiveMatchConsumable` / `ServerRemoveActiveMatchConsumable`, which are the **server-authoritative
+RPC pattern** already present in the shipped record. Three properties replicate:
+`ActiveMatchConsumables`, `MAX_CONSUMABLES_PER_MATCH`, `ReplicatedScoreInfo`.
+
+`FindLocalPRI` is the one to notice: the shipped code distinguishes *the local player's* record from everyone
+else's, which only makes sense with more than one player. It is the helper a HUD or an input path needs to
+reach "my player" out of several.
+
+So the split is backwards from what a networked game would want, and worth stating plainly: **the per-player
+record replicates and the per-session permissions do not.** A guest's score and consumables sync for free; a
+guest's inability to save has to be enforced by the mod.
+
 Reproduce with `python -I tools/melepkg/mele_props.py gricheck`.
 
 ## 4i. Routing knows no multiplayer class, and the player stack is already set
