@@ -265,8 +265,69 @@ def resolve_index(v, exports, imports):
     return ("import", imports[k] if 0 <= k < len(imports) else None)
 
 
+def import_origin(table, imp):
+    """The package an import actually lives in, which is NOT always its `source_name`.
+
+    **`describe_index` prints `source_name.object_name` for an import, and for many imports that prefix
+    is the source *file*, not the package.** Measured on all three builds' `SFXGame.pcc`:
+
+        ME1  1,426 imports: 121 package==source, 282 package!=source, 1,023 nested (no package outer)
+        ME2  1,909 imports: 128 / 306 / 1,475
+        ME3  4,189 imports: 143 / 348 / 3,698
+
+    Concrete cases, all three builds identically:
+
+        printed Core.Actor               -> real package Engine
+        printed Core.GameReplicationInfo -> real package Engine
+        printed Core.SFXGame             -> real package SFXGame
+        printed Core.ScriptStruct        -> real package Core   (correct)
+        printed Core.Vector              -> no package outer     (source_name is the only hint)
+
+    So a class import such as BIO_COMMON.pcc's reference to `SFXGame` reads
+    `type=Class, obj=SFXGame, source=Core` with `outer` pointing at a **Package** import called
+    `SFXGame`. The package is in the outer chain; `source_name` is where the cooker's source lived.
+
+    This returns `(package, how)` where `how` is `"outer-package"` when the outer resolved to a Package
+    import, `"source"` when it did not, and `"unresolved"` when the outer index does not land.
+    """
+    if imp is None:
+        return None, "unresolved"
+    outer_index = imp.get("outer_index") or 0
+    if outer_index < 0:
+        kind, outer = resolve_index(outer_index, table["exports"], table["imports"])
+        if kind == "import" and outer is not None and (outer.get("type_name") or "") == "Package":
+            return outer.get("object_name"), "outer-package"
+    source = imp.get("source_name")
+    return source, "source" if source else "unresolved"
+
+
+def qualified_name(table, index):
+    """`Package.Name` for a package index, using the package the object really lives in.
+
+    `describe_index` is the cheap label used throughout this module and its prefix can be the source file
+    rather than the package (see `import_origin`). When the package identity matters - deciding which
+    `.pcc` to open, or reporting a class's superclass - use this instead.
+    """
+    kind, obj = resolve_index(index, table["exports"], table["imports"])
+    if kind == "null":
+        return "None"
+    if obj is None:
+        return "%s[%d]?" % (kind, (index - 1) if index > 0 else (-index - 1))
+    if kind == "export":
+        return "export:%s" % obj.get("object_name")
+    package, _how = import_origin(table, obj)
+    return "%s.%s" % (package, obj.get("object_name"))
+
+
 def describe_index(v, exports, imports):
-    """Human-readable name for a package index, e.g. `Core.Function` or `export:SFXGame`."""
+    """Human-readable name for a package index, e.g. `Core.Function` or `export:SFXGame`.
+
+    **Caveat for imports: the package prefix is the `source_name`, which is the source file the package
+    was cooked under and not always the package itself.** `Core.Actor` is really `Engine.Actor` and
+    `Core.SFXGame` is really `SFXGame.SFXGame`; see `import_origin` for the measurement and
+    `qualified_name` for the form that gets it right. This function stays cheap and stable because it
+    labels thousands of rows in reports where the prefix only has to be recognisable.
+    """
     kind, obj = resolve_index(v, exports, imports)
     if kind == "null":
         return "None"

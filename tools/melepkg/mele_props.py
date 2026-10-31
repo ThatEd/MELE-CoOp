@@ -79,6 +79,7 @@ Usage:
     python -I tools/melepkg/mele_props.py spawncheck                    # what a guest pawn needs
     python -I tools/melepkg/mele_props.py startcheck                    # where a guest could stand
     python -I tools/melepkg/mele_props.py gricheck                      # what replicates, what does not
+    python -I tools/melepkg/mele_props.py prefixcheck                   # does routing know about MP
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -2259,6 +2260,11 @@ def cmd_gricheck(args):
                          if (prop_flags(t, p) or 0) & cpf_net)
             print("   %-4s %-24s %2d property(ies), %2d function(s); replicated: %s"
                   % (game, cls_name, len(ps), len(fs), ", ".join(net) or "none"))
+            owner = [e for e in t["exports"] if e["object_name"] == cls_name and e["class_index"] == 0]
+            if owner:
+                # The qualified form, because `describe_index` prints the source file for an import and
+                # that mislabelled this chain once already (`Core.SFXGame` for `SFXGame.SFXGame`).
+                print("        super: %s" % mt.qualified_name(t, owner[0]["super_index"]))
             if game != "ME3" and net != ["Temp"]:
                 problems.append("%s: %s replicated set changed to %s (was the single 'Temp' marker)"
                                 % (game, cls_name, net))
@@ -2284,6 +2290,9 @@ def cmd_gricheck(args):
         else:
             print("   ME3  %-24s %2d property(ies), %2d function(s) - a pure alias of SFXGRI"
                   % ("SFXGRISP", len(ps), len(fs)))
+            own = [e for e in t2["exports"] if e["object_name"] == "SFXGRISP" and e["class_index"] == 0]
+            if own:
+                print("        super: %s" % mt.qualified_name(t2, own[0]["super_index"]))
             if ps or fs:
                 problems.append("ME3: SFXGRISP now overrides %d propert(ies) and %d function(s) - it "
                                 "was a zero-override alias, so re-read it" % (len(ps), len(fs)))
@@ -2364,6 +2373,184 @@ def cmd_gricheck(args):
           "zero-override SFXGRISP alias; LE3 replicates only combat state and its player ceiling, "
           "while every capability flag is local-only, so gating a guest's save/journal/codex has to "
           "happen where the action happens")
+    return 0
+
+
+def cmd_prefixcheck(args):
+    """Does the engine route any map to a multiplayer game class? On LE3 the table is three rows, all SP.
+
+    `routing` reports the *shape* of the map-prefix table. This reports its **contents**, because the
+    contents answer a co-op question directly: a map prefix is how the engine chooses a game class for a
+    map, and each row carries `bIsMultiplayer` on LE3.
+
+    Measured, ME3's `Default__GameInfo.DefaultMapPrefixes`:
+
+        EntryMenu       -> SFXGameContent.SFXGameInfoEntryMenu   bUsesCommonPackage=False  MP=False
+        BIOG_UIWorld    -> SFXGame.SFXGame                       bUsesCommonPackage=False  MP=False
+        Bio             -> SFXGameContent.SFXGameInfoSP          bUsesCommonPackage=True   MP=False
+
+    And `GameInfoClassAliases` has exactly one row, `SP -> SFXGameContent.SFXGameInfoSP`, with
+    `DefaultGameType` naming the same class. So:
+
+    1. **No prefix routes to a multiplayer class and no row is marked multiplayer.** The MP entry points
+       were removed from the table, not merely disabled.
+    2. **One prefix covers the whole campaign**: `Bio` catches every `Bio*` package into `SFXGameInfoSP` and
+       sets `bUsesCommonPackage=True`, which is how `BIO_COMMON.pcc` gets loaded for every campaign map -
+       and that package is the MPContent-derived one that carries `SFXGameInfoSP` and `SFXGRISP`.
+    3. `bIsMultiplayer` is a `GameTypePrefix` field on **LE3 only** (7 fields, versus 5 on LE1/LE2), so
+       LE1/LE2 have no per-prefix MP marker at all.
+
+    The consequence for co-op is that nothing in routing will hand a campaign map to a networked game
+    class: the mod has to be the thing that makes it one, and it does so on `SFXGame`, which every `Bio`
+    map already routes to through `SFXGameInfoSP`.
+
+    Needs only named packages, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    def rows_of(tag):
+        """An ArrayProperty tag's elements as `{field: value}` dicts.
+
+        `decode_value` returns the elements as a list of tag-lists, not as dicts, so each row is folded
+        here. A bool's value lives in `bool`, not `value`, which is the other trap.
+        """
+        out = []
+        for element in tag.get("elements") or []:
+            row = {}
+            for sub in element:
+                row[sub["name"]] = sub["bool"] if sub["type"] == "BoolProperty" else sub["value"]
+            out.append(row)
+        return out
+
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    me3 = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "Engine.pcc")
+        if os.path.isfile(cand):
+            me3 = cand
+            break
+    if me3 is None:
+        print("ME3 Engine.pcc not found - this check is LE3-only (skip, not a result)")
+        return 2
+    t = mt.build(me3)
+    cdo = find_object(t, "Default__GameInfo")
+    if cdo is None:
+        problems.append("ME3: no Default__GameInfo in Engine.pcc")
+    else:
+        tags, end, _why = parse_object(t, t["buf"], cdo)
+        want = cdo["serial_offset"] - t["displacement"] + cdo["serial_size"]
+        print("Default__GameInfo: %d tag(s), closure %s"
+              % (len(tags), "EXACT" if end == want else "MISMATCH"))
+        if end != want:
+            problems.append("ME3: Default__GameInfo did not close exactly")
+        by_name = {tg["name"]: tg for tg in tags}
+        prefixes = by_name.get("DefaultMapPrefixes")
+        if prefixes is None:
+            problems.append("ME3: DefaultMapPrefixes is no longer set on the GameInfo CDO")
+        else:
+            rows = rows_of(prefixes)
+            print("DefaultMapPrefixes: %d row(s)" % len(rows))
+            if not rows:
+                problems.append("ME3: DefaultMapPrefixes did not decode into rows")
+            mp_rows = []
+            for row in rows:
+                prefix = row.get("Prefix")
+                game_type = row.get("GameType")
+                mp = row.get("bIsMultiplayer")
+                common = row.get("bUsesCommonPackage")
+                print("   %-14s -> %-38s common=%-5s mp=%s"
+                      % (prefix, game_type, common, mp))
+                if mp is True:
+                    mp_rows.append(prefix)
+                if game_type is None:
+                    problems.append("ME3: prefix %r has no GameType" % prefix)
+            if mp_rows:
+                problems.append("ME3: prefix(es) %s are now marked multiplayer - the routing plan changes"
+                                % mp_rows)
+            if not any(r.get("Prefix") == "Bio" for r in rows):
+                problems.append("ME3: the 'Bio' prefix is gone - no campaign map would route")
+            bio = [r for r in rows if r.get("Prefix") == "Bio"]
+            if bio and bio[0].get("bUsesCommonPackage") is not True:
+                problems.append("ME3: the 'Bio' prefix no longer uses the common package")
+        aliases = by_name.get("GameInfoClassAliases")
+        if aliases is None:
+            problems.append("ME3: GameInfoClassAliases is no longer set")
+        else:
+            rows = rows_of(aliases)
+            print("GameInfoClassAliases: %d row(s)" % len(rows))
+            for row in rows:
+                print("   %-6s -> %s" % (row.get("ShortName"), row.get("GameClassName")))
+            if len(rows) != 1:
+                problems.append("ME3: %d class aliases, expected exactly the one SP alias" % len(rows))
+            elif rows[0].get("ShortName") != "SP":
+                problems.append("ME3: the single class alias is %r, not 'SP'"
+                                % rows[0].get("ShortName"))
+        default_type = by_name.get("DefaultGameType")
+        if default_type is None or default_type.get("value") != "SFXGameContent.SFXGameInfoSP":
+            problems.append("ME3: DefaultGameType changed to %r"
+                            % (default_type.get("value") if default_type else None))
+
+    print()
+    print("The player stack the campaign's game class already supplies")
+    sfx = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "SFXGame.pcc")
+        if os.path.isfile(cand):
+            sfx = cand
+            break
+    if sfx is None:
+        problems.append("ME3: no SFXGame.pcc")
+    else:
+        t2 = mt.build(sfx)
+        cdo = find_object(t2, "Default__SFXGame")
+        if cdo is None:
+            problems.append("ME3: no Default__SFXGame")
+        else:
+            tags, _end, _why = parse_object(t2, t2["buf"], cdo)
+            props = {tg["name"]: tg["value"] for tg in tags if tg["name"] != "None"}
+            for name in ("PlayerControllerClass", "PlayerReplicationInfoClass", "HUDType",
+                         "MaxPlayersAllowed"):
+                value = props.get(name)
+                print("   %-28s %s" % (name, value if value is not None else "inherited"))
+                if value is None:
+                    problems.append("ME3: SFXGame no longer sets %s - a spawned player would fall back "
+                                    "to the engine default" % name)
+            if props.get("MaxPlayersAllowed") != 1:
+                problems.append("ME3: MaxPlayersAllowed is %r, expected the campaign clamp of 1"
+                                % props.get("MaxPlayersAllowed"))
+
+    def rows_of(tag):
+        """An ArrayProperty tag's elements as `{field: value}` dicts.
+
+        `decode_value` returns the elements as a list of tag-lists, not as dicts, so each row is folded
+        here. A bool's value lives in `bool`, not `value`, which is the other trap.
+        """
+        out = []
+        for element in tag.get("elements") or []:
+            row = {}
+            for sub in element:
+                if sub["type"] == "BoolProperty":
+                    row[sub["name"]] = sub["bool"]
+                elif sub["type"] in ("ArrayProperty", "StructProperty"):
+                    row[sub["name"]] = sub["value"]
+                else:
+                    row[sub["name"]] = sub["value"]
+            out.append(row)
+        return out
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    print("verdict: LE3's map-prefix table is three rows, all bIsMultiplayer=False, with one 'Bio' row "
+          "routing every campaign map to SFXGameInfoSP with the common package on; the SP alias is the "
+          "only alias; and SFXGame already supplies SFXPlayerController, SFXPRI and BioHUD to any player "
+          "the engine spawns")
     return 0
 
 
@@ -2448,6 +2635,10 @@ def main():
     p = sub.add_parser("gricheck",
                        help="what the campaign's game-replication-info carries, and what replicates")
     p.set_defaults(func=cmd_gricheck)
+
+    p = sub.add_parser("prefixcheck",
+                       help="does the map-prefix table route anything to a multiplayer game class")
+    p.set_defaults(func=cmd_prefixcheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")

@@ -965,6 +965,94 @@ def t_gri_surface():
     return "ok", "LE3 GRI 35 props / 32 fns behind an alias; 4 net props, capability flags local-only"
 
 
+@case("an import's package is its outer Package import, not its source_name")
+def t_import_origin():
+    """`describe_index` mislabels the package of an import, and that produced a wrong conclusion here.
+
+    For an import, `describe_index` prints `source_name.object_name`. But `source_name` is the source file
+    the package was cooked under: BIO_COMMON.pcc's reference to `SFXGame` reads
+    `type=Class, obj=SFXGame, source=Core`, so the cheap label says `Core.SFXGame` when the class lives in
+    `SFXGame.pcc`. `import_origin` follows the outer chain and gets it right, and `qualified_name` uses it.
+
+    The rates are asserted because a fix that only worked on a handful of imports would not be a fix:
+    every import must resolve one way or the other, and the `Core.Actor -> Engine` case must still hold.
+    """
+    import io
+    import contextlib
+    mt = mp.load_tables()
+    pkg = mt.load_pkg()
+    base = None
+    for root in pkg.game_dirs():
+        cand = os.path.join(root, "Game", "ME3", "BioGame", "CookedPCConsole", "BIO_COMMON.pcc")
+        if os.path.isfile(cand):
+            base = cand
+            break
+    if not base:
+        return "skip", "install absent"
+    t = mt.build(base)
+    owner = [e for e in t["exports"] if e["object_name"] == "SFXGameInfoSP" and e["class_index"] == 0]
+    if not owner:
+        return "fail", "SFXGameInfoSP class missing from BIO_COMMON.pcc"
+    cheap = mt.describe_index(owner[0]["super_index"], t["exports"], t["imports"])
+    good = mt.qualified_name(t, owner[0]["super_index"])
+    if cheap != "Core.SFXGame":
+        return "fail", "the cheap label changed to %r - re-read this test" % cheap
+    if good != "SFXGame.SFXGame":
+        return "fail", "qualified_name gave %r, expected SFXGame.SFXGame" % good
+    # The classification must be exhaustive over a package's imports.
+    kinds = {}
+    for index, imp in enumerate(t["imports"]):
+        _p, how = mt.import_origin(t, imp)
+        kinds[how] = kinds.get(how, 0) + 1
+    if kinds.get("unresolved"):
+        return "fail", "%d import(s) did not resolve to any origin: %s" % (
+            kinds["unresolved"], kinds)
+    if kinds.get("outer-package", 0) < 100:
+        return "fail", "almost no import resolved through an outer package: %s" % kinds
+    return "ok", ("Core.SFXGame -> SFXGame.SFXGame; imports with a package outer: %d of %d"
+                  % (kinds.get("outer-package", 0), len(t["imports"])))
+
+
+@case("routing knows no multiplayer class, and the campaign class already supplies the player stack")
+def t_prefix_and_player_stack():
+    """Two things that decide how much co-op has to add on LE3.
+
+    First, routing: `Default__GameInfo.DefaultMapPrefixes` is three rows and **every one is
+    `bIsMultiplayer=False`**, with `GameInfoClassAliases` holding exactly one alias, `SP`. So nothing in
+    the engine's own routing will hand a campaign map to a networked game class - the mod has to be the
+    thing that makes it one.
+
+    Second, the player stack: `Default__SFXGame` sets `PlayerControllerClass=SFXPlayerController`,
+    `PlayerReplicationInfoClass=SFXPRI` and `HUDType=BioHUD`, so a player spawned through the stock path
+    gets a Bio controller and HUD with no co-op code. That is what makes a second player cheap to try.
+    """
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_prefixcheck(None)
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_prefixcheck returned %d:\n%s" % (rc, out.strip())
+    if "DefaultMapPrefixes: 3 row(s)" not in out:
+        return "fail", "the prefix table changed shape:\n%s" % out.strip()
+    if "mp=True" in out:
+        return "fail", "a prefix is now marked multiplayer:\n%s" % out.strip()
+    if "Bio            -> SFXGameContent.SFXGameInfoSP           common=True  mp=False" not in out:
+        return "fail", "the Bio prefix row changed:\n%s" % out.strip()
+    if "GameInfoClassAliases: 1 row(s)" not in out or "SP     -> SFXGameContent.SFXGameInfoSP" not in out:
+        return "fail", "the SP alias changed:\n%s" % out.strip()
+    if "PlayerControllerClass        <SFXPlayerController>" not in out:
+        return "fail", "the campaign game class stopped setting the player controller:\n%s" % out.strip()
+    for want in ("PlayerReplicationInfoClass   <SFXPRI>", "HUDType                      <BioHUD>",
+                 "MaxPlayersAllowed            1"):
+        if want not in out:
+            return "fail", "the player stack changed (%s):\n%s" % (want, out.strip())
+    return "ok", "3 SP prefixes, one SP alias, and SFXGame supplies PC/PRI/HUD to any spawned player"
+
+
 def main():
     failures = 0
     skips = 0

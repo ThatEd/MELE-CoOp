@@ -4127,8 +4127,9 @@ truncated walk. And ME1 ships **no `BIOGame.ini`** at all while ME2's `[Engine.G
 The campaign game class per build:
 
     ME1  BioSPGame   : Core.GameInfo
-    ME2  BioSPGame   : Core.SFXGame  (SFXGame is absent on ME1)
-    ME3  SFXGameInfoSP : Core.SFXGame   (in BIO_COMMON.pcc)
+    ME2  BioSPGame   : SFXGame.SFXGame  (SFXGame is absent on ME1; the label reads `Core.` because
+                       `source_name` is the cook source, not the package - see Rule 89)
+    ME3  SFXGameInfoSP : SFXGame.SFXGame   (in BIO_COMMON.pcc)
 
 ### Why this is the right answer for the design and the wrong one to use
 
@@ -5003,8 +5004,10 @@ plain `GameInfo`, so it is the cleanest place to test the stock listen-server pa
 
 ### LE3's campaign game class is `SFXGameInfoSP`, and it ships from MP content
 
-- The runtime campaign GameInfo is **`SFXGameInfoSP`**, super `Core.SFXGame`, in **`BIO_COMMON.pcc`**
-  (also referenced from `BioP_End001.pcc`).
+- The runtime campaign GameInfo is **`SFXGameInfoSP`**, super **`SFXGame.SFXGame`**, in
+  **`BIO_COMMON.pcc`** (also referenced from `BioP_End001.pcc`). The reader's cheap label prints this
+  super as `Core.SFXGame`, which is wrong: for an import the prefix is the cook source, not the package
+  (Rule 89).
 - `BIO_COMMON.pcc`'s export list starts with the path `..\BIOGame\MPContent\BIO_COMMON.upk`. Not an
   inference - it is the first entry in the export table. The campaign game class is packaged from a
   **multiplayer content** package.
@@ -5405,3 +5408,74 @@ made it a measurement was that it varies *within* SFXGRI (0x0, 0x20, 0x2000, 0x4
 confident and false - both define `BioGameReplicationInfo` and ME1 uses it. The real finding is the
 35-versus-3 scale and ME2 defining a class its campaign does not point at, which is the dormant-mechanism
 pattern again.
+
+## 2026-10-31 (map prefixes and the reader fix): one prefix routes every map, and an import's package is not its source_name
+
+Two things, one measured in the game and one measured in the tool.
+
+### The map-prefix table has three rows and none of them is multiplayer
+
+`Default__GameInfo` on ME3 sets `DefaultMapPrefixes` to exactly three `GameTypePrefix` rows:
+
+| `Prefix` | `GameType` | `bUsesCommonPackage` | `bIsMultiplayer` |
+|---|---|---|---|
+| `EntryMenu` | `SFXGameContent.SFXGameInfoEntryMenu` | False | **False** |
+| `BIOG_UIWorld` | `SFXGame.SFXGame` | False | **False** |
+| `Bio` | `SFXGameContent.SFXGameInfoSP` | **True** | **False** |
+
+And `GameInfoClassAliases` has exactly one row - `ShortName` **`SP`** -> `SFXGameContent.SFXGameInfoSP` -
+with `DefaultGameType` set to the same class. So:
+
+1. **Every map prefix the engine knows routes to a single-player game class, and every row is explicitly
+   marked `bIsMultiplayer=False`.** There is no multiplayer prefix left in the shipped table at all.
+2. **One prefix covers the campaign.** `Bio` catches all 6,644 `Bio*` packages into `SFXGameInfoSP` with
+   `bUsesCommonPackage=True`, which is why `BIO_COMMON.pcc` - an MPContent-derived package - is loaded for
+   every campaign map. That also explains why the MP asset is present at all: the campaign's own routing
+   row pulls the common package in.
+3. **`bIsMultiplayer` is a field of `GameTypePrefix` on ME3 only** (7 fields, versus 5 on ME1/ME2). So on
+   LE1/LE2 there is no per-prefix MP marker to set - the concept did not exist yet in the table.
+
+The base `Default__GameInfo` also carries a real net configuration: `TotalNetBandwidth=32000`,
+`MinDynamicBandwidth=4000`, `MaxDynamicBandwidth=10000`, `MaxPlayers=4`, `MaxPlayersAllowed=32`,
+`MaxSpectators=2`, `bDelayedStart=True`, `bPauseable=True`, `bChangeLevels=True`. It is not a stripped
+single-player engine - it is a networked engine with the MP entry points removed.
+
+### The player stack is already set on the campaign's game class
+
+`Default__SFXGame` sets `PlayerControllerClass=<SFXPlayerController>`,
+`PlayerReplicationInfoClass=<SFXPRI>`, `HUDType=<BioHUD>` and `MaxPlayersAllowed=1`. So a player spawned
+through the stock `GameInfo` path on LE3 gets a Bio player controller, a Bio player replication info and a
+Bio HUD **without any co-op code**: the class hierarchy supplies them. That is the third per-player asset
+after the GRI and the roster, and it is the one that decides whether a second player has a working HUD.
+
+### Rule 89. An import's package is its outer Package import, not its `source_name`
+
+`describe_index` prints `source_name.object_name` for an import, and I had been reading that prefix as the
+package. It is not. Measured across all three builds' `SFXGame.pcc`:
+
+| build | imports | package == source | **package != source** | nested (no package outer) |
+|---|---|---|---|---|
+| ME1 | 1,426 | 121 | **282** | 1,023 |
+| ME2 | 1,909 | 128 | **306** | 1,475 |
+| ME3 | 4,189 | 143 | **348** | 3,698 |
+
+Concrete, and identical on all three:
+
+    printed Core.Actor               -> real package Engine
+    printed Core.GameReplicationInfo -> real package Engine
+    printed Core.SFXGame             -> real package SFXGame
+    printed Core.ScriptStruct        -> real package Core      (correct)
+    printed Core.Vector              -> no package outer       (source_name is the only hint)
+
+So `SFXGameInfoSP`'s superclass, which I had written down as `Core.SFXGame`, is
+**`SFXGame.SFXGame`** - the class in `SFXGame.pcc`. The import reads
+`type=Class, obj=SFXGame, source=Core` with its `outer` pointing at a **Package** import called `SFXGame`;
+`source_name` is where the cooker's source lived, not where the class ships.
+
+`mele_tables.import_origin()` and `mele_tables.qualified_name()` now do this properly and the cheap label
+keeps its old behaviour with a documented caveat, so nothing that depends on the old strings moves. The
+gricheck output uses the qualified form, and a test pins `Core.SFXGame -> SFXGame.SFXGame`.
+
+**This was not cosmetic.** "super `Core.SFXGame`" reads as "the class is in Core", which invites the
+conclusion that the campaign's game class is an engine class rather than BioWare content. The whole of the
+join/spawn reasoning depends on `SFXGameInfoSP : SFXGame` being a content hierarchy.

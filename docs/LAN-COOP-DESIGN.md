@@ -660,6 +660,46 @@ define `BioGameReplicationInfo`, and ME1's campaign points at it. What differs i
 
 Reproduce with `python -I tools/melepkg/mele_props.py gricheck`.
 
+## 4i. Routing knows no multiplayer class, and the player stack is already set
+
+`prefixcheck` reads the engine's map-prefix table, which is how a map is matched to a game class.
+ME3's `Default__GameInfo.DefaultMapPrefixes` is **three rows**:
+
+| `Prefix` | `GameType` | `bUsesCommonPackage` | `bIsMultiplayer` |
+|---|---|---|---|
+| `EntryMenu` | `SFXGameContent.SFXGameInfoEntryMenu` | False | **False** |
+| `BIOG_UIWorld` | `SFXGame.SFXGame` | False | **False** |
+| `Bio` | `SFXGameContent.SFXGameInfoSP` | **True** | **False** |
+
+and `GameInfoClassAliases` has exactly one row — `SP -> SFXGameContent.SFXGameInfoSP` — with
+`DefaultGameType` naming the same class.
+
+Three consequences:
+
+1. **No prefix routes to a multiplayer class, and no row is marked multiplayer.** The MP entry points were
+   removed from the table, not merely disabled. Nothing in the engine's own routing will hand a campaign
+   map to a networked game class, so the mod has to be the thing that makes it one.
+2. **One prefix covers the whole campaign.** `Bio` catches every `Bio*` package into `SFXGameInfoSP` with
+   `bUsesCommonPackage=True`, which is how `BIO_COMMON.pcc` — the MPContent-derived package carrying
+   `SFXGameInfoSP` and `SFXGRISP` — gets loaded for every campaign map. The MP asset present in the install
+   is there because the campaign's own routing row pulls it in.
+3. `bIsMultiplayer` is a `GameTypePrefix` field on **LE3 only** (7 fields, versus 5 on LE1/LE2). On LE1/LE2
+   there is no per-prefix MP marker to set — the concept did not exist in the table yet.
+
+**And the player stack is already wired.** `Default__SFXGame` sets
+`PlayerControllerClass=<SFXPlayerController>`, `PlayerReplicationInfoClass=<SFXPRI>`,
+`HUDType=<BioHUD>` and `MaxPlayersAllowed=1`. Since every campaign map routes to `SFXGameInfoSP : SFXGame`,
+any player the engine spawns through the stock path gets a Bio player controller, a Bio player replication
+info and a Bio HUD **with no co-op code at all**. That is the third per-player asset after the GRI (§4h) and
+the roster (§4f), and it is the one that decides whether a second player has a working HUD.
+
+The base `Default__GameInfo` also carries a live net configuration — `TotalNetBandwidth=32000`,
+`MinDynamicBandwidth=4000`, `MaxDynamicBandwidth=10000`, `MaxPlayers=4`, `MaxPlayersAllowed=32`,
+`MaxSpectators=2`, `bDelayedStart=True` — so this is a networked engine with the multiplayer entry points
+removed, not a stripped single-player engine.
+
+Reproduce with `python -I tools/melepkg/mele_props.py prefixcheck`.
+
 ## 5. The per-build table, measured
 
 Everything a port needs to differ per game. All rows confirmed from the install index, not from
