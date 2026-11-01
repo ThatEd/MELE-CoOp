@@ -51,6 +51,10 @@ def loaded(game):
     return mt.build(p), mt, None
 
 
+def _pkg_dirs():
+    return mp.load_tables().load_pkg().game_dirs()
+
+
 # -----------------------------------------------------------------------------------------
 @case("the tag layout closes objects exactly, and the +0 rival does not")
 def t_layout_closes():
@@ -1528,6 +1532,67 @@ def t_scene_state():
     return "ok", ("unreplicated on all 3 (positive controls hold); RPC call sites +0xef/+0xef/+0xfc; "
                   "override %s B with %s squad refs - LE1 has none"
                   % (sizes, squad))
+
+
+@case("a native function has two shapes, and a declaration is not an implementation")
+def t_native_shapes():
+    """`0b 53` is not the only way a native function appears - and the second way broke published counts.
+
+    UE3 emits an empty body for a native function, and this project tested `len > 4` for it. But a native
+    function that *takes parameters* gets a different shape:
+
+        29 <u32> 0b 53     EX_NativeParm, a per-build native index, EX_Nothing, EX_EndOfScript
+
+    The old test counted that as script. The dword is a native index rather than a name index, and that is
+    what makes it decidable without decoding anything: all 590 / 571 / 552 values are distinct, a large
+    minority fall outside the name table, and of 455 functions present on both ME1 and ME3 with the same
+    name **zero** share a value.
+
+    The correction is asserted rather than described, because "BioPlayerController has 236 script
+    functions" was published and is wrong on ME3; the real number is 198.
+    """
+    mt = mp.load_tables()
+    want = {"ME1": (305, 67, 34, 123), "ME2": (302, 106, 19, 120), "ME3": (302, 198, 28, 121)}
+    # Engine.pcc owns PlayerController and Actor; the campaign package owns the Bio classes, so the two
+    # have to be read separately - a single-package scan silently reports None for half the row.
+    origin = {"PlayerController": "Engine.pcc", "Actor": "Engine.pcc",
+              "BioPlayerController": "SFXGame.pcc", "BioWorldInfo": "SFXGame.pcc"}
+    rows = {}
+    for game in ("ME1", "ME2", "ME3"):
+        shapes = {}
+        for cls, package in origin.items():
+            path = None
+            for root in _pkg_dirs():
+                cand = os.path.join(root, "Game", game, "BioGame", "CookedPCConsole", package)
+                if os.path.isfile(cand):
+                    path = cand
+                    break
+            if path is None:
+                return "skip", "no %s for %s" % (package, game)
+            t = mt.build(path)
+            _funcs, decls = mp._script_functions(mt, t, cls)
+            if not decls:
+                return "fail", "%s.%s not found in %s - the counts cannot be measured" % (game, cls, package)
+            shapes[cls] = sum(1 for f in decls if mt.function_shape(t, f) == "script")
+        rows[game] = (shapes["PlayerController"], shapes["BioPlayerController"],
+                      shapes["BioWorldInfo"], shapes["Actor"])
+        # Both native shapes must be present in volume, or the classification is not being exercised.
+        stubs = decls = scripts = 0
+        for f in t["exports"]:
+            if not mt.describe_index(f["class_index"], t["exports"], t["imports"]).endswith("Function"):
+                continue
+            kind = mt.function_shape(t, f)
+            stubs += kind == "stub"
+            decls += kind == "native-decl"
+            scripts += kind == "script"
+        if stubs < 500 or decls < 500 or scripts < 2000:
+            return "fail", ("%s: shapes look wrong (stub %d, native-decl %d, script %d) - both native "
+                            "shapes must be present in volume" % (game, stubs, decls, scripts))
+    if rows != want:
+        return "fail", "script counts changed: %s, expected %s" % (rows, want)
+    return "ok", ("Engine.pcc: ~1,070 stubs and ~980 native declarations per build; script counts "
+                  "PC %s, BioPC %s, BioWorldInfo %s, Actor %s (was 1,000+ higher before the fix)"
+                  % (rows["ME3"][0], rows["ME3"][1], rows["ME3"][2], rows["ME3"][3]))
 
 
 def main():

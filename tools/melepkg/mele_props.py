@@ -102,6 +102,7 @@ live level must stay below. Do not read `GameTypesSupportedOnThisMap` (or anythi
 level package with this tool; the answer will look like a measurement.
 """
 import argparse
+import collections
 import importlib.util
 import json
 import os
@@ -118,6 +119,11 @@ FIXED_SIZE = {
     "ComponentProperty": 4, "InterfaceProperty": 4, "BoolProperty": 1,
     "NameProperty": 8, "DelegateProperty": 12,
 }
+
+# Parsed package indexes, keyed by build, in least-recently-used order. See `_load_index`: one
+# parse per build per process rather than one per check, because a parse is seconds and gigabytes.
+_INDEX_CACHE = collections.OrderedDict()
+_INDEX_COST = {}
 
 
 def load_tables():
@@ -750,6 +756,56 @@ def _struct_rows(mt, t, export):
     return [(r[0], r[1], r[2], r[3]) for r in mt.struct_fields(t, t["buf"], export)]
 
 
+def _load_index(game):
+    """Parse one build's package index, reusing it within the process when memory allows.
+
+    This is the whole cost of every check that needs all packages. The index files are files on disk
+    that `json.load` expands by roughly four to five times: ME1 is 521 MB and parses to ~2.3 GB of
+    resident memory, ME3 is 1.6 GB and parses to ~6.8 GB with an 8.5 GB peak. Several checks read the
+    same build, and the suite runs every check, so parsing per call read the same multi-gigabyte file
+    once per check rather than once per run: one suite run read 40 GB off the install drive and spent
+    ~110 s in `json.load` alone.
+
+    Reuse is capped by `MELE_INDEX_CACHE_MB` (default 10000) so a run cannot grow without bound; the
+    least recently used build is dropped when a new one would not fit. The default holds the two
+    builds most checks re-read (ME1 ~2.3 GB parsed, ME3 ~6.8 GB) but not all three, which would cost
+    ~14 GB. A build larger than the whole budget is parsed but not kept, so the result is the same
+    either way - only the reuse stops. `MELE_INDEX_CACHE_MB=0` disables reuse entirely.
+
+    The parsed object is returned by reference, so callers must treat it as read-only.
+    """
+    path = os.path.join(_index_dir(), "%s.json" % game)
+    if not os.path.isfile(path):
+        return None
+    data = _INDEX_CACHE.get(game)
+    if data is not None:
+        _INDEX_CACHE.move_to_end(game)
+        return data
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    budget_mb = _cache_budget_mb()
+    # `json.load` of these records costs about 4.5x the file size once parsed.
+    cost_mb = os.path.getsize(path) / 1048576.0 * 4.5
+    if budget_mb > 0 and cost_mb <= budget_mb:
+        while _INDEX_CACHE and sum(_INDEX_COST.values()) + cost_mb > budget_mb:
+            evicted, _ = _INDEX_CACHE.popitem(last=False)
+            _INDEX_COST.pop(evicted, None)
+        _INDEX_CACHE[game] = data
+        _INDEX_COST[game] = cost_mb
+    return data
+
+
+def _cache_budget_mb():
+    """How much parsed index to hold, from `MELE_INDEX_CACHE_MB`. Absent or unparsable means default."""
+    raw = os.environ.get("MELE_INDEX_CACHE_MB")
+    if raw is None:
+        return 10000
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 10000
+
+
 def _iter_index(game):
     """Stream one build's package records, from a cached index if present or from the install.
 
@@ -761,10 +817,8 @@ def _iter_index(game):
     Yields `(game, relative_key, record)` where the record holds `exports` as
     `[name, class, super, outer]` rows.
     """
-    path = os.path.join(_index_dir(), "%s.json" % game)
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+    data = _load_index(game)
+    if data is not None:
         for rel, rec in data.get("packages", {}).items():
             if "error" not in rec:
                 yield game, rel, rec
@@ -3646,14 +3700,11 @@ def _scene_action_placements(game):
     Returns `{}` when there is no index, so the caller reports "not measured" rather than a zero - a
     placement count of zero and an absent index must not look the same.
     """
-    import json as _json
-    path = os.path.join(_index_dir(), "%s.json" % game)
-    if not os.path.isfile(path):
-        return {}
     names = ("BioSeqAct_BioToggleCinematicMode", "SeqAct_ToggleCinematicMode")
     counts = {n: 0 for n in names}
-    with open(path, encoding="utf-8") as fh:
-        data = _json.load(fh)
+    data = _load_index(game)
+    if data is None:
+        return {}
     for _rel, rec in data.get("packages", {}).items():
         for row in rec.get("exports", []):
             if row[0] in counts:
@@ -3939,12 +3990,10 @@ def _iter_rel_index(mt, game):
     is the install root joined with the key. Getting this wrong produced `0 instance(s) closed exactly` the
     first time, which is why the empty case is a reported problem rather than a zero.
     """
-    import json as _json
     index_path = os.path.join(_index_dir(), "%s.json" % game)
     if not os.path.isfile(index_path):
         return
-    with open(index_path, encoding="utf-8") as fh:
-        data = _json.load(fh)
+    data = _load_index(game)
     roots = []
     pkg = mt.load_pkg()
     for base in pkg.game_dirs():

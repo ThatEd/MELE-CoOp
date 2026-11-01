@@ -932,13 +932,53 @@ def function_body(table, func_export):
 
 
 def is_implemented(table, func_export):
-    """True when a function has a real body rather than a native stub.
+    """True when a function has a real body rather than a native declaration or a stub.
 
-    Stubs are 2-3 bytes (`0b 53`, `04 0b 53`, `0b 04 0b 53`); every real implementation measured is
-    longer, so 4 bytes is the cut. Anything that does not close is reported as not implemented, because a
-    function whose extent is unknown cannot be claimed to do anything.
+    **There are two native shapes, not one, and the second cost this project a set of published
+    counts.** Both were measured:
+
+        shape                      body                                  meaning
+        stub                       0b 53 / 04 0b 53 / 0b 04 0b 53 (2-3)  an empty implementation
+        native declaration         29 <u32> 0b 53 (7, or +5 per parm)    EX_NativeParm, then nothing
+        script                     anything else
+
+    `0x29` is `EX_NativeParm` and `0x0b` is `EX_Nothing`, so the body reads "declare this native
+    parameter, do nothing, end". The dword is a **per-build native function index**, established by three
+    properties a name index would not have: all 590 / 571 / 552 values are distinct, 105 / 181 / 191 of
+    them fall outside the name table entirely, and of 455 functions present on both ME1 and ME3 with the
+    same name **zero** carry the same value.
+
+    Testing only `len > 4` counts every declaration as an implementation. The correction is not small:
+    `BioPlayerController` goes from 236 to 198 on ME3, `BioWorldInfo` from 46 to 28, `Actor` from 180 to
+    121, and engine-wide about 1,000 functions per build move from "script" to "native". Callers that
+    want "has bytecode worth reading" should use `function_shape`; callers that want "the script layer
+    does this" must use this.
+
+    Anything that does not close is reported as not implemented, because a function whose extent is
+    unknown cannot be claimed to do anything.
     """
-    return len(function_body(table, func_export)) > 4
+    return function_shape(table, func_export) == "script"
+
+
+EX_NATIVEPARM = 0x29
+EX_NOTHING = 0x0B
+EX_ENDOFSCRIPT = 0x53
+
+
+def function_shape(table, func_export):
+    """`"stub"`, `"native-decl"`, `"script"`, `"empty"` or `"unreadable"`.
+
+    Splitting the shapes apart rather than testing a length is what makes the distinction checkable:
+    a declaration is `EX_NativeParm`, a dword, `EX_Nothing`, `EX_EndOfScript`.
+    """
+    body = function_body(table, func_export)
+    if not body:
+        return "empty"
+    if len(body) <= 4:
+        return "stub"
+    if body[0] == EX_NATIVEPARM and body[-2:] == bytes([EX_NOTHING, EX_ENDOFSCRIPT]):
+        return "native-decl"
+    return "script"
 
 
 def _align(n, a):
