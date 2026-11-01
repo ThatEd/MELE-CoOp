@@ -1458,6 +1458,78 @@ def t_transition_payload():
                   % (total, low, high, distinct))
 
 
+@case("scene state is per-controller and unreplicated, and LE2/LE3 already loop the squad")
+def t_scene_state():
+    """The conversation/cutscene seam, measured rather than assumed.
+
+    Three things are pinned, and the third is the one that changes the plan:
+
+      * `PlayerController.bCinematicMode`, `ViewTarget` and `WorldInfo.bPlayersOnly` carry **no**
+        `CPF_Net`, so a client is never told by the engine that the host entered a scene. The check
+        cannot pass by accident, because two properties that *do* replicate on the same classes are
+        asserted positive in the same run - a broken flag read fails the positive control first.
+      * `PlayerController.ClientSetCinematicMode` exists, is script (not a native stub), and is reached
+        from `SetCinematicMode` by an **FName** call at `+0xef / +0xef / +0xfc`. That is why an
+        export-index scan reports "nobody calls it": a virtual call emits a name, not a package index.
+      * `BioPlayerController.SetCinematicMode` - the override the campaign's own
+        `BioSeqAct_BioToggleCinematicMode` reaches - is 131 / 747 / 775 bytes, and the LE2/LE3 bodies
+        reference the squad (`m_playerSquad`, `GetMember`, `Members`) while LE1's 131-byte body
+        references none of it.
+
+    The last point is the one a plan would otherwise get wrong in the expensive direction: LE2/LE3
+    already put every squad member into the scene, so a guest possessing a squadmate rides an existing
+    code path; LE1 has no such path and needs the loop written.
+    """
+    import contextlib
+    import io
+    import re
+    if not mp._require_install():
+        return "skip", "install absent"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_scenecheck(__import__("argparse").Namespace())
+    out = buf.getvalue()
+    if rc != 0:
+        return "fail", "cmd_scenecheck returned %d:\n%s" % (rc, out.strip()[-1500:])
+    # Every unreplicated scene field, on every build.
+    for field in ("bCinematicMode       CPF_Net=False", "ViewTarget           CPF_Net=False",
+                  "bPlayersOnly         CPF_Net=False"):
+        if out.count(field) != 3:
+            return "fail", ("%r appears %d time(s), expected 3 - the scene state now replicates on some "
+                            "build" % (field.strip(), out.count(field)))
+    # Positive controls: the flag reader must find CPF_Net on the same classes.
+    if out.count("positive control       TargetViewRotation   CPF_Net=True") != 3:
+        return "fail", "the CPF_Net positive control failed - the negative above is unsupported"
+    if out.count("positive control       Pauser               CPF_Net=True") != 3:
+        return "fail", "the Pauser positive control failed - the flag offset is wrong"
+    # The RPC and its call site.
+    sites = re.findall(r"SetCinematicMode -> ClientSetCinematicMode at \+0x([0-9a-f]+) \(FName call\)", out)
+    if sites != ["ef", "ef", "fc"]:
+        return "fail", "ClientSetCinematicMode call sites changed: %s" % sites
+    if out.count("ClientSetCinematicMode 116 B script") != 2 or "ClientSetCinematicMode 119 B script" not in out:
+        return "fail", "ClientSetCinematicMode body sizes changed:\n%s" % out.strip()[-1200:]
+    # The split that matters: LE1 has no squad loop, LE2/LE3 do.
+    rows = re.findall(r"BioPlayerController\.SetCinematicMode\s+(\d+) B, \d+ exact ref\(s\), "
+                      r"(\d+) squad ref\(s\)", out)
+    sizes = [int(r[0]) for r in rows]
+    squad = [int(r[1]) for r in rows]
+    if sizes != [131, 747, 775]:
+        return "fail", "BioPlayerController.SetCinematicMode sizes changed: %s" % sizes
+    if squad[0] != 0:
+        return "fail", ("LE1's cinematic override now references the squad (%d refs) - the 'LE1 needs the "
+                        "loop written' finding no longer holds" % squad[0])
+    if min(squad[1:]) == 0:
+        return "fail", ("LE2/LE3's cinematic override no longer references the squad (%s) - the 'newer "
+                        "builds already loop it' finding no longer holds" % squad)
+    # Placement counts must be measured, not hardcoded: the stock action is a declaration, the Bio one
+    # is what the campaign places. `(?!\d)` keeps "1" from matching "12".
+    if len(re.findall(r"SeqAct_ToggleCinematicMode 1(?!\d)", out)) != 3:
+        return "fail", "the stock action is now placed more than once per build - re-read the scene plan"
+    return "ok", ("unreplicated on all 3 (positive controls hold); RPC call sites +0xef/+0xef/+0xfc; "
+                  "override %s B with %s squad refs - LE1 has none"
+                  % (sizes, squad))
+
+
 def main():
     failures = 0
     skips = 0

@@ -3640,6 +3640,298 @@ def cmd_transitioncheck(args):
     return 0
 
 
+def _scene_action_placements(game):
+    """How many of each scene-toggle action the install actually places, from the package index.
+
+    Returns `{}` when there is no index, so the caller reports "not measured" rather than a zero - a
+    placement count of zero and an absent index must not look the same.
+    """
+    import json as _json
+    path = os.path.join(_index_dir(), "%s.json" % game)
+    if not os.path.isfile(path):
+        return {}
+    names = ("BioSeqAct_BioToggleCinematicMode", "SeqAct_ToggleCinematicMode")
+    counts = {n: 0 for n in names}
+    with open(path, encoding="utf-8") as fh:
+        data = _json.load(fh)
+    for _rel, rec in data.get("packages", {}).items():
+        for row in rec.get("exports", []):
+            if row[0] in counts:
+                counts[row[0]] += 1
+    return counts
+
+
+def cmd_scenecheck(args):
+    """Does a conversation or cutscene take the guest's camera and input away on all three builds?
+
+    This is the one part of the co-op plan that reads "the host plays the scene, the client watches",
+    and until now the design record asserted it from the engine's documented behaviour rather than from
+    these packages. Three measurements here, and the third is the one that changes the plan.
+
+    **1. Scene state is per-controller, and it does not replicate.** On `PlayerController`,
+    `bCinematicMode` and `ViewTarget` carry no `CPF_Net`; the only two properties on that class that do
+    are `TargetEyeHeight` and `TargetViewRotation` (a look-pitch pair). `WorldInfo.bPlayersOnly` carries
+    none either - the world's five replicated properties are `Pauser`, `ReplicatedMusicTrack`,
+    `TimeDilation`, `WorldGravityZ` and `bHighPriorityLoading`. So **a client never learns from the engine
+    that the host entered a scene**; it has to be told, or it has to read its own controller.
+
+    **2. The engine already ships the RPC that would tell it.** `PlayerController.ClientSetCinematicMode`
+    exists on all three builds (116 / 116 / 119 bytes) and does exactly the right per-client work -
+    `bCinematicMode`, `myHUD.bShowHUD`, and the movement/turning input gates. It is called from
+    `PlayerController.SetCinematicMode` (the same call site at **+0xef / +0xef / +0xfc** on the three
+    builds, found by FName match, not by export index - a virtual call emits a name, not a package
+    reference, so an index scan cannot see it). What it is *not* called from is anything above it: that
+    is the gap.
+
+    **3. The campaign's own scene entry point goes through the campaign's controller, and the two newer
+    builds already loop the squad.** The Kismet action the campaign actually places is
+    `BioSeqAct_BioToggleCinematicMode` - **728 / 2,264 / 2,051 instances** - while the stock
+    `SeqAct_ToggleCinematicMode` is placed **once per build**, in `Engine.pcc`, i.e. it is a declaration
+    with no campaign use. The campaign action calls `BioPlayerController.SetCinematicMode`, which is
+    overridden on all three builds with a different body each time:
+
+        build   body   squad/behaviour references inside it
+        ME1     131 B  none - it touches bCinematicMode and SFXPlayerCamera only
+        ME2     747 B  m_playerSquad, GetMember, ClearRBCallbacks, SetWeaponImmediately, m_oBehavior
+        ME3     775 B  Squad, Members, ForceEndRagdoll
+
+    So **LE2 and LE3 already put the whole squad into the scene** - every member is fetched and its
+    behaviour cleared. A guest possessing a squadmate in LE2/LE3 therefore rides a code path the campaign
+    already runs, while LE1's 131-byte body has nothing to ride and would need the loop written.
+
+    **What this does not settle.** Whether `LocalPlayerControllers` is used anywhere to reach the players
+    (it is a `UFunction` accessed as a property, so reading it needs the ops this module cannot decode),
+    whether the campaign's own action reaches a client controller at all, and whether the guest's pawn is
+    released cleanly on the way out. `CONVERSATIONS.md` records the way out being dangerous in practice;
+    nothing here contradicts that, and nothing here tests it.
+
+    Needs both `Engine.pcc` and the campaign package, so it runs without a package index.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+    # Per-controller scene state that must NOT be replicated, and the one thing that must be.
+    unreplicated = (("PlayerController", "bCinematicMode"), ("PlayerController", "ViewTarget"),
+                    ("WorldInfo", "bPlayersOnly"))
+    replicated = (("PlayerController", "TargetViewRotation"), ("WorldInfo", "Pauser"))
+    squad_markers = ("m_playerSquad", "GetMember", "Members", "m_oBehavior", "ClearRBCallbacks",
+                     "SetWeaponImmediately", "ForceEndRagdoll", "Squad")
+    CPF_NET = 0x20
+
+    per_build = {}
+    for game in ("ME1", "ME2", "ME3"):
+        engine = campaign = None
+        for root in pkg.game_dirs():
+            for cand, what in ((os.path.join(root, "Game", game, "BioGame", "CookedPCConsole",
+                                             "Engine.pcc"), "engine"),
+                               (os.path.join(root, "Game", game, "BioGame", "CookedPCConsole",
+                                             "SFXGame.pcc"), "campaign")):
+                if not os.path.isfile(cand):
+                    continue
+                if what == "engine":
+                    engine = cand
+                else:
+                    campaign = cand
+            if engine:
+                break
+        if engine is None:
+            problems.append("%s: no Engine.pcc" % game)
+            continue
+        t = mt.build(engine)
+        buf, disp = t["buf"], t["displacement"]
+        print("== %s" % game)
+
+        def net_flags(t, cls, prop):
+            ce = _class_export(mt, t, cls)
+            if ce is None:
+                return None
+            for e in t["exports"]:
+                if e["outer_index"] == ce["index"] + 1 and e["object_name"] == prop:
+                    at = e["serial_offset"] - t["displacement"] + mt.CPF_OFFSET_FLAGS
+                    return struct.unpack_from("<Q", t["buf"], at)[0]
+            return None
+
+        # 1. The scene state must not replicate.
+        for cls, prop in unreplicated:
+            flags = net_flags(t, cls, prop)
+            if flags is None:
+                problems.append("%s: %s.%s is gone - re-read the scene plan" % (game, cls, prop))
+                continue
+            if flags & CPF_NET:
+                problems.append("%s: %s.%s now carries CPF_Net - a client could learn scene state from "
+                                "the engine and this whole design changes" % (game, cls, prop))
+            print("   %-22s %-20s CPF_Net=%s" % (cls, prop, bool(flags & CPF_NET)))
+        # A positive control: at least one property on that class must replicate, or the flag read is
+        # simply not finding flags and the negative above is meaningless.
+        for cls, prop in replicated:
+            flags = net_flags(t, cls, prop)
+            if flags is None:
+                problems.append("%s: positive control %s.%s missing - the CPF_Net read is unverified"
+                                % (game, cls, prop))
+                continue
+            if not (flags & CPF_NET):
+                problems.append("%s: positive control %s.%s lost CPF_Net - the flag offset is wrong, so "
+                                "the 'scene state does not replicate' finding is unsupported"
+                                % (game, cls, prop))
+            print("   positive control       %-20s CPF_Net=%s" % (prop, bool(flags & CPF_NET)))
+
+        # 2. The per-client RPC, and its single scripted caller.
+        rpc = _function_on(mt, t, "PlayerController", "ClientSetCinematicMode")
+        setter = _function_on(mt, t, "PlayerController", "SetCinematicMode")
+        if rpc is None or setter is None:
+            problems.append("%s: ClientSetCinematicMode/SetCinematicMode missing on PlayerController"
+                            % game)
+            continue
+        rpc_body = mt.function_body(t, rpc)
+        set_body = mt.function_body(t, setter)
+        print("   ClientSetCinematicMode %d B %s; SetCinematicMode %d B %s"
+              % (len(rpc_body), "script" if len(rpc_body) > 4 else "NATIVE",
+                 len(set_body), "script" if len(set_body) > 4 else "NATIVE"))
+        if len(rpc_body) <= 4:
+            problems.append("%s: ClientSetCinematicMode is now native - the 'engine already ships the "
+                            "RPC' reading changes" % game)
+        # The call site is an FName (virtual dispatch), so it is found by name index + zero, not by
+        # export index. Assert it, because a client that is never told is the whole problem above.
+        names = t["name_table"]
+        offset = None
+        if "ClientSetCinematicMode" in names:
+            want = names.index("ClientSetCinematicMode")
+            for i in range(0, max(0, len(set_body) - 7)):
+                if (struct.unpack_from("<i", set_body, i)[0] == want
+                        and struct.unpack_from("<i", set_body, i + 4)[0] == 0):
+                    offset = i
+                    break
+        if offset is None:
+            problems.append("%s: SetCinematicMode no longer calls ClientSetCinematicMode - the engine "
+                            "would have no per-client scene path at all" % game)
+        else:
+            print("   SetCinematicMode -> ClientSetCinematicMode at +0x%x (FName call)" % offset)
+
+        # Who else calls it? Only SetCinematicMode should, on the stock engine. This is a LOWER BOUND and
+        # is reported as one: UE3 emits a virtual call as an FName, not a package index, so every call
+        # made through the vtable - which is how SetCinematicMode reaches it - is invisible here.
+        callers = []
+        for f in t["exports"]:
+            if not mt.describe_index(f["class_index"], t["exports"], t["imports"]).endswith("Function"):
+                continue
+            body = mt.function_body(t, f)
+            if len(body) <= 4:
+                continue
+            for i in range(0, max(0, len(body) - 3)):
+                if struct.unpack_from("<i", body, i)[0] == rpc["index"]:
+                    owner = mt.describe_index(f["outer_index"], t["exports"], t["imports"]) \
+                        .replace("export:", "").replace("Core.", "")
+                    callers.append("%s.%s" % (owner, f["object_name"]))
+                    break
+        external = [c for c in callers if c != "PlayerController.ClientSetCinematicMode"]
+        print("   ClientSetCinematicMode exact-index callers: %d (excluding its own declaration: %s) - "
+              "a lower bound, because vtable calls carry a name, not an index"
+              % (len(callers), external or "none"))
+
+        # 3. The campaign's own action, and what its controller override loops over.
+        info = {"rpc": len(rpc_body), "call_at": offset}
+        placements = _scene_action_placements(game)
+        info["placements"] = placements
+        print("   placements across the install: %s"
+              % (", ".join("%s %d" % (k, v) for k, v in sorted(placements.items()))
+                 or "no package index - not measured"))
+        if campaign:
+            ct = mt.build(campaign)
+            for cls in ("BioSeqAct_BioToggleCinematicMode", "SeqAct_ToggleCinematicMode"):
+                if _class_export(mt, ct, cls) is None:
+                    continue
+                funcs, _rows = _script_functions(mt, ct, cls)
+                for fname, fe in sorted(funcs.items()):
+                    fb = mt.function_body(ct, fe)
+                    if len(fb) <= 4:
+                        continue
+                    print("   %-34s %-14s %4d B" % (cls, fname, len(fb)))
+            override = _function_on(mt, ct, "BioPlayerController", "SetCinematicMode")
+            if override is None:
+                problems.append("%s: BioPlayerController.SetCinematicMode is gone - the campaign's scene "
+                                "entry point would have no override" % game)
+            else:
+                obody = mt.function_body(ct, override)
+                ex, im = ct["exports"], ct["imports"]
+                refs = []
+                for i in range(0, max(0, len(obody) - 3)):
+                    v = struct.unpack_from("<i", obody, i)[0]
+                    if 0 < v <= len(ex):
+                        x = ex[v - 1]
+                        kind = mt.describe_index(x["class_index"], ex, im)
+                        if kind.endswith("Function") or kind.endswith("Property"):
+                            lbl = "%s.%s" % (mt.describe_index(x["outer_index"], ex, im)
+                                             .replace("export:", "").replace("Core.", ""),
+                                             x["object_name"])
+                            if lbl not in refs:
+                                refs.append(lbl)
+                squad = [r for r in refs if r.rsplit(".", 1)[1] in squad_markers]
+                info["override"] = len(obody)
+                info["squad"] = squad
+                print("   BioPlayerController.SetCinematicMode %4d B, %d exact ref(s), %d squad ref(s): %s"
+                      % (len(obody), len(refs), len(squad), squad or "none"))
+                sig = mt.signature(ct, ct["buf"], override)
+                print("        parms: %s" % ", ".join(n for n, _t, _s, _o in sig["params"]))
+        per_build[game] = info
+        print()
+
+    print()
+    # The split that matters: LE2/LE3's override already walks the squad, LE1's does not.
+    if len(per_build) == 3:
+        le1 = per_build["ME1"].get("squad")
+        newer = [per_build[g].get("squad") for g in ("ME2", "ME3")]
+        if le1 is None:
+            problems.append("ME1: no campaign override measured")
+        elif le1:
+            print("note: LE1's cinematic override now references the squad too (%s) - the 'LE1 has "
+                  "nothing to ride' split no longer holds" % le1)
+        for g, s in zip(("ME2", "ME3"), newer):
+            if s is not None and not s:
+                problems.append("%s: the cinematic override no longer references the squad - LE2/LE3 "
+                                "would need the loop written like LE1" % g)
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    counts = {g: per_build[g].get("placements") or {} for g in per_build}
+    measured = all(c.get("BioSeqAct_BioToggleCinematicMode") for c in counts.values()) and len(counts) == 3
+    if not measured:
+        print("verdict: scene state (%s) is per-controller and NOT replicated on any build, so a client "
+              "is never told by the engine that the host entered a scene; the engine nonetheless ships "
+              "the per-client RPC that would tell it (PlayerController.ClientSetCinematicMode, "
+              "%d/%d/%d bytes, already called from SetCinematicMode at +0x%x/+0x%x/+0x%x); the campaign's "
+              "own scene toggle runs through BioPlayerController.SetCinematicMode, whose override is "
+              "%d/%d/%d bytes - LE2/LE3 already loop the squad inside it, LE1 does not. Placement counts "
+              "were not measured (no package index)."
+              % ("PlayerController.bCinematicMode, ViewTarget, WorldInfo.bPlayersOnly",
+                 per_build["ME1"]["rpc"], per_build["ME2"]["rpc"], per_build["ME3"]["rpc"],
+                 per_build["ME1"]["call_at"], per_build["ME2"]["call_at"], per_build["ME3"]["call_at"],
+                 per_build["ME1"].get("override", -1), per_build["ME2"].get("override", -1),
+                 per_build["ME3"].get("override", -1)))
+        return 0
+    stock = [counts[g].get("SeqAct_ToggleCinematicMode", 0) for g in ("ME1", "ME2", "ME3")]
+    bio = [counts[g]["BioSeqAct_BioToggleCinematicMode"] for g in ("ME1", "ME2", "ME3")]
+    print("verdict: scene state (%s) is per-controller and NOT replicated on any build, so a client is "
+          "never told by the engine that the host entered a scene; the engine nonetheless ships the "
+          "per-client RPC that would tell it (PlayerController.ClientSetCinematicMode, %d/%d/%d bytes, "
+          "already called from SetCinematicMode at +0x%x/+0x%x/+0x%x); the campaign places its scene "
+          "toggle through BioSeqAct_BioToggleCinematicMode (%d/%d/%d instances) rather than the stock "
+          "SeqAct_ToggleCinematicMode (%d/%d/%d), and that path's "
+          "BioPlayerController.SetCinematicMode override is %d/%d/%d bytes - LE2/LE3 already loop the "
+          "squad inside it, LE1 does not"
+          % ("PlayerController.bCinematicMode, ViewTarget, WorldInfo.bPlayersOnly",
+             per_build["ME1"]["rpc"], per_build["ME2"]["rpc"], per_build["ME3"]["rpc"],
+             per_build["ME1"]["call_at"], per_build["ME2"]["call_at"], per_build["ME3"]["call_at"],
+             bio[0], bio[1], bio[2], stock[0], stock[1], stock[2],
+             per_build["ME1"].get("override", -1), per_build["ME2"].get("override", -1),
+             per_build["ME3"].get("override", -1)))
+    return 0
+
+
 def _iter_rel_index(mt, game):
     """Yield `{"path": <absolute .pcc path>}` for every package of one build, from the index if present.
 
@@ -3771,6 +4063,10 @@ def main():
                        help="the campaign's progression step, read from real instances")
     p.add_argument("--game", choices=["ME1", "ME2", "ME3"])
     p.set_defaults(func=cmd_transitioncheck)
+
+    p = sub.add_parser("scenecheck",
+                       help="does a conversation or cutscene take the guest's camera and input away")
+    p.set_defaults(func=cmd_scenecheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")
