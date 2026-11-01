@@ -5675,10 +5675,61 @@ a count: `Login` is 2,127 bytes, `ServerMove` 1,905, `AtCapacity` 139, `SpawnDef
 `Possess` 336, `SpawnNewPlayerPawn` 494. The 9/9 join chain is still 9/9. `ServerMove` is still never
 replaced. `Possess` is still the seam. Only the totals moved.
 
+### Correction (2026-11-01): there were two native shapes, not one
+
+The table above is still too generous. A native function that **takes parameters** does not get the empty
+stub - it gets a declaration:
+
+```
+29 <u32> 0b 53      EX_NativeParm, <native index>, EX_Nothing, EX_EndOfScript
+```
+
+Bodies of 7, 12, 17, 22 ... bytes (7 + 5 per parameter) are this shape. `is_implemented()` tested only
+`len(body) > 4`, so **every one of them was counted as script**, and the "after" column above is still
+inflated. `mele_tables.function_shape()` now returns `stub` / `native-decl` / `script`, and
+`is_implemented()` is exactly `shape == "script"`.
+
+The dword is a **per-build native function index**, not a name index, and that is decidable without decoding
+anything. It has three properties a name index cannot have:
+
+| test | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| values, all distinct | 590 / 590 | 571 / 571 | 552 / 552 |
+| outside the name table entirely | 105 | 181 | 191 |
+| same-named function shared with another build carrying the same value | **0 of 455** (ME1 vs ME3) |
+
+The corrected counts again - these are the numbers to use:
+
+| measurement | published as | actually |
+|---|---|---|
+| ME3 `BioPlayerController` script functions | 236 | **198** |
+| ME3 `BioWorldInfo` script functions | 46 | **28** |
+| ME3 `Actor` script functions | 180 | **121** |
+| ME1 `Actor` script functions | 181 | **123** |
+| ME1 `PlayerController` script functions | 329 | **305** |
+| ME3 `PlayerController` script functions | 327 | **302** |
+| ME1 `BioBaseSquad` script functions | 194 | **119** |
+| LE3 `BioPlayerSquad` script functions | 14 | **12** |
+
+Engine-wide, about **1,000 functions per build** move from "script" to "native". `Engine.pcc` splits roughly
+3,240 script / 1,080 stub / 990 native-declaration on each build.
+
+Again nothing substantive falls: the findings were all of the form "`SetCinematicMode` is 131/747/775 bytes
+and calls `ClientSetCinematicMode`", and a 131-byte body is script under either test. What falls is any
+sentence of the form "N of M functions are implemented", and the `Actor`, `WorldInfo` and `BioBaseSquad` rows
+are the ones that moved enough to matter - LE3's `BioBaseSquad` is 10 script functions, not 28.
+
 ### Rule 96. A declaration is not an implementation.
 `serial_size > 4` looked like a safe test for "has a body" and is not, because UE3 gives a native function a
 stub body so the interpreter has a return to execute. The extent is proven by closure; the *content* is what
-separates a stub from an implementation, and the stub shapes are exactly three byte strings.
+separates a stub from an implementation, and a stub is not the only shape.
+
+**And the correction itself needed correcting.** "The stub shapes are exactly three byte strings" was written
+one session too early and cost another set of counts: `29 <u32> 0b 53` is a native *declaration* and is
+neither empty nor script. The lesson is not "three shapes" or "four shapes" - it is that a shape test written
+as a length threshold will keep missing cases, and the fix is to classify by leading token and validate the
+classification against a property the wrong answer cannot have (here: index uniqueness, out-of-range values,
+and zero cross-build agreement).
 
 ### Rule 97. When a documented offset produces nonsense, suspect the document, not the data.
 Reading an int32 at `serial +32` gave `671089225`, `-1711265017`, `1800887823` - values that are stable per
@@ -6270,3 +6321,155 @@ and here it costs one histogram.
 The design doc already had a per-build table. Adding three rows for LE1/LE2's extra fields would have been
 plausible and wrong - they are sentinel. Measuring 41,000 more instances to remove three rows from a table was
 worth more than adding them.
+
+## 2026-11-01 (scenes): the engine ships the call, and nothing reaches it
+
+The conversation/cutscene seam, measured with `scenecheck`. The design record had this as "host drives,
+client is a passenger - looks right", which is a description of what should happen rather than a measurement
+of what the code does. Three findings, and the third reorders the per-build work.
+
+### Scene state is per-controller and does not replicate
+
+| state | class | `CPF_Net` |
+|---|---|---|
+| `bCinematicMode` | `PlayerController` | **no** |
+| `ViewTarget` | `PlayerController` | **no** |
+| `bPlayersOnly` | `WorldInfo` | **no** |
+| `TargetViewRotation` | `PlayerController` | yes - control |
+| `Pauser` | `WorldInfo` | yes - control |
+
+`TargetEyeHeight` and `TargetViewRotation` are the only two replicated properties on `PlayerController`
+(110-111 total); `Pauser` is one of five on `WorldInfo`. So a client never learns from the engine that the
+host entered a scene.
+
+The control rows are not decoration. Without them, "no `CPF_Net` on `bCinematicMode`" and "the flag offset is
+wrong" produce the same output, and the first reading is only available because the second is excluded in
+the same run on the same class.
+
+### `ClientSetCinematicMode` is already called - by a virtual dispatch an index scan cannot see
+
+`PlayerController.ClientSetCinematicMode(bInCinematicMode, bAffectsMovement, bAffectsTurning, bAffectsHUD)`
+is 116/116/119 bytes of real script on the three builds, and `PlayerController.SetCinematicMode` calls it at
+**+0xef / +0xef / +0xfc**.
+
+The exact-export-index scan reports that **nothing** calls it except its own declaration. That is a true
+statement about package references and a false statement about the program: UE3 emits a virtual call as an
+**FName**, and the call site is `name_index` followed by a zero dword. The same trap produced Rule 103 for
+mutators; this is the second independent instance, so it is now a standing rule for anything that matters.
+
+Practical detection recipe, validated against five calls whose existence was already known independently
+(`Pause -> ServerPause`, `OnToggleCinematicMode -> SetCinematicMode`, `SetCinematicMode ->
+ClientSetCinematicMode`, `ServerPause -> SetPause`, `PostLogin -> GenericPlayerInitialization`): find
+`i32 == name_index` immediately followed by `i32 == 0`. All five land, on all three builds.
+
+### The campaign places its scene toggle through `BioSeqAct_BioToggleCinematicMode`, and LE2/LE3's override already loops the squad
+
+| action | ME1 | ME2 | ME3 |
+|---|---|---|---|
+| `BioSeqAct_BioToggleCinematicMode` | **728** | **2,264** | **2,051** |
+| `SeqAct_ToggleCinematicMode` (stock) | 1 | 1 | 1 |
+
+The stock action's single appearance is its declaration in `Engine.pcc`. Hooking it hooks nothing.
+
+The Bio action's path ends in `BioPlayerController.SetCinematicMode`, overridden per build, and the bodies
+differ in kind rather than in size:
+
+| build | body | squad references | parms |
+|---|---|---|---|
+| ME1 | 131 B | **none** | 6 |
+| ME2 | 747 B | `m_playerSquad`, `GetMember`, `ClearRBCallbacks`, `SetWeaponImmediately`, `m_oBehavior` | 10 |
+| ME3 | 775 B | `Squad`, `Members`, `ForceEndRagdoll` | 13 |
+
+LE2 and LE3 already walk the squad inside their cinematic override: a guest possessing a squadmate rides a
+path the campaign runs on every scene. LE1's body does not mention the squad at all - its parameter list
+doesn't either - so the loop would have to be written.
+
+**For the scene seam, LE2/LE3 are cheaper than LE1**, which is the opposite of the "oldest build is closest
+to the engine" ordering the rest of the plan follows. Writing the per-build table left to right would have
+put the most work on the build least able to absorb it.
+
+### What is still unread
+
+`BioWorldInfo.GetLocalPlayerController` is a **2-byte native stub** on all three builds, so how the campaign's
+scene action selects a controller is not readable from the packages. That is the one thing standing between
+"the campaign puts the squad in the scene" and "the campaign puts the *guest's* squadmate in the scene", and
+it is a live question rather than an offline one.
+
+### Rule 120. Before designing around a missing call, check for a virtual one.
+The exact-index scan is the right tool for data references and the wrong tool for dispatch. A "nobody calls
+this" result from it means nobody calls it **by index**; the recipe that finds the rest is `name_index`
+followed by zero, and it should be run before the absence is written down as a finding.
+
+### Rule 121. Per-build work is not ordered by build age.
+LE2/LE3's cinematic override already loops the squad and LE1's does not, so the scene seam is cheapest on the
+two *newer* builds. A table written left to right would have assigned the most work to the build that needs
+the most new code, and the reversal only shows up by measuring all three before planning any of them.
+
+## 2026-11-01 (collision + team): two repairs that were writing replicated state
+
+Checked against the fork's live findings, which is the first time this project's package reader has been used
+to review code that actually runs in the game. Two of the fork's repairs write state the engine already
+transports.
+
+### The guest collision repair writes a bit that replicates
+
+The fork's live record: on release and reacquire the guest's pawn lost world and actor collision, stayed
+non-colliding, fell, and could not move. Its repair calls native `Actor.SetCollisionType` and then writes
+`Actor.bCollideWorld` by raw offset, because "the method does not restore `bCollideWorld`".
+
+True about the method, wrong layer. The collision contract on `Actor`:
+
+| property | `CPF_Net` |
+|---|---|
+| `bCollideWorld` | **yes** |
+| `bCollideActors` | **yes** |
+| `bBlockActors` | **yes** |
+| `bProjTarget` | yes |
+| `Role`, `RemoteRole` | yes |
+| `CollisionType` | no |
+| `CollisionComponent` | no |
+
+Every flag being written locally is replicated. So a guest-side write is either overwritten by the next
+property update or diverges until one arrives - which is exactly the shape of "the repair works and then is
+not there". The durable fix is on the authority.
+
+And there is no shipped force-update call to paper over it: `Actor.bForceNetUpdate` and `Actor.bNetDirty` exist
+on all three builds, both correctly local, but **no script function reads either**. `bNetDirty`'s only reader
+is `Actor.ForceNetRelevant`; `bForceNetUpdate` has no reader at all by export index and no FName mention outside
+`GameInfo.HandleSeamlessTravelPlayer` on LE3. `ForceNetUpdate`, `ForceRelevant`, `SetNetUpdateFrequency` are not
+exported from `Engine.pcc` on any build.
+
+### The guest team registration travels by itself
+
+The fork registered the guest's null team through `SFXGame.ChangeTeam` and real damage to a Trooper started
+(512.5 -> 194.05). Measured around it:
+
+| item | replicates |
+|---|---|
+| `PlayerReplicationInfo.Team` | **yes, all builds** |
+| `Pawn.Health`, `Actor.bProjTarget` | yes |
+| `RestartPlayer.TeamNum` | **no** |
+| `ChoosePlayerStart.Team` | **no** |
+
+So the registration travels on the property stream: setting it on the host is sufficient, and the guest-side
+re-registration on reacquisition is belt and braces rather than the mechanism.
+
+**Every `GetTeamNum` is a 2-byte native stub** - on `Actor`, `Pawn`, `Controller`, `PlayerReplicationInfo`,
+`Projectile`, `TeamInfo` - so the team decision is not readable and not overridable in script on any build.
+`Team` is the only script-level lever, which makes `ChangeTeam` the whole mechanism rather than one option.
+
+`SFXGame.ChangeTeam` is the LE3 override at 358 bytes over `GameInfo.ChangeTeam`'s 9-byte forwarder, so the
+call the mod makes reaches campaign logic and not a stock stub.
+
+### Rule 122. Before writing a replicated field directly, check whether something already sends it.
+Two independent repairs in the fork write a value the property stream also carries, and in both cases the
+symptom (fixed, then not fixed) is the same as the cause. The test costs one `CPF_Net` read and it changes the
+repair from "write the value" to "make the authority's value right", which is a different and much smaller
+change.
+
+### Rule 123. Read the code that runs before believing the code that reads.
+Everything in this log up to now was measured from packages with no running game. Reviewing a fork that *has*
+live evidence immediately produced two corrections, because the live symptoms named exactly the fields worth
+checking for `CPF_Net`. A package reader is most useful pointed at somebody else's bug report.
+
+

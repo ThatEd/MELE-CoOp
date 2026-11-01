@@ -631,15 +631,20 @@ native patch to *decide* about a second player.
 
 What differs is how much of that each campaign game class already replaces:
 
-| build | campaign class | script overrides (with a real body) | touches the join chain |
+| build | campaign class | script functions (not declarations) | touches the join chain |
 |---|---|---|---|
 | LE1 | `BioSPGame` | 17 of 18 declared | `SpawnDefaultPawnFor`, `FindPlayerStart` |
 | LE2 | `BioSPGame` | 4 of 4 | **nothing** |
-| LE3 | `SFXGame` | **70 of 80** | `RestartPlayer`, `SpawnDefaultPawnFor` |
+| LE3 | `SFXGame` | **63 of 80** | `RestartPlayer`, `SpawnDefaultPawnFor` |
 
-The "of N declared" matters: a UE3 native function still carries a 2–3 byte stub body (`0b 53`), so 10 of
-`SFXGame`'s 80 declared functions are declarations rather than implementations. An earlier count here said
-80 because it tested serial size rather than bytecode length.
+The "of N declared" matters, and it has two levels. A UE3 native function carries an empty body
+(`0b 53`, `04 0b 53`), **and a native function that takes parameters carries a declaration instead**
+(`29 <u32> 0b 53` — `EX_NativeParm`, a per-build native index, then nothing). An earlier count in this
+document tested only the empty stub and said 70 of 80 for `SFXGame`; counting declarations as native as well
+gives **63**. `SFXGame`'s 7 declarations are `AddCoverDecay`, `CopyAndUpdateME2ImportData`,
+`CopyAndUpdateNewGamePlusData`, `LoadPackage`, `SetMipFadingValue`, `SortActorsByAngle` and
+`UpdateTimeDilationArray` — none of them in the join chain, so the conclusion is unchanged, but the number
+was wrong.
 
 ME2 is the outlier in the other direction: its campaign class overrides only `Reset`,
 `SetupPartyMemberAttributes`, `SpawnGameOverGUI` and `StartMatch`, so its join path is the stock
@@ -982,6 +987,138 @@ all have real bodies on all three builds and none is reachable, because `bUseSea
 mechanism, and a candidate for the same treatment as LE1's spare-controller slot (§4f).
 
 Reproduce with `python -I tools/melepkg/mele_props.py travelcheck`.
+
+## 4l. A conversation takes the camera and input, and nothing tells the client
+
+This is the seam that decides whether "the host plays the scene, the client watches" needs code or needs a
+one-line call. `scenecheck` measures it, and the answer is a mix: the engine **has** the per-client call, and
+nothing **reaches** it for a guest.
+
+### Scene state is per-controller and it does not replicate
+
+| state | class | `CPF_Net` |
+|---|---|---|
+| `bCinematicMode` | `PlayerController` | **no** |
+| `ViewTarget` | `PlayerController` | **no** |
+| `bPlayersOnly` | `WorldInfo` | **no** |
+| `TargetViewRotation` | `PlayerController` | yes (control) |
+| `Pauser` | `WorldInfo` | yes (control) |
+
+The two control rows matter: they are read by the same code path, on the same classes, in the same run. So
+the negative rows are a measurement about these properties, not a broken flag read. `TargetEyeHeight` and
+`TargetViewRotation` are the *only* two replicated properties on `PlayerController` (110–111 properties
+in total), and `Pauser` is one of only five on `WorldInfo`.
+
+**Consequence:** a client never learns from the engine that the host entered a scene. It has to be told, or
+it has to read its own controller.
+
+### The engine already ships the call that would tell it
+
+`PlayerController.ClientSetCinematicMode(bInCinematicMode, bAffectsMovement, bAffectsTurning, bAffectsHUD)`
+exists on all three builds — **116 / 116 / 119 bytes**, real script on each — and does exactly the right
+per-client work: `bCinematicMode`, `myHUD.bShowHUD`, and the movement/turning gates.
+
+It is called from `PlayerController.SetCinematicMode` at **`+0xef` / `+0xef` / `+0xfc`**. That offset is
+found by **FName match, not by export index**, and this is the single most important methodological point on
+this page: **a virtual call in UE3 emits a name, not a package reference**, so an export-index scan reports
+that *nothing* calls `ClientSetCinematicMode` — which is exactly the false negative that makes the wrong
+design look necessary. The exact-index scan does find the function's own declaration and nothing else; the
+report says so and labels the count a lower bound.
+
+**What is missing is not the call — it is the reach.** `SetCinematicMode` is a per-`PlayerController`
+function, and the thing that calls it for the campaign is the Kismet action, which resolves one controller.
+
+### The campaign's own scene toggle already loops the squad on LE2 and LE3
+
+The action the campaign actually places is `BioSeqAct_BioToggleCinematicMode` —
+**728 / 2,264 / 2,051 instances** over 340 / 435 / 603 packages. The stock `SeqAct_ToggleCinematicMode` is
+placed **once per build**, inside `Engine.pcc`: a declaration with no campaign use. So hooking the stock
+action hooks nothing, and hooking the Bio one hooks the campaign's real scene surface.
+
+Its path ends in `BioPlayerController.SetCinematicMode`, overridden on every build, and the override is a
+different function each time:
+
+| build | body | squad / behaviour references inside it | signature |
+|---|---|---|---|
+| ME1 | **131 B** | **none** — touches `bCinematicMode` and `SFXPlayerCamera` only | 6 parms |
+| ME2 | **747 B** | `m_playerSquad`, `GetMember`, `ClearRBCallbacks`, `SetWeaponImmediately`, `m_oBehavior` | 10 parms |
+| ME3 | **775 B** | `Squad`, `Members`, `ForceEndRagdoll` | 13 parms |
+
+**LE2 and LE3 already put the whole squad into the scene**: every member is fetched through
+`m_playerSquad`/`GetMember`/`Members` and its behaviour cleared. A guest possessing a squadmate on those
+builds therefore rides a code path the campaign already runs. **LE1's 131-byte body has nothing to ride** —
+its parameter list does not even mention the squad, and the loop would have to be written.
+
+That split is the opposite of the usual "the oldest build is closest to the engine and therefore easiest"
+assumption, and it is worth stating because it reorders the per-build work: *for the conversation seam,
+LE2/LE3 are cheaper than LE1.*
+
+### What this does not settle
+
+* Whether the campaign's action reaches a client controller at all. It resolves its target through
+  `GetLocalPlayerController`, whose body is a **native stub** (2 bytes) on all three builds, so its
+  selection rule is not readable here.
+* Whether the guest's pawn is released cleanly on the way out. [CONVERSATIONS.md](CONVERSATIONS.md)
+  records the way *out* being the dangerous moment (collision loss, a large position jump); nothing in the
+  packages contradicts it and nothing here tests it.
+* Whether a mod's own call to `ClientSetCinematicMode` is honoured — it is a `CPF_Net`-flagged function on
+  the stock class, so the transport knows about it, but that is a live question.
+
+Reproduce with `python -I tools/melepkg/mele_props.py scenecheck`.
+
+## 4m. The guest collision repair rewrites a bit that already replicates
+
+The live co-op work recorded a real failure: when control was released and reacquired, the guest's pawn lost
+world and actor collision, stayed non-colliding, fell, and then could not move. The repair in
+`src/guest_collision_restore.h` calls the native `Actor.SetCollisionType` with `COLLIDE_BlockAllButWeapons`
+and then writes `bCollideWorld` directly, because "the method does not restore `bCollideWorld`" — a raw
+compare-exchange at a reflected offset.
+
+That is correct as a description of what the native method does, and it is the wrong layer to fix it at. The
+collision contract on `Actor`, measured:
+
+| property | `CPF_Net` | LE3 note |
+|---|---|---|
+| `bCollideWorld` | **yes** | |
+| `bCollideActors` | **yes** | |
+| `bBlockActors` | **yes** | |
+| `bProjTarget` | yes | |
+| `Role`, `RemoteRole` | yes | the authority pair |
+| `CollisionType` | no | the byte `SetCollisionType` writes |
+| `CollisionComponent` | no | |
+
+**Every collision flag the repair writes locally is a replicated property.** So the guest's value is not the
+engine's idea of the guest's value: on an authority-side scene release and reacquisition, the property stream
+re-sends these bits, and a local write either gets overwritten by the next update or diverges until one
+arrives. A local write is precisely what the symptom looks like — a repair that works for a moment and then
+is not there.
+
+**There is no shipped force-update call to reach for, and that is worth knowing rather than assuming.**
+`Actor.bForceNetUpdate` and `Actor.bNetDirty` exist on all three builds (both `CPF_RepNotify`, both local —
+neither replicates, correctly), but **neither is read by any script function**: `bNetDirty`'s only reader is
+`Actor.ForceNetRelevant`, and `bForceNetUpdate` has no reader at all by export index and no FName mention
+outside `GameInfo.HandleSeamlessTravelPlayer` on LE3. `ForceNetUpdate`, `ForceRelevant` and
+`SetNetUpdateFrequency` are not exported from `Engine.pcc` on any build. Consistent with §4j: 98% of engine
+properties are local, and the replication decisions are native.
+
+**The consequence for the repair**, stated as the decision it is:
+
+* The durable fix is on the **authority** — make the host's copy of the guest pawn's collision correct, and
+  let the existing property replication carry it. That is the path §4j and §4k already describe: the engine
+  gives authority and transform for free, so it gives the collision flags for free too.
+* The local write is then a *display* repair for the interval before the next property update, not a fix, and
+  should be labelled that way in the code rather than described as restoring the pawn's collision.
+* If the host's copy is already correct and the guest still shows the wrong value, that is a *replication*
+  bug — a channel or relevancy question — and no amount of guest-side writing will settle it.
+
+What this does **not** establish: whether the host's copy is in fact correct at that moment. That is the one
+measurement the repair needs and the packages cannot supply — it is a two-process read of the host's copy of
+the guest pawn's `bCollideWorld`/`bCollideActors`/`bBlockActors` at release and after reacquisition, compared
+against the guest's. The spec for that check is small: three bits, four times (healthy, released, reacquired,
+post-repair), on both processes.
+
+Reproduce the property side with `python -I tools/melepkg/mele_props.py netcheck` (collision rows) and the
+reader description in `docs/OFFLINE-PACKAGE-READER.md`.
 
 ## 5. The per-build table, measured
 
