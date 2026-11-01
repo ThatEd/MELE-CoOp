@@ -6472,4 +6472,39 @@ Everything in this log up to now was measured from packages with no running game
 live evidence immediately produced two corrections, because the live symptoms named exactly the fields worth
 checking for `CPF_Net`. A package reader is most useful pointed at somebody else's bug report.
 
+### The pin coverage is 6%, not 100%
+The fork pins 9 instruction sequences. Measured over its `fix/guest-equipment-readiness` branch - the one the
+live work runs - the sources name **140 distinct code addresses**, so **131 of them would not notice a build
+mismatch**, and an address with no pinned bytes is not checked at runtime either. On `main` it is 61 addresses
+and 52 unpinned, so 15%.
+
+Worth recording as an arithmetic point rather than a complaint: "9 pins fail" sounds like 9 problems, and it
+is really "9 of 9 pins fail, out of 140 things that should have been pinned".
+
+### The runtime guard is weaker than the SHA-256, in a specific and fixable way
+`supported_image()` checks the PE `TimeDateStamp` equals `1622077636` and seven bytes at `+0x65fde6`. Measured
+against the installed executable:
+
+| check | installed | passes |
+|---|---|---|
+| `TimeDateStamp == 1622077636` | `1622077636` | **yes** |
+| 7 bytes at `+0x65fde6` | `97ffe1e1a6c114` | no |
+
+So the timestamp is a **build-family** marker, not a build identity - the installed executable is not the
+supported one and shares it. The guard does refuse the installed build, but only because of the second check,
+in one place. The SHA-256 gate in the launcher is therefore load-bearing, and the in-process guard should not
+be described as enforcing the support boundary. A `--generate`d pin table is the in-process equivalent.
+
+### Rule 124. A pin generated from the wrong build is worse than no pin.
+It passes, and it certifies the wrong executable. `--generate` therefore prints the source executable's
+SHA-256 and fixed version, warns when the version matches the supported one but says nothing about the hash,
+and writes "Review before committing" into the header. The generation was run here against the *wrong* build,
+and its output was deliberately not committed.
+
+### Rule 125. Count coverage in the unit the reviewer will act on.
+Three numbers were available and only one is actionable: 359 offset uses, 140 distinct code addresses, and 9
+pinned. The first overstates the work by grouping repeats, the third is the state, and the middle is the size
+of the job. Reporting "294 unpinned offsets" was misleading twice - it was neither a count of uses nor of
+distinct addresses, because the scan pattern missed a spaced spelling (`base + 0x`) and under-reported by 60.
+
 
