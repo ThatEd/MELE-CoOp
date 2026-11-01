@@ -6507,4 +6507,53 @@ pinned. The first overstates the work by grouping repeats, the third is the stat
 of the job. Reporting "294 unpinned offsets" was misleading twice - it was neither a count of uses nor of
 distinct addresses, because the scan pattern missed a spaced spelling (`base + 0x`) and under-reported by 60.
 
+## 2026-11-01 (encryption): the installed exe's code is not on disk, and that invalidated my own tool
+
+Chasing the blocker - "the installed build is not the supported build" - I searched for the pinned sequences
+in the installed image to see whether the code was merely shifted. **0 of 9 present.** A positive control then
+broke the whole result: `sub rsp,28h` (`48 83 ec 28`) occurs **0 times in 17 MB** of `.text`, which is
+impossible in a real x64 binary.
+
+Entropy settled it, with controls:
+
+| | installed LE3 | notepad.exe | kernel32.dll |
+|---|---|---|---|
+| `.text` entropy | **8.0000** | 6.24 | 6.26 |
+| `48 83 ec 28` in `.text` | **0** | hundreds | hundreds |
+| duplicated 32-byte windows in 4 MB | **0** | thousands | thousands |
+
+`.rdata` (entropy 4.54) is plaintext and still holds Bioware source paths (`C:\metr\sfx3\Development\Src\...`).
+`.data` is 7.9996 - also random. **The file on disk is not the code the game runs**; it decrypts in memory,
+through an exe wrapper or the EA App's licence path.
+
+Three consequences, in the order they change things:
+
+1. **My own tool was wrong.** `check_pins.py` reported "9 pins mismatch" against this file - a statement about
+   the file, not about the build. It now detects the condition and reports `UNREADABLE` (exit 2, a skip), and
+   `--generate` refuses rather than writing random bytes as pins, because a pin generated from random bytes
+   *passes*, which is worse than none.
+2. **The build-identity gap is not "find the right exe".** Even a correct Steam install of this game has
+   encrypted `.text`. The supported SHA-256 `b453871e…` describes a **decrypted image**, which the owner has in
+   a form this machine does not - or the pins were taken from a decrypted image the repository does not record
+   how it obtained. Either way, "install the right build" does not unblock this.
+3. **The in-process guard is the only check that can work.** `supported_image()` reads memory after the game
+   has decrypted itself, so it operates on real code. The launcher's SHA-256 gate plus the in-process guard
+   together are the design, and neither alone is sufficient.
+
+The classifier that decides "encrypted" is tested in both directions, because its failure mode is silently
+wrong both ways: below 64 KiB is *unknown*, not encrypted; a uniform byte ramp has entropy 8.0 but is plaintext
+(small-lag self-match separates them); and a printable-ratio test was rejected because random bytes and a
+uniform ramp both measure 37%.
+
+### Rule 126. When a search finds nothing, break the search before believing the result.
+Zero matches in a 17 MB binary for a byte sequence that real x64 code contains by the hundred thousand is not
+"the code is absent" - it is "the search cannot see the code". The positive control (a pattern that must exist)
+cost one command and converted a confident wrong conclusion into the largest finding of the session.
+
+### Rule 127. A tool that reports a verdict about a file it cannot read is worse than a tool that reports nothing.
+The pin checker's whole value is separating "the mod is wrong" from "the build differs". Against an encrypted
+image it would have reported "9 mismatch" - the first, and wrong, of those two. Reporting "unreadable" as its
+own outcome, with its own exit code, is not a refinement; it is the difference between a diagnostic and a
+false defect report.
+
 
