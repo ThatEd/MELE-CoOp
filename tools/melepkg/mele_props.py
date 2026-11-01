@@ -766,11 +766,11 @@ def _load_index(game):
     once per check rather than once per run: one suite run read 40 GB off the install drive and spent
     ~110 s in `json.load` alone.
 
-    Reuse is capped by `MELE_INDEX_CACHE_MB` (default 10000) so a run cannot grow without bound; the
-    least recently used build is dropped when a new one would not fit. The default holds the two
-    builds most checks re-read (ME1 ~2.3 GB parsed, ME3 ~6.8 GB) but not all three, which would cost
-    ~14 GB. A build larger than the whole budget is parsed but not kept, so the result is the same
-    either way - only the reuse stops. `MELE_INDEX_CACHE_MB=0` disables reuse entirely.
+    Reuse is capped so a run can never exhaust the machine: `MELE_INDEX_CACHE_MB` overrides the cap,
+    otherwise it is whatever available memory remains after reserving room for the largest parse in
+    flight (see `_default_cache_budget_mb`). The least recently used build is dropped when a new one
+    would not fit, and a build larger than the whole budget is parsed but not kept, so the result is
+    the same either way - only the reuse stops. `MELE_INDEX_CACHE_MB=0` disables reuse entirely.
 
     The parsed object is returned by reference, so callers must treat it as read-only.
     """
@@ -796,14 +796,79 @@ def _load_index(game):
 
 
 def _cache_budget_mb():
-    """How much parsed index to hold, from `MELE_INDEX_CACHE_MB`. Absent or unparsable means default."""
+    """How much parsed index to hold, in MB.
+
+    `MELE_INDEX_CACHE_MB` overrides this. Otherwise it is half of the physical memory that is free
+    right now, capped at what all three builds cost parsed (~14000 MB). Sizing from the machine
+    rather than hardcoding a number is deliberate: the whole point is to parse each build once and
+    keep it, and any budget below ~14000 MB evicts a build that a later check re-reads - which
+    restores the repeated multi-gigabyte parse this cache exists to avoid. Half of free memory leaves
+    room for the parse itself, which momentarily holds the raw JSON and the parsed tree together, and
+    for whatever else the machine is doing. A machine with little free memory keeps a smaller budget
+    rather than swapping, so the result is the same either way - only the reuse stops.
+    """
     raw = os.environ.get("MELE_INDEX_CACHE_MB")
-    if raw is None:
-        return 10000
+    if raw is not None:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return _default_cache_budget_mb()
+    return _default_cache_budget_mb()
+
+
+def _default_cache_budget_mb():
+    """How many MB of parsed index to keep, sized so a parse can never exhaust the machine.
+
+    Holding N builds costs the sum of their parsed sizes, but the moment a new one is parsed the
+    process briefly holds the raw JSON *and* the parsed tree for it on top of everything already
+    cached - about 5.5x that file's size. Sizing from free memory alone therefore overcommits: on a
+    machine with 16 GB free, an 8 GB budget plus ME3's 9 GB parse transient does not fit, and the run
+    dies partway through the suite instead of finishing. So the budget is what is left of available
+    memory after reserving that transient, with a safety margin for everything else on the machine.
+    """
+    cap = 14000
+    avail = _available_physical_mb()
+    if avail is None:
+        return 0
+    transient = _largest_index_mb() * 5.5
+    return max(0, min(cap, int((avail - transient) * 0.85)))
+
+
+def _largest_index_mb():
+    """Size of the biggest index file, in MB. A directory listing, not a read."""
+    best = 0
     try:
-        return max(0, int(raw))
-    except ValueError:
-        return 10000
+        for game in ("ME1", "ME2", "ME3"):
+            path = os.path.join(_index_dir(), "%s.json" % game)
+            if os.path.isfile(path):
+                best = max(best, os.path.getsize(path))
+    except OSError:
+        return 0
+    return best / 1048576.0
+
+
+def _available_physical_mb():
+    """Free physical memory in MB, or None when it cannot be determined (not Windows)."""
+    try:
+        ctypes = __import__("ctypes")
+        from ctypes import wintypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return status.ullAvailPhys / 1048576.0
+    except Exception:
+        return None
 
 
 def _iter_index(game):
@@ -3886,9 +3951,11 @@ def cmd_scenecheck(args):
         info = {"rpc": len(rpc_body), "call_at": offset}
         placements = _scene_action_placements(game)
         info["placements"] = placements
+        # Two deliberately different sentences. An unmeasured count must not read like a measured one, and a
+        # test that keys on a shared prefix cannot tell them apart - which is how a silent zero gets asserted.
         print("   placements across the install: %s"
               % (", ".join("%s %d" % (k, v) for k, v in sorted(placements.items()))
-                 or "no package index - not measured"))
+                 or "NOT MEASURED (no package index)"))
         if campaign:
             ct = mt.build(campaign)
             for cls in ("BioSeqAct_BioToggleCinematicMode", "SeqAct_ToggleCinematicMode"):

@@ -1527,7 +1527,11 @@ def t_scene_state():
                         "builds already loop it' finding no longer holds" % squad)
     # Placement counts must be measured, not hardcoded: the stock action is a declaration, the Bio one
     # is what the campaign places. `(?!\d)` keeps "1" from matching "12".
-    if len(re.findall(r"SeqAct_ToggleCinematicMode 1(?!\d)", out)) != 3:
+    if "NOT MEASURED (no package index)" in out:
+        # The tool said it could not measure, which is not a zero.
+        if out.count("NOT MEASURED (no package index)") != 3:
+            return "fail", "only some builds reported unmeasured placements"
+    elif len(re.findall(r"SeqAct_ToggleCinematicMode 1(?!\d)", out)) != 3:
         return "fail", "the stock action is now placed more than once per build - re-read the scene plan"
     return "ok", ("unreplicated on all 3 (positive controls hold); RPC call sites +0xef/+0xef/+0xfc; "
                   "override %s B with %s squad refs - LE1 has none"
