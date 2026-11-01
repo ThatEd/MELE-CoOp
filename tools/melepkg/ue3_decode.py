@@ -20,24 +20,36 @@ test (8 B 21.9%/12.5%, 4 B 17.6%/12.4%, 12 B 16.8%/12.3%).
 
 ## What this module does NOT claim
 
-**The decoder closes exactly on only ~22% / ~22% / ~12% of functions**, over every function with a body:
+**The decoder closes exactly on only ~40% / ~41% / ~14% of functions**, over every function with a body:
 
-    build   functions   closed       desynced   unsupported token
-    ME1       4,314      945 (21.9%)   188          3,181 (73.7%)
-    ME2       4,265      959 (22.5%)   213          3,093 (72.5%)
-    ME3       4,209      528 (12.5%)   188          3,493 (83.0%)
+    build   functions   closed        desynced   unsupported token
+    ME1       4,314     1,702 (39.5%)   1,013        1,599
+    ME2       4,265     1,748 (41.0%)     949        1,568
+    ME3       4,209       597 (14.2%)     814        2,798
 
-That is **not good enough to decode any particular function**, so this module deliberately exposes no
-per-function disassembler. What it is for:
+Two findings sit behind those numbers.
 
-  * the token names, so a byte can be identified when it lands where a token is expected;
-  * `closure()` - the check that a candidate grammar is right, which is what established the two widths above;
-  * `tokens_present()` - the token bytes that appear in walks which *do* close, as evidence about which tokens
-    this build uses.
+**A bug in this module was worth 2x.** The native-final-function range (`token >= 0x70`) was raising as "not in
+the table" *before* the handler that consumes its parameters could run. Fixing that took ME1 from 21.9% to 39.5%
+and ME2 from 22.5% to 41.0%. The earlier note that "adding opcode cases did not help" was true but for the wrong
+reason: the cases being added were never the problem.
 
-Adding cases for the "unsupported" tokens did not raise the rate (23.9% -> 23.5% -> 22.5% on ME1 as ten cases
-were added), which means the walks desync before reaching the unknown token: some operand is already being
-consumed with the wrong size. Writing more of the table would treat a symptom.
+**ME3's opcode table genuinely differs.** ME1/ME2 close walks containing native tokens up to `0xFF`, so the
+native path works there. ME3 fails on `0x5b`-`0x65` and `0x2b`, `0x4c`-`0x50` - **gaps in the stock enum that this
+build evidently uses**. Those are not desyncs: their presence is systematic, and ME2's walks never contain them.
+Deriving their operand sizes empirically failed to converge - trying every length 0..12 and asking which lets
+the rest of the body close gave near-ties (token `0x62`: 82 bodies at length 5, 78 at length 10), which is the
+signature of a desync rather than an identifiable operand.
+
+So this is a **partial** decoder for ME1/ME2 and a poor one for ME3. It deliberately exposes no per-function
+disassembler: 40% is not enough to trust the one function you care about.
+
+What it IS for:
+
+  * the token names, so a byte can be identified where a token is expected;
+  * `closure()` - the check that a candidate grammar is right, which is what found the native-token bug and
+    established both operand widths;
+  * `tokens_present()` - the tokens seen in walks that *do* close, as evidence about which this build uses.
 
 Usage:
 
@@ -157,9 +169,11 @@ class Bird:
         token = self.u8()
         name = NAMES.get(token)
         if name is None:
-            if token >= 0x70:
-                raise Unsupported("native final function token 0x%02x" % token)
-            raise Unsupported("token 0x%02x not in the table" % token)
+            # `Expr >= EX_FirstNative` (0x70) is a native final function whose token IS the id - it is not a
+            # gap in the table. Handled below, so this must not raise for it first.
+            if token < 0x70:
+                raise Unsupported("token 0x%02x not in the table" % token)
+            return [("EX_NativeFinal(0x%02x)" % token, "")] + self._parms(depth)
         seen = [(name, "")]
         if token in ZERO or token == 0x29:
             return seen

@@ -6067,3 +6067,99 @@ before the unknown token is reached, so every case added is treating a symptom.
 The tempting move here is to accept the 20% that closes and describe the rest from the earlier string and
 name-index scans. Those scans already produced one hard false negative in this project (`Mutator.*` looked
 uncalled because virtual calls use names). The open questions stay open.
+
+## 2026-11-01 (decoder, second pass): a real bug worth 2x, and ME3's table is genuinely different
+
+The previous entry concluded the bytecode decoder stalled at ~22%/22%/12% and that "adding opcode cases did not
+help". Both statements were true and the diagnosis was wrong. A closure-rate split by body length found a real
+bug in my own decoder.
+
+### The diagnostic that found it
+
+Closure as a function of body length (`Engine.pcc`, ME3):
+
+| body size | closed | total | rate |
+|---|---|---|---|
+| <=8 | 223 | 798 | 27.9% |
+| 9-16 | 233 | 686 | 34.0% |
+| 17-32 | 58 | 745 | 7.8% |
+| 33-64 | 13 | 601 | 2.2% |
+| 65-128 | 0 | 496 | **0.0%** |
+| 129-512 | 1 | 745 | 0.1% |
+
+Closure collapsing to **zero** as bodies get longer is not a missing-opcode signature; it is a systematic
+operand-size error. One wrong byte per function breaks every walk, but a *fractionally* wrong byte only breaks
+long ones.
+
+### The bug
+
+`Bird.expr()` began:
+
+    name = NAMES.get(token)
+    if name is None:
+        if token >= 0x70:
+            raise Unsupported("native final function token 0x%02x" % token)
+
+So every native final function raised **before** the handler that consumes its parameters could run. UE3 encodes
+those as `EX_FirstNative (0x70)` plus an id, with no operand - `if (Expr >= EX_FirstNative) { while
+(SerializeExpr(...) != EX_EndFunctionParms); }` - and `NAMES` only covers the stock enum, so `name` was `None`
+for all ~1,900 of them. **That one early `raise` was hiding 2x of the decoder.**
+
+After the fix:
+
+| build | before | after |
+|---|---|---|
+| ME1 | 21.9% | **39.5%** |
+| ME2 | 22.5% | **41.0%** |
+| ME3 | 12.5% | 14.2% |
+
+The earlier note "adding ten opcode cases moved the rate not at all" was accurate and pointed at the wrong
+thing: the cases were irrelevant because the walks were dying in a branch that fired first.
+
+### ME3's table is genuinely extended, and that is not a bug
+
+With the native path fixed, ME1 and ME2 close walks containing native tokens all the way to `0xFF` - so the
+native handling is right. ME3 still fails, and on a *specific set*:
+
+    token 0x62  472    token 0x5e  469    token 0x64  324    token 0x65  254
+    token 0x5c  212    token 0x5f   88    token 0x63   83    token 0x61   61
+    token 0x5d   57    token 0x5b   54    token 0x6c   48    token 0x6f   44
+    and 0x2b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50
+
+Those are **gaps in the stock `EExprToken` enum** - between `EX_JumpIfFilterEditorOnly (0x5A)` and
+`EX_ExtendedNative (0x60)`, plus the unused `0x2B` and `0x4C`-`0x50`. ME2's closed walks never contain any of
+them. So this build uses opcodes the stock UE3 enum does not name.
+
+### Deriving their operand sizes: attempted, and it does not converge
+
+For each body that failed *only* on an unknown token, tried every operand length 0..12 and asked which let the
+rest of the body close:
+
+    token 0x62:  82 bodies at length 5, 78 at length 10, 75 at length 4
+    token 0x5e:  32 at length 2, 30 at length 7, 28 at length 3
+    token 0x64:  45 at length 12, 27 at length 4, 25 at length 10
+
+**Near-ties, not a winner.** A correct operand length makes the remaining walk close almost every time; these
+distributions are flat. That is the signature of the surrounding walk being desynced already, so the "unknown
+token" is a byte that is not a token at all. Writing operand sizes from these numbers would be fitting noise.
+
+### What is shipped, and what stays unread
+
+`ue3_decode.py` is a partial decoder: **~40% on ME1/ME2, ~14% on ME3**, with token names, the closure test and a
+token inventory, and no per-function disassembler. `AtCapacity` (139 bytes), the `ClientTravel` forwarder,
+`ModifyPlayer` (41) and `ProcessClientTravel` (185) remain sized but unread.
+
+### Rules
+
+**Rule 112. Split a failure rate by size before concluding anything about the grammar.**
+A monotone collapse to 0% as input grows is a per-item offset error. A rate that is *flat* across sizes is a
+missing case. One crosstab separated a bug in my own code from a property of the game.
+
+**Rule 113. `raise` in a token dispatcher is a claim about coverage.**
+The early `raise` asserted "any token not in the stock enum is unsupported", which is false for the whole
+`>= 0x70` native range - by construction. A dispatcher should handle its documented ranges before rejecting
+anything, and a rejection should say which range it excluded.
+
+**Rule 114. Flat distributions mean you are fitting noise.**
+Every length 0..12 "worked" for `0x62` at roughly equal rates. A real operand size would win decisively. When
+the evidence has no margin, the honest output is "unknown", not the mode of the distribution.
