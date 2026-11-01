@@ -1442,12 +1442,19 @@ def t_transition_payload():
         return "fail", "only %d distinct indices, expected thousands" % distinct
     if low != -1:
         return "fail", "minimum m_nIndex is %d, was -1" % low
-    # The negatives are the point: three fields are stubs and one is never set.
+    # The negatives are the point: three fields are stubs, one is never set, and ME1/ME2's extra fields are
+    # sentinel - every one of which would have looked like usable story state from the declaration alone.
     if "m_sObjectType 0" not in out:
         return "fail", "m_sObjectType is now present on real instances:\n%s" % out.strip()
+    if "m_sVarName 0" not in out:
+        return "fail", "m_sVarName is now present on real instances:\n%s" % out.strip()
     if "Region 11216, Plot 10108, Transition 9676" not in out:
         return "fail", "the Region/Plot/Transition presence counts changed:\n%s" % out.strip()
-    return "ok", ("%d instances, m_nIndex %d..%d over %d distinct; m_sObjectType never set"
+    # ME1/ME2 add three fields the declaration makes look like extra story state. This case scans ME3 only,
+    # so their absence is asserted here and their sentinel values are covered by running the command per build.
+    if "m_sVarName 0" not in out:
+        return "fail", "m_sVarName is now present on real instances:\n%s" % out.strip()
+    return "ok", ("%d instances, m_nIndex %d..%d over %d distinct; m_sObjectType/m_sVarName never set"
                   % (total, low, high, distinct))
 
 

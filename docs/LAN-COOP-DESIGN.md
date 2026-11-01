@@ -497,8 +497,22 @@ designs — a string key, a region enum, a transition enum — and settles the h
 guest the last `m_nIndex` it executed**, and the whole index space is small enough to ship as a set
 alongside the plot state (§4c).
 
-This is the difference between reading a class and reading the data: the declaration says five fields carry
-the identity, and the instances say one does.
+**The same holds on all three builds, and ME1/ME2's three extra fields are not the exception they look
+like.** `BioSeqAct_PMBase` declares `m_sVarName`, `m_nPrevRegionIndex` and `m_nPrevPlotIndex` on LE1/LE2 only,
+which reads like more story state to synchronise. It is not:
+
+| build | instances | `m_nIndex` range | distinct | `m_sVarName` | `m_nPrevRegionIndex` | `m_nPrevPlotIndex` |
+|---|---|---|---|---|---|---|
+| LE1 | 8,758 | 205 … 6,540 | 1,455 | **0** | 8,751 — all **−1** | 8,751 — all **−1** |
+| LE2 | 32,214 | −1 … 7,170 | 2,145 | **0** | 32,210 — **32,203 at −1** | 32,180 — 32,146 at −1 |
+| LE3 | 15,625 | −1 … 7,416 | 2,858 | — (field absent) | — | — |
+
+`m_sVarName` is never set on any build. The two `m_nPrev*` fields are present but **sentinel −1** on
+effectively every instance, with a handful of non-−1 values on LE2 (7 region, 34 plot). So they are
+declared-state that the shipped content does not use, not a second identity.
+
+This is the difference between reading a class and reading the data: the declaration says up to eight fields
+carry identity or state, and ~66,000 instances say one does.
 
 Reproduce with `python -I tools/melepkg/mele_props.py transitioncheck --game ME3`.
 

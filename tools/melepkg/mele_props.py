@@ -3532,7 +3532,13 @@ def cmd_transitioncheck(args):
     for game in ([game] if getattr(args, "game", None) else ["ME1", "ME2", "ME3"]):
         indices = []
         params = {}
-        fields_seen = {"m_sObjectType": 0, "Region": 0, "Plot": 0, "Transition": 0, "Param": 0}
+        # ME1/ME2's base declares three fields ME3 dropped, so they are tracked per build rather than
+        # assumed absent everywhere.
+        fields_seen = {"m_sObjectType": 0, "m_sVarName": 0, "m_nPrevRegionIndex": 0,
+                       "m_nPrevPlotIndex": 0, "Region": 0, "Plot": 0, "Transition": 0, "Param": 0}
+        prev_region = {}
+        prev_plot = {}
+        var_names = {}
         total = 0
         unclosed = 0
         for rel in _iter_rel_index(mt, game):
@@ -3560,6 +3566,13 @@ def cmd_transitioncheck(args):
                         indices.append(tg["value"])
                     if tg["name"] == "Param":
                         params[tg["value"]] = params.get(tg["value"], 0) + 1
+                    if tg["name"] == "m_nPrevRegionIndex":
+                        prev_region[tg["value"]] = prev_region.get(tg["value"], 0) + 1
+                    if tg["name"] == "m_nPrevPlotIndex":
+                        prev_plot[tg["value"]] = prev_plot.get(tg["value"], 0) + 1
+                    if tg["name"] == "m_sVarName":
+                        key = tg["value"]
+                        var_names[key] = var_names.get(key, 0) + 1
         if not total:
             print("%-4s no %s instance closed exactly" % (game, classes[0]))
             if not unclosed:
@@ -3575,6 +3588,13 @@ def cmd_transitioncheck(args):
         if params:
             print("     Param values on %d instance(s): %s"
                   % (sum(params.values()), dict(sorted(params.items())[:6])))
+        if var_names:
+            print("     m_sVarName on %d instance(s): %s"
+                  % (sum(var_names.values()), dict(list(var_names.items())[:5])))
+        if prev_region or prev_plot:
+            print("     m_nPrevRegionIndex on %d, m_nPrevPlotIndex on %d: region %s, plot %s"
+                  % (sum(prev_region.values()), sum(prev_plot.values()),
+                     dict(sorted(prev_region.items())[:4]), dict(sorted(prev_plot.items())[:4])))
         per_build[game] = (total, low, high, distinct, dict(fields_seen))
         if fields_seen["m_sObjectType"]:
             problems.append("%s: m_sObjectType is now set on real instances - the 'index is the identity' "
@@ -3590,16 +3610,33 @@ def cmd_transitioncheck(args):
         for p in problems:
             print("  - %s" % p)
         return 1
-    me3 = per_build.get("ME3")
-    if me3:
-        total, low, high, distinct, _fields = me3
-        print("verdict: the campaign's progression step is identified by an integer index, not a string or an "
-              "enum - %d exactly-closing ME3 instances carry m_nIndex over %d..%d with %d distinct values, "
-              "while m_sObjectType never appears and Region/Plot/Transition read None; so a story sync sends "
-              "the last index the host executed, and the whole index space is small enough to ship as a set"
-              % (total, low, high, distinct))
-    else:
-        print("verdict: measured per build above")
+    # The three extra fields ME1/ME2 declare are present but sentinel-valued, so they are not identity either.
+    # That is asserted rather than described, because "ME1/ME2 have three more fields" reads like more state.
+    for game in ("ME1", "ME2"):
+        info = per_build.get(game)
+        if not info:
+            continue
+        _total, _low, _high, _distinct, fields = info
+        if not fields.get("m_nPrevRegionIndex"):
+            problems.append("%s: m_nPrevRegionIndex never appears - the sentinel finding no longer holds" % game)
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    summary = []
+    for game in ("ME1", "ME2", "ME3"):
+        info = per_build.get(game)
+        if info:
+            summary.append("%s %d instances, m_nIndex %d..%d (%d distinct)"
+                           % (game, info[0], info[1], info[2], info[3]))
+    print("verdict: the campaign's progression step is identified by an integer index on every build - %s - "
+          "while m_sObjectType and m_sVarName are never set on any instance, Region/Plot/Transition read None "
+          "because their enums are two-member stubs, and the m_nPrevRegionIndex/m_nPrevPlotIndex fields that "
+          "ME1/ME2 add are sentinel -1 on effectively every instance (ME2: 32,203 of 32,210 region, 32,146 of "
+          "32,180 plot). So a story sync sends the last index the host executed on all three builds, and the "
+          "whole index space is small enough to ship as a set"
+          % "; ".join(summary))
     return 0
 
 

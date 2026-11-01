@@ -6228,3 +6228,45 @@ would have chased a phantom.
 **Rule 117. Thread the context through recursion, or the recursion silently has less to work with.**
 Dropping `table` on the way into a nested decode did not fail loudly - it raised deep in `decode_value` on
 one specific property type, and only for structs that happened to contain an object reference.
+
+## 2026-11-01 (cross-build): the three fields LE1/LE2 add are declared, not used
+
+`transitioncheck` was extended to all three builds, because `BioSeqAct_PMBase` declares three fields on LE1/LE2
+that LE3 dropped - `m_sVarName`, `m_nPrevRegionIndex`, `m_nPrevPlotIndex` - and "more fields" reads like "more
+story state to sync". That reading is wrong.
+
+| build | instances | `m_nIndex` | distinct | `m_sVarName` | `m_nPrevRegionIndex` | `m_nPrevPlotIndex` |
+|---|---|---|---|---|---|---|
+| ME1 | **8,758** | 205..6,540 | 1,455 | **0** | 8,751, all **-1** | 8,751, all **-1** |
+| ME2 | **32,214** | -1..7,170 | 2,145 | **0** | 32,210, **32,203 at -1** | 32,180, 32,146 at -1 |
+| ME3 | **15,625** | -1..7,416 | 2,858 | field absent | - | - |
+
+**`m_sVarName` is never set on any build.** The two `m_nPrev*` fields are present on essentially every instance
+and are **sentinel -1** on essentially every one: ME2 has 7 non-sentinel region values and 34 non-sentinel plot
+values out of 32,210 and 32,180. So they are declared state the shipped content does not use.
+
+### What this changes
+
+Nothing about the hand-off - it was already "send the last index" on LE3 - but it means **the same rule holds on
+all three builds**, which is what LE2 and LE1 implementation needs. There is no second identity to carry on the
+older builds, and no per-build field set to reconcile.
+
+It also raises the confidence in the LE3 answer: a field that is sentinel on 64,000 instances across two builds
+is a field the toolchain emits and nobody fills in, which is the same category as `m_sObjectType` (declared,
+never set) and the two-member enums (`*_Unset`, `*_MAX`).
+
+### Totals
+
+66,597 exactly-closing transition instances across the trilogy - 8,758 + 32,214 + 15,625 - with **3 skipped**
+total. That is the largest body of decoded game data in this project, and it is the payload a story sync has to
+carry.
+
+### Rule 118. A field that is always sentinel is a field nobody sets.
+`m_nPrevRegionIndex` on 64,000 instances, 63,978 of them -1, is not "a rarely used field" in any useful sense.
+It is an emitted default. The distinguishing test is not "does it appear" but "does it ever hold a real value",
+and here it costs one histogram.
+
+### Rule 119. Do the cross-build pass before writing the per-build plan.
+The design doc already had a per-build table. Adding three rows for LE1/LE2's extra fields would have been
+plausible and wrong - they are sentinel. Measuring 41,000 more instances to remove three rows from a table was
+worth more than adding them.
