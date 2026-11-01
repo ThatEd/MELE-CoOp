@@ -1398,6 +1398,59 @@ def t_bytecode_pointer_width():
                                   results["ME3"][0], results["ME3"][3]))
 
 
+@case("the progression step is identified by an integer index, and its string field is never set")
+def t_transition_payload():
+    """What a co-op story sync has to carry, read from real instances rather than from class shape.
+
+    `storycheck` counted placements. This decodes them: every `BioSeqAct_PMExecuteTransition` on the install
+    that closes exactly, and what its fields contain.
+
+    The finding is that **`m_nIndex` is the payload** - an integer over a bounded range - while
+    `m_sObjectType` never appears on a real instance and `Region`/`Plot`/`Transition` read `None` because their
+    enums are two-member stubs. That rules out three easier designs (a string key, a region enum, a transition
+    enum) and settles the hand-off as "send the last index the host executed".
+    """
+    index_dir = os.environ.get("MELE_INDEX_DIR") or os.path.join(
+        HERE, "..", "..", "local", "MELE", "index")
+    if not os.path.isfile(os.path.join(index_dir, "ME3.json")):
+        return "skip", "no package index (transitioncheck opens every map)"
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.cmd_transitioncheck(
+            __import__("argparse").Namespace(game="ME3"))
+    out = buf.getvalue()
+    if "no Legendary Edition install found" in out:
+        return "skip", "install absent"
+    if rc != 0:
+        return "fail", "cmd_transitioncheck returned %d:\n%s" % (rc, out.strip())
+    import re
+    line = [l for l in out.splitlines() if l.startswith("ME3")]
+    if not line:
+        return "fail", "ME3 row missing:\n%s" % out.strip()
+    match = re.search(r"(\d+) instance\(s\) closed exactly, (\d+) skipped; m_nIndex (-?\d+)\.\.(-?\d+), "
+                      r"(\d+) distinct", line[0])
+    if not match:
+        return "fail", "row did not parse: %s" % line[0]
+    total, skipped, low, high, distinct = (int(g) for g in match.groups())
+    if total < 10000:
+        return "fail", "only %d instance(s) closed - the reader regressed" % total
+    if skipped > total * 0.05:
+        return "fail", "%d of %d instances failed to close - too many to trust the survey" % (skipped, total)
+    if distinct < 1000:
+        return "fail", "only %d distinct indices, expected thousands" % distinct
+    if low != -1:
+        return "fail", "minimum m_nIndex is %d, was -1" % low
+    # The negatives are the point: three fields are stubs and one is never set.
+    if "m_sObjectType 0" not in out:
+        return "fail", "m_sObjectType is now present on real instances:\n%s" % out.strip()
+    if "Region 11216, Plot 10108, Transition 9676" not in out:
+        return "fail", "the Region/Plot/Transition presence counts changed:\n%s" % out.strip()
+    return "ok", ("%d instances, m_nIndex %d..%d over %d distinct; m_sObjectType never set"
+                  % (total, low, high, distinct))
+
+
 def main():
     failures = 0
     skips = 0

@@ -476,6 +476,32 @@ games**, and it sits at the story layer rather than the engine layer - a stronge
 authority than the mutator hook in §2, which can only decide what an actor is, not what the campaign
 believes.
 
+### What the step actually carries — read from real instances, not from class shape
+
+`transitioncheck` decodes every `BioSeqAct_PMExecuteTransition` that closes exactly. ME3: **15,625
+instances, 1 skipped**.
+
+| field | type | presence | value |
+|---|---|---|---|
+| **`m_nIndex`** | `Int` | 14,918 | **−1 … 7,416, 2,858 distinct** |
+| `Region` | `Byte` (`EBioRegionAutoSet`) | 11,216 | `None` |
+| `Plot` | `Byte` (`EBioPlotAutoSet`) | 10,108 | `None` |
+| `Transition` | `Byte` (`EBioAutoSet`) | 9,676 | `None` |
+| `Param` | `Int` | **673** | −1 … 5 |
+| `m_sObjectType` | `Str` | **0** | never set |
+
+**So the progression step is identified by an integer index.** `m_sObjectType` is never present on a real
+instance; `Region`/`Plot`/`Transition` read `None` because their enums are two-member stubs
+(`*_Unset`, `*_MAX`); `Param` is an occasional argument on 4% of instances. That rules out three easier
+designs — a string key, a region enum, a transition enum — and settles the hand-off: **the host tells the
+guest the last `m_nIndex` it executed**, and the whole index space is small enough to ship as a set
+alongside the plot state (§4c).
+
+This is the difference between reading a class and reading the data: the declaration says five fields carry
+the identity, and the instances say one does.
+
+Reproduce with `python -I tools/melepkg/mele_props.py transitioncheck --game ME3`.
+
 **And the trigger volume is not it.** `BioAreaTransition` - a `TriggerVolume` with `sMoveToArea` /
 `sMoveToStartPoint` - is used **once in ME1, twice in ME2 and never in ME3**. A mod that hooks trigger
 volumes to follow the host's level change hooks essentially nothing. The shared, cheap seam for a
@@ -483,8 +509,7 @@ level change is still `AreaName` + `StartPoint` (the same two names on the Kisme
 volume, on all three builds), but the campaign reaches it far less often than it reaches the plot
 manager.
 
-Conversations and saves *do* split per build, and ME2 is the awkward one - it carries **both**
-`BioSeqAct_StartConversation` and `SFXSeqAct_StartConversation`, so hooking one covers part of that
+Conversations and saves *do* split per build, and ME2 is the awkward one - it carries **both**`BioSeqAct_StartConversation` and `SFXSeqAct_StartConversation`, so hooking one covers part of that
 game and silently misses the rest. ME1 uses `BioSeqAct_AutoSave`; ME2/ME3 use `SFXSeqAct_SaveGame`.
 
 Reproduce with `python -I tools/melepkg/mele_props.py storycheck`.

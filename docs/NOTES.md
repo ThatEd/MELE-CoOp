@@ -6163,3 +6163,68 @@ anything, and a rejection should say which range it excluded.
 **Rule 114. Flat distributions mean you are fitting noise.**
 Every length 0..12 "worked" for `0x62` at roughly equal rates. A real operand size would win decisively. When
 the evidence has no margin, the honest output is "unknown", not the mode of the distribution.
+
+## 2026-11-01 (the progression payload): reading instances instead of classes shows five fields become one
+
+`storycheck` counted how often `BioSeqAct_PMExecuteTransition` is placed. `plotcheck` sized the LE1/LE2 flag
+space. Neither read what a **real instance** carries, so the design had been working from the class
+declaration: five candidate identity fields.
+
+New command `transitioncheck` decodes every instance that closes exactly: **15,625 on ME3, 1 skipped out of
+15,626**.
+
+| field | type | presence | value |
+|---|---|---|---|
+| **`m_nIndex`** | `Int` | 14,918 | **-1 .. 7,416, 2,858 distinct** |
+| `Region` | `Byte` (`EBioRegionAutoSet`) | 11,216 | `None` |
+| `Plot` | `Byte` (`EBioPlotAutoSet`) | 10,108 | `None` |
+| `Transition` | `Byte` (`EBioAutoSet`) | 9,676 | `None` |
+| `Param` | `Int` | **673** | -1 .. 5 |
+| `m_sObjectType` | `Str` | **0** | never set |
+
+### What that settles
+
+1. **The identity is an integer index.** `m_nIndex` spans a bounded range with thousands of distinct values -
+   the same shape as the LE1/LE2 `F<n>` plot flags, and small enough to ship whole.
+2. **`m_sObjectType` is a declaration, not a datum.** It exists on `BioSeqAct_PMBase` and appears on **zero**
+   real instances. A string-keyed story sync would have had nothing to key on.
+3. **`Region`, `Plot`, `Transition` read `None` on every instance.** Their enums (`EBioRegionAutoSet`,
+   `EBioPlotAutoSet`, `EBioAutoSet`) have exactly two members, `*_Unset` and `*_MAX` - stubs pointing at a
+   value space defined elsewhere. This log previously said the size of story state "cannot be read from those
+   enums", which was right about the enums and wrong to leave the question there: the instances answer it.
+4. **`Param` is an occasional argument**, present on 4% of instances with values -1..5. Not part of the key.
+
+So the co-op story hand-off is: **host sends the last `m_nIndex` it executed.** Not a name, not an enum, not a
+map. That is a cheaper and more precise payload than the design assumed, and it came from decoding data
+rather than reading declarations.
+
+### A bug this exposed, worth its own note
+
+The first run reported **`0 instance(s) closed exactly`**, which is a zero that could not be trusted. Two
+causes, both mine:
+
+1. The index's package keys are relative to the install's **`Game`** directory (`ME3\BioGame\...`), not to the
+   install root. Joining the root produced paths that did not exist, so every `build()` failed silently and
+   nothing was counted.
+2. `decode_array_of_structs` and `parse_object_in` dropped the `table` argument when recursing, so a nested
+   struct containing an `ObjectProperty` raised `AttributeError: 'NoneType' object has no attribute 'exports'`.
+   Every transition instance has such a nested struct, so **every** instance failed to decode.
+
+Fixing (2) also made nested struct arrays readable in general - the first version of the map-prefix decoder
+had worked only because those rows happen to contain no object references.
+
+### Rules
+
+**Rule 115. A declaration lists what a field could be; the data says what it is.**
+Five fields on `BioSeqAct_PMBase`/`PMExecuteTransition` looked like five identity candidates. On real
+instances one is always absent, three are always `None`, and one is present 4% of the time. Reading the class
+could not have distinguished them.
+
+**Rule 116. `0 results` is a bug report, not a measurement.**
+"0 instances closed" was treated as a failure rather than a finding, and that is the only reason both joining
+bugs were found. If it had printed "0 transitions, so the campaign has no progression actions" the project
+would have chased a phantom.
+
+**Rule 117. Thread the context through recursion, or the recursion silently has less to work with.**
+Dropping `table` on the way into a nested decode did not fail loudly - it raised deep in `decode_value` on
+one specific property type, and only for structs that happened to contain an object reference.

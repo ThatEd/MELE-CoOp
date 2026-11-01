@@ -84,6 +84,7 @@ Usage:
     python -I tools/melepkg/mele_props.py travelcheck                   # what a level change runs
     python -I tools/melepkg/mele_props.py capacitycheck                 # the chain that refuses a guest
     python -I tools/melepkg/mele_props.py mutatorcheck                  # is there a supported hook into it
+    python -I tools/melepkg/mele_props.py transitioncheck               # what the progression step carries
 
 ## SCOPE LIMIT: class default objects only, not live level actors
 
@@ -217,7 +218,7 @@ def parse_object(table, buf, obj, start_offset=4, max_tags=40000):
         }
         if (ptype == "ArrayProperty" and size >= 4
                 and _looks_like_tag_stream(buf, names, at + 4, at + size)):
-            subs, used, why2 = decode_array_of_structs(buf, names, at, size)
+            subs, used, why2 = decode_array_of_structs(buf, names, at, size, table=table)
             entry["elements"] = subs
             entry["array_exact"] = (used == size and why2 == "ok")
         tags.append(entry)
@@ -271,7 +272,7 @@ def decode_value(table, buf, ptype, struct_name, raw, size, names):
     return None
 
 
-def decode_array_of_structs(buf, names, start, size, max_depth=2):
+def decode_array_of_structs(buf, names, start, size, max_depth=2, table=None):
     """Decode an `ArrayProperty` whose elements are themselves tagged property streams.
 
     This is how ME:LE serialises a `TArray<FStruct>`: int32 element count, then each element as a
@@ -279,6 +280,10 @@ def decode_array_of_structs(buf, names, start, size, max_depth=2):
     `Default__GameInfo.DefaultMapPrefixes`, whose three elements are the game's whole
     map-prefix -> game-class routing table, so reading it is what answers "which game class does
     this level construct" for ME3 without guessing.
+
+    `table` has to be threaded through to the nested `parse_object_in` calls: without it a nested
+    `ObjectProperty` has no exports or imports to resolve against and the whole decode raises. That is what
+    made every nested struct containing an object reference unreadable.
 
     Returns (elements, consumed, why). `consumed` must equal `size` for the decode to be trusted -
     the caller checks, and the check fails loudly rather than returning a plausible list.
@@ -292,18 +297,22 @@ def decode_array_of_structs(buf, names, start, size, max_depth=2):
     stop = start + size
     elements = []
     for _ in range(count):
-        tags, at, why = parse_object_in(buf, names, at, stop, max_depth)
+        tags, at, why = parse_object_in(buf, names, at, stop, max_depth, table=table)
         if why.startswith("error"):
             return elements, at - start, why
         elements.append(tags)
     return elements, at - start, "ok"
 
 
-def parse_object_in(buf, names, start, end, max_depth=2, max_tags=40000):
+def parse_object_in(buf, names, start, end, max_depth=2, max_tags=40000, table=None):
     """`parse_object` over an explicit byte range, so a nested stream can be walked in place.
 
     Kept separate rather than generalising `parse_object`, because `parse_object` derives its range
     from an export record and that derivation is the part that must not drift.
+
+    `table` is optional and is threaded into `decode_value`, which needs it to turn an `ObjectProperty`'s
+    package index into a name. Without it a nested struct containing an object reference raised, which made
+    every such array unreadable - the caller passes the table and gets a decoded value instead.
     """
     at = start
     tags = []
@@ -341,7 +350,7 @@ def parse_object_in(buf, names, start, end, max_depth=2, max_tags=40000):
             if size < 0 or at + size > end:
                 return tags, at, "error: %r size %d overruns" % (name, size)
             raw = buf[at:at + size]
-            value = decode_value(None, buf, ptype, struct_name, raw, size, names)
+            value = decode_value(table, buf, ptype, struct_name, raw, size, names)
             entry = {"name": name, "type": ptype, "struct": struct_name, "enum": enum_name,
                      "size": size, "array_index": array_index, "bool": None,
                      "value": value, "offset": at}
@@ -350,7 +359,7 @@ def parse_object_in(buf, names, start, end, max_depth=2, max_tags=40000):
             if (ptype == "ArrayProperty" and max_depth > 0 and size >= 4
                     and _looks_like_tag_stream(buf, names, at + 4, at + size)):
                 subs, used, why2 = decode_array_of_structs(
-                    buf, names, at, size, max_depth - 1)
+                    buf, names, at, size, max_depth - 1, table=table)
                 entry["elements"] = subs
                 entry["array_exact"] = (used == size and why2 == "ok")
             at += size
@@ -3473,6 +3482,152 @@ def cmd_mutatorcheck(args):
     return 0
 
 
+def cmd_transitioncheck(args):
+    """The campaign's own progression step, decoded from real instances rather than from class shape.
+
+    `storycheck` counted that `BioSeqAct_PMExecuteTransition` is placed 8,752 / 32,209 / 15,607 times. This
+    reads the **actual instances** and reports what a story sync would have to carry.
+
+    Every instance that closes exactly, over the whole install:
+
+        object      fields                                        what it is
+        BioSeqAct_PMBase      m_sObjectType: Str, m_nIndex: Int,   the identity of the step
+                              Region: Byte (EBioRegionAutoSet),
+                              Plot: Byte (EBioPlotAutoSet)
+        ...ExecuteTransition  Param: Int, Transition: Byte (EBioAutoSet)
+
+    **`m_nIndex` is the payload.** Over 15,625 exactly-closing ME3 instances it spans -1..7,416 with 2,858
+    distinct values - an integer index into a bounded space, which is the same shape as the LE1/LE2 `F<n>` plot
+    flags and it is small enough to ship whole on a level change (see `plotcheck`).
+
+    Three measured negatives worth recording, because each rules out an easier design:
+
+      * **`m_sObjectType` is never present** on a real instance, so the step is not identified by a string.
+      * **`Region`, `Plot` and `Transition` read `None`** on every instance. Their enums are
+        `EBioRegionAutoSet` / `EBioPlotAutoSet` / `EBioAutoSet`, each with two members (`*_Unset`, `*_MAX`) -
+        stubs pointing at a value space defined elsewhere. So those three fields are not the identity either.
+      * **`Param` is present on only 673 of 15,625** instances, so it is an occasional argument rather than
+        part of the key.
+
+    So the co-op story hand-off is: **host tells the guest the last `m_nIndex` it executed**, not a string, not
+    an enum, and not a map name. That is a cheaper payload than the design assumed.
+
+    Only instances that close exactly are counted; a partial decode is not evidence, and the scan skips rather
+    than guessing. Needs the package index, so it refuses without one.
+    """
+    if not _require_install():
+        print("no Legendary Edition install found - set MELE_GAME_DIR (skip, not a result)")
+        return 2
+    if not os.path.isfile(os.path.join(_index_dir(), "ME3.json")):
+        print("no package index in %s - transitioncheck opens every map, so it needs one "
+              "(set MELE_INDEX_DIR; skip, not a result)" % _index_dir())
+        return 2
+    mt = load_tables()
+    pkg = mt.load_pkg()
+    problems = []
+
+    game = args.game if getattr(args, "game", None) else "ME3"
+    classes = ("BioSeqAct_PMExecuteTransition",)
+    per_build = {}
+    for game in ([game] if getattr(args, "game", None) else ["ME1", "ME2", "ME3"]):
+        indices = []
+        params = {}
+        fields_seen = {"m_sObjectType": 0, "Region": 0, "Plot": 0, "Transition": 0, "Param": 0}
+        total = 0
+        unclosed = 0
+        for rel in _iter_rel_index(mt, game):
+            try:
+                t = mt.build(rel["path"])
+            except SystemExit:
+                continue
+            for e in t["exports"]:
+                if e["object_name"] not in classes:
+                    continue
+                try:
+                    tags, end, _why = parse_object(t, t["buf"], e)
+                except Exception:
+                    unclosed += 1
+                    continue
+                want = e["serial_offset"] - t["displacement"] + e["serial_size"]
+                if end != want:
+                    unclosed += 1
+                    continue
+                total += 1
+                for tg in tags:
+                    if tg["name"] in fields_seen:
+                        fields_seen[tg["name"]] += 1
+                    if tg["name"] == "m_nIndex":
+                        indices.append(tg["value"])
+                    if tg["name"] == "Param":
+                        params[tg["value"]] = params.get(tg["value"], 0) + 1
+        if not total:
+            print("%-4s no %s instance closed exactly" % (game, classes[0]))
+            if not unclosed:
+                problems.append("%s: no transition instances found at all" % game)
+            continue
+        distinct = len(set(indices))
+        low, high = min(indices), max(indices)
+        print("%-4s %5d instance(s) closed exactly, %d skipped; m_nIndex %d..%d, %d distinct"
+              % (game, total, unclosed, low, high, distinct))
+        print("     field presence: %s"
+              % ", ".join("%s %d" % (k, v) for k, v in
+                          sorted(fields_seen.items(), key=lambda kv: -kv[1])))
+        if params:
+            print("     Param values on %d instance(s): %s"
+                  % (sum(params.values()), dict(sorted(params.items())[:6])))
+        per_build[game] = (total, low, high, distinct, dict(fields_seen))
+        if fields_seen["m_sObjectType"]:
+            problems.append("%s: m_sObjectType is now set on real instances - the 'index is the identity' "
+                            "conclusion needs re-reading" % game)
+        if not distinct:
+            problems.append("%s: m_nIndex never appears" % game)
+        if distinct < 100:
+            problems.append("%s: only %d distinct m_nIndex values, expected hundreds" % (game, distinct))
+
+    print()
+    if problems:
+        print("PROBLEM(S):")
+        for p in problems:
+            print("  - %s" % p)
+        return 1
+    me3 = per_build.get("ME3")
+    if me3:
+        total, low, high, distinct, _fields = me3
+        print("verdict: the campaign's progression step is identified by an integer index, not a string or an "
+              "enum - %d exactly-closing ME3 instances carry m_nIndex over %d..%d with %d distinct values, "
+              "while m_sObjectType never appears and Region/Plot/Transition read None; so a story sync sends "
+              "the last index the host executed, and the whole index space is small enough to ship as a set"
+              % (total, low, high, distinct))
+    else:
+        print("verdict: measured per build above")
+    return 0
+
+
+def _iter_rel_index(mt, game):
+    """Yield `{"path": <absolute .pcc path>}` for every package of one build, from the index if present.
+
+    The index stores keys relative to the install's `Game` directory (`ME3\\BioGame\\...`), so the absolute path
+    is the install root joined with the key. Getting this wrong produced `0 instance(s) closed exactly` the
+    first time, which is why the empty case is a reported problem rather than a zero.
+    """
+    import json as _json
+    index_path = os.path.join(_index_dir(), "%s.json" % game)
+    if not os.path.isfile(index_path):
+        return
+    with open(index_path, encoding="utf-8") as fh:
+        data = _json.load(fh)
+    roots = []
+    pkg = mt.load_pkg()
+    for base in pkg.game_dirs():
+        roots.append(os.path.join(base, "Game"))
+    for rel in data.get("packages", {}):
+        for root in roots:
+            full = os.path.join(root, rel)
+            if os.path.isfile(full):
+                yield {"path": full}
+                break
+
+
 def cmd_cdo(args):
     return cmd_dump(argparse.Namespace(
         package=args.package, object="Default__" + args.klass, grep=args.grep))
@@ -3574,6 +3729,11 @@ def main():
     p = sub.add_parser("mutatorcheck",
                        help="is there a supported in-game hook into the join path (the mutator chain)")
     p.set_defaults(func=cmd_mutatorcheck)
+
+    p = sub.add_parser("transitioncheck",
+                       help="the campaign's progression step, read from real instances")
+    p.add_argument("--game", choices=["ME1", "ME2", "ME3"])
+    p.set_defaults(func=cmd_transitioncheck)
 
     p = sub.add_parser("maplist",
                        help="every loadable map per build, counted structurally")
