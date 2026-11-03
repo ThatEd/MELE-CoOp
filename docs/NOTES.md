@@ -6575,4 +6575,55 @@ image it would have reported "9 mismatch" - the first, and wrong, of those two. 
 own outcome, with its own exit code, is not a refinement; it is the difference between a diagnostic and a
 false defect report.
 
+## 2026-11-03 (review): four correctness bugs the maintainer found, and what they have in common
+
+The maintainer reviewed the fork PR and reproduced four of my bugs with synthetic inputs. All four are the same
+shape: a tool that reports a verdict about something it did not actually check.
+
+1. **`find_chunks` bounded a candidate at the next magic hit.** A compressed payload can contain the package
+   magic - the signature is four arbitrary bytes inside a compressed stream - and when it does, the next hit
+   lands inside the chunk, the candidate's span stops before its own compressed size is consumed, and a real
+   chunk vanishes. The fix derives the extent from the chunk's own header (header + table + total_csize), with
+   the entry count found by matching the header's own csize/usize sums, bounded by a 1M-entry cap. Real
+   packages parse identically (ME1 19, ME2 31, ME3 45 chunks; block 0 decodes on each).
+2. **`PE.read()` bounded by `max(vsize, size)`.** A section's virtual tail is zero-filled at load time and is
+   not backed by the file, so a read there returned the file overlay - a different object entirely. Bounded by
+   `SizeOfRawData` now, with the tail reported as unavailable.
+3. **`render_pins()` emitted rows the checker's own scanner does not read**, and left the include guard open.
+   A generator and its consumer disagreeing about what a pin is means "generate, then check" changes nothing.
+4. **`transitioncheck` returned 0 with a verdict when nothing decoded.** `total == 0`, `unclosed > 0` printed
+   "no instance closed", added no problem, and fell through to the story-sync verdict with an empty summary -
+   a payload reported on zero evidence.
+
+The common shape is worth naming, because it is the fourth time in this project: **a negative result and a
+failure to check print the same thing.** Rule 113 called it for dispatchers; this is the tool-level version.
+The fix is always the same - make the failure a distinct, labelled outcome (unmapped, unpinned, unreadable,
+not-measured, nonzero exit) rather than letting it ride the success path.
+
+### Rule 124. A generator and its consumer must agree on the format, or generation is theatre.
+`render_pins` wrote `{0xRVA, "hex"}` while `read_pins` reads `base+0xRVA,"hex"`. Generating a file and
+checking again left every address unpinned, and neither tool said so. Any time a tool emits something another
+tool reads, the round trip is the test - generate, then re-read, and assert the re-read sees what was written.
+
+### Rule 125. A virtual tail is not file-backed, and reading it as the file is a silent wrong answer.
+`VirtualSize` past `SizeOfRawData` is zero at load time and belongs to no file byte. Bounding a read by
+`max(vsize, size)` hands back overlay bytes for a range the image does not contain. The bound is
+`SizeOfRawData`, and the tail is reported as unavailable rather than served.
+
+### Rule 126. Review the claim, not just the code, and withdraw the routing claim when the loader is read.
+`GroupNames` is set on a shipped mutator's CDO and read by `AddMutator`, so "the name is how `?Mutator=`
+finds it" was a comfortable inference - and wrong. Stock `AddMutator` resolves the URL value by class name
+through a native `DynamicLoadObject` and reads `GroupNames` only for the conflict check. Both ends of the
+story were real; the link between them was not measured, and it took the maintainer pointing at the stock
+source to remove it. A design story with a missing link has a hypothesis in the middle, even when both ends
+are facts.
+
+### What the review did not change
+
+The rebase onto the consolidated `dev/campaign-coop` (266e9d6) was clean: 16 files, +12,228, 0 deletions,
+purely additive, no `src/` or `build.py` touched, so the native build is unaffected. The README conflict
+resolved to upstream's prose (mine was a stale status snapshot); the offline-evidence section and the
+melepkg source-layout row survived. CI discovery runs 295 tests with 31 install-dependent skips and no
+failures, and the new regressions run and pass in the no-install condition rather than skipping.
+
 
