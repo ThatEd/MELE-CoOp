@@ -1336,13 +1336,18 @@ def t_mutator_route():
             return "fail", "%s gate no longer mentions IsDemoBuild:\n%s" % (game, body)
         if "mutator runs AFTER the clamp" not in body:
             return "fail", "%s InitMutator no longer runs after the clamp:\n%s" % (game, body)
-    # The shipped template, and the loader that makes its name mean something.
+    # The shipped template, and the loader that reads the conflict field. The claim is deliberately narrow:
+    # AddMutator reads GroupNames for the stock conflict check, which is NOT the same as routing a travel
+    # URL through it - stock UE3 resolves the URL value by class name (DynamicLoadObject(mutname,
+    # class'Class')), so GroupNames is a conflict field, not a URL class alias.
     if "SFXMutator_DifficultySpeed   super=export:SFXMutator 2 override(s): MutatorIsAllowed, SetGameSpeed" not in out:
         return "fail", "the shipped mutator template changed:\n%s" % out.strip()
-    if "GameInfo.AddMutator (body=619) reads Mutator.GroupNames" not in out:
-        return "fail", "AddMutator no longer reads GroupNames, so ?Mutator= cannot name anything:\n%s" % out.strip()
+    if "reads Mutator.GroupNames - the stock conflict check, not a URL class alias" not in out:
+        return "fail", ("AddMutator no longer reads GroupNames, or the wording reverted to the alias claim:\n%s"
+                        % out.strip())
     return "ok", ("6/6 join-path hooks x3, gate !IsDemoBuild, InitMutator after the clamp, and the shipped "
-                  "SFXMutator template is named through Mutator.GroupNames which AddMutator reads")
+                  "SFXMutator template sets GroupNames, which AddMutator reads for the stock conflict check - "
+                  "not a URL class alias")
 
 
 @case("UE3 script pointers are 32-bit here, measured by bytecode closure rate")
@@ -1460,6 +1465,101 @@ def t_transition_payload():
         return "fail", "m_sVarName is now present on real instances:\n%s" % out.strip()
     return "ok", ("%d instances, m_nIndex %d..%d over %d distinct; m_sObjectType/m_sVarName never set"
                   % (total, low, high, distinct))
+
+
+@case("transitioncheck fails nonzero when no instance could be decoded, and prints no verdict")
+def t_transition_all_fail():
+    """The maintainer's case: the sole instance raises during parsing.
+
+    `total == 0` and `unclosed > 0`. Before the fix the command printed "no instance closed exactly",
+    added no problem (because `unclosed` was nonzero), and fell through to the story-sync verdict with an
+    empty summary - reporting a payload on the strength of zero decoded instances. A tool that could not
+    read the build must not return success.
+
+    This does not need an install or an index: the install check is stubbed, the index-dir check is
+    satisfied with a real file in a temporary directory, and the per-build package iteration and the
+    instance parser are stubbed, so the command takes the all-fail path by construction. The stubs are
+    restored in a `finally`, so a failure inside the command cannot leave the module patched for the next
+    case.
+    """
+    import argparse
+    import contextlib
+    import io as _io
+    import json as _json
+    import shutil
+    import tempfile
+
+    # A real index file, so the command's own "no package index" guard is satisfied rather than stubbed.
+    index_dir = tempfile.mkdtemp(prefix="mele-transition-fail-")
+    with open(os.path.join(index_dir, "ME3.json"), "w", encoding="utf-8") as fh:
+        _json.dump({"version": 2, "game": "ME3", "packages": {}}, fh)
+
+    saved = (mp._require_install, mp._index_dir, mp._iter_rel_index, mp.parse_object)
+
+    class _FakeExport(dict):
+        def __init__(self):
+            super().__init__(object_name="BioSeqAct_PMExecuteTransition")
+
+    class _FakeTable(dict):
+        def __init__(self):
+            super().__init__(exports=[_FakeExport()], buf=b"", displacement=0)
+
+    def fake_require_install(games=("ME1", "ME2", "ME3")):
+        return True
+
+    def fake_index_dir():
+        return index_dir
+
+    def fake_iter_rel_index(mt, game):
+        yield {"path": "/fake/%s.pcc" % game}
+
+    def fake_parse_object(table, buf, obj, start_offset=4, max_tags=40000):
+        raise ValueError("the sole instance failed to parse")
+
+    def fake_build(package, limit=None):
+        return _FakeTable()
+
+    mp._require_install = fake_require_install
+    mp._index_dir = fake_index_dir
+    mp._iter_rel_index = fake_iter_rel_index
+    mp.parse_object = fake_parse_object
+    # load_tables() builds a fresh module object per call, so patching mele_tables.build would not be seen.
+    # Stub load_tables itself to return an object whose build is the fake.
+    saved_load_tables = mp.load_tables
+
+    class _FakeTables:
+        build = staticmethod(fake_build)
+
+        @staticmethod
+        def load_pkg():
+            class _Pkg:
+                def game_dirs(self):
+                    return []
+            return _Pkg()
+
+    def fake_load_tables():
+        return _FakeTables()
+
+    try:
+        mp.load_tables = fake_load_tables
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mp.cmd_transitioncheck(argparse.Namespace(game="ME3"))
+        out = buf.getvalue()
+    finally:
+        (mp._require_install, mp._index_dir, mp._iter_rel_index,
+         mp.parse_object) = saved
+        mp.load_tables = saved_load_tables
+        shutil.rmtree(index_dir, ignore_errors=True)
+
+    if rc == 0:
+        return "fail", "all instances failed to parse but the command returned 0:\n%s" % out.strip()
+    if "verdict: the campaign's progression step" in out:
+        return "fail", "a story-sync verdict was printed with no decoded instance:\n%s" % out.strip()
+    if "failed to parse" not in out:
+        return "fail", "the parse failure was not reported as a problem:\n%s" % out.strip()
+    return "ok", ("no decoded instance -> nonzero exit (%d), no story-sync verdict, the failure is stated"
+                  % rc)
 
 
 @case("scene state is per-controller and unreplicated, and LE2/LE3 already loop the squad")

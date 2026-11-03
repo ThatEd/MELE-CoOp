@@ -251,20 +251,30 @@ the effective player count, `ModifyLogin` accept the guest, and `ModifyPlayer` h
 `SetGameSpeed`) and `SFXMutator_DifficultySpeed : SFXMutator` (overrides `MutatorIsAllowed` and
 `SetGameSpeed`). `Default__SFXMutator_DifficultySpeed` sets exactly one property, `GroupNames`, whose single
 element decodes to the UTF-16 string **`DifficultySpeed`** — and **`GameInfo.AddMutator` reads
-`Mutator.GroupNames`**, verified by locating the property's dword inside its 619-byte body. So the chain is
-demonstrated by shipped content:
+`Mutator.GroupNames`**, verified by locating the property's dword inside its 619-byte body.
+
+**What that does and does not establish, stated precisely, because the first reading was wrong.** Stock UE3
+`AddMutator` resolves the `?Mutator=` value **by class name** —
+`mutClass = class<Mutator>(DynamicLoadObject(mutname, class'Class'))` — and reads `GroupNames` only
+afterwards, to refuse a second mutator in the same group and to refuse the same class twice
+(`GameInfo.uc`, `AddMutator`). So `GroupNames` is a **conflict-detection field, not a URL class alias**, and
+the class-name resolution is native, outside these packages. What the shipped template proves is therefore
+narrower: a `Mutator` subclass can be cooked in, and `AddMutator` reads the conflict field. It does **not**
+prove that a group name routes a travel URL, and that routing claim is withdrawn. The stock chain, with the
+native step named as native:
 
 ```
-?Mutator=DifficultySpeed
+?Mutator=<class name>
   -> InitGame parses the 'Mutator' option
-  -> AddMutator resolves the name via Mutator.GroupNames
+  -> AddMutator resolves the class BY NAME (native DynamicLoadObject; not in these packages)
   -> MutatorIsAllowed (!WorldInfo.IsDemoBuild()) permits it
   -> InitMutator runs, after the MaxPlayers clamp
   -> ModifyLogin / ModifyPlayer / NotifyLogin fire
 ```
 
-So the class *can* be cooked and the name *is* resolved, by the same code path a mod would use. Only risk 2
-remains fully open.
+So the class *can* be cooked and the hook chain is live, by the same code path a mod would use. Only risk 2
+remains fully open, and the class-name resolution is native rather than script — which is why it is not
+observable here.
 
 Reproduce with `python -I tools/melepkg/mele_props.py mutatorcheck`.
 

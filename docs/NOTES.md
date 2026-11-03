@@ -5986,21 +5986,31 @@ names.
 
 ME3 is the only build with them; ME1 and ME2 declare `Mutator` but subclass it nowhere.
 
-### The name is how `?Mutator=` finds it
+### The name is how `?Mutator=` finds it - corrected: it is not, and GroupNames is a conflict field
 
 `Default__SFXMutator_DifficultySpeed` sets exactly one property, `GroupNames`, and the array's single element
 decodes to the UTF-16 string **`DifficultySpeed`** (read from the serial: count 1, then a negative FString
 length -16 and 16 UTF-16 code units). `GameInfo.AddMutator` then **reads `Mutator.GroupNames`** - verified by
 finding the property's dword inside its 619-byte body.
 
-So the chain is complete and measured end to end:
+That was first written down as "the name is how `?Mutator=` finds it", and that reading is **wrong**. Stock UE3
+`AddMutator` resolves the `?Mutator=` value **by class name** -
+`mutClass = class<Mutator>(DynamicLoadObject(mutname, class'Class'))` - and reads `GroupNames` only
+afterwards, to refuse a second mutator in the same group and to refuse the same class twice
+(`GameInfo.uc`, `AddMutator`). So:
 
-    ?Mutator=DifficultySpeed
-      -> InitGame parses the 'Mutator' option
-      -> GameInfo.AddMutator reads Mutator.GroupNames to resolve the name to a class
-      -> MutatorIsAllowed (!WorldInfo.IsDemoBuild()) permits it
-      -> InitMutator runs, after the MaxPlayers clamp
-      -> ModifyLogin / ModifyPlayer / NotifyLogin fire on the join path
+* `GroupNames` is a **conflict-detection field, not a URL class alias**. The shipped template proves a
+  `Mutator` subclass can be cooked in and that `AddMutator` reads the conflict field; it does **not** prove
+  that a group name routes a travel URL. That routing claim is withdrawn.
+* The class-name resolution is **native**, outside these packages, so it is not observable here. The chain,
+  with the native step named as native:
+
+        ?Mutator=<class name>
+          -> InitGame parses the 'Mutator' option
+          -> AddMutator resolves the class BY NAME (native DynamicLoadObject; not in these packages)
+          -> MutatorIsAllowed (!WorldInfo.IsDemoBuild()) permits it
+          -> InitMutator runs, after the MaxPlayers clamp
+          -> ModifyLogin / ModifyPlayer / NotifyLogin fire on the join path
 
 ### A lookup trap worth recording
 
@@ -6013,14 +6023,23 @@ lookup has to match on the owner as well as the name - the same class-name-vs-pr
 ### Rule 107. "It ships" beats "it could work".
 Three separate assumptions were load-bearing in the mutator route: that a class can be cooked, that the URL
 option is honoured, and that the loader resolves it. Two of those turned out to already be demonstrated by a
-class in the shipped package - `SFXMutator_DifficultySpeed` is cooked, named, and loaded by the same code path a
-mod would use. Only the third (does the campaign's own travel carry the option) remains unmeasured, and that
-is a much smaller question than the one I started with.
+class in the shipped package - `SFXMutator_DifficultySpeed` is cooked, and `AddMutator` reads its `GroupNames`.
+Whether the campaign's own travel carries the option remains unmeasured, and that is a much smaller question
+than the one I started with. **But see Rule 123: the template proves a cooked subclass and a read conflict
+field, not that a group name routes a URL.**
 
 ### Rule 108. Names are not unique; owner plus name is.
 `GroupNames`, `WorldInfo`, `Squad` - each is both a class/property name and a nested member name in these
 packages. Every lookup that matters should filter by owner, and the ones that do not are the ones that quietly
 return the wrong export.
+
+### Rule 123. A plausible mechanism read from a field's existence is a hypothesis until the loader is read.
+`GroupNames` is set on a shipped mutator's CDO and read by `AddMutator`, so "the name is how `?Mutator=`
+finds it" was a comfortable inference - and it was wrong. Stock `AddMutator` resolves the URL value by class
+name through a native `DynamicLoadObject`, and reads `GroupNames` only for the conflict check. The field's
+existence and the loader's read of it are both measured facts; the *routing* claim between them was not, and
+it took the maintainer pointing at the stock source to remove it. When a design story has a missing link, the
+link is a hypothesis even if both ends of it are real.
 
 ## 2026-11-01 (bytecode decode attempt): the stock UE3 grammar gets 12-22%, not enough to trust
 

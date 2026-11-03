@@ -233,23 +233,44 @@ def signature_hits(data):
     return hits
 
 
-def parse_chunk(data, start, next_start):
-    """Parse and VALIDATE one chunk. Returns None when the arithmetic does not close."""
+def parse_chunk(data, start, next_start=None):
+    """Parse and VALIDATE one chunk. Returns None when the arithmetic does not close.
+
+    `next_start` is optional and is deliberately not trusted to bound the chunk. A chunk's compressed
+    payload can legitimately contain the package magic - the signature is four arbitrary bytes inside a
+    compressed stream - and when it does, treating the next magic hit as the chunk's end truncates the
+    candidate before its own compressed size is consumed, so `table_bytes` goes negative or misaligned and
+    a real chunk disappears. That is a synthetic reproduction, not a shipped-package failure.
+
+    So the extent comes from the chunk's own header: `CHUNK_HEADER + blocks * BLOCK_ENTRY + total_csize`.
+    The block-table size is not stored, so the entry count is whatever makes the block sizes sum to
+    `total_csize` exactly, within the file. A magic hit inside the payload cannot shorten that scan.
+    `next_start`, when given, is ignored: the next hit may be inside the chunk rather than at its end.
+    """
     if start + CHUNK_HEADER > len(data):
         return None
     sig, max_block, total_c, total_u = struct.unpack_from("<IIII", data, start)
     if sig != PKG_MAGIC or not (0 < max_block <= MAX_BLOCK_SANE) or total_c <= 0 or total_u <= 0:
         return None
-    span = (next_start if next_start is not None else len(data)) - start
-    table_bytes = span - CHUNK_HEADER - total_c
-    if table_bytes < BLOCK_ENTRY or table_bytes % BLOCK_ENTRY:
-        return None
-    n = table_bytes // BLOCK_ENTRY
     table_at = start + CHUNK_HEADER
-    if table_at + n * BLOCK_ENTRY > len(data):
+    max_entries = (len(data) - table_at) // BLOCK_ENTRY
+    # A sane cap keeps a bogus signature hit from scanning the whole file: no real chunk in these
+    # packages has more than 65 blocks, and a block table of millions of entries is not a chunk. The cap
+    # is generous enough that a real chunk is never turned away, and small enough that the scan is bounded.
+    max_entries = min(max_entries, 1 << 20)
+    found = None
+    for n in range(1, max_entries + 1):
+        if table_at + n * BLOCK_ENTRY + total_c > len(data):
+            break
+        table = [struct.unpack_from("<II", data, table_at + BLOCK_ENTRY * k) for k in range(n)]
+        if sum(c for c, _u in table) == total_c and sum(u for _c, u in table) == total_u:
+            found = (n, table)
+            break
+    if found is None:
         return None
-    table = [struct.unpack_from("<II", data, table_at + BLOCK_ENTRY * k) for k in range(n)]
-    if sum(c for c, _ in table) != total_c or sum(u for _, u in table) != total_u:
+    n, table = found
+    span = CHUNK_HEADER + n * BLOCK_ENTRY + total_c
+    if start + span > len(data):
         return None
     return {"start": start, "span": span, "max_block": max_block,
             "total_csize": total_c, "total_usize": total_u,
@@ -257,14 +278,18 @@ def parse_chunk(data, start, next_start):
 
 
 def find_chunks(data):
-    """Every chunk that validates. A bare signature hit is not enough to be a chunk."""
+    """Every chunk that validates. A bare signature hit is not enough to be a chunk.
+
+    Each candidate is validated against its own extent, so a magic value inside a payload cannot remove a
+    chunk from the result. The next signature hit is no longer used to bound a chunk at all: a payload can
+    legitimately contain the magic, and the next hit is then inside the chunk rather than at its end.
+    """
     hits = signature_hits(data)
     chunks = []
-    for idx, start in enumerate(hits):
+    for start in hits:
         if start == 0:
             continue  # package header, not a chunk
-        later = next((h for h in hits[idx + 1:]), None)
-        c = parse_chunk(data, start, later)
+        c = parse_chunk(data, start)
         if c:
             chunks.append(c)
     return chunks

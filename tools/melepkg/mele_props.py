@@ -3367,6 +3367,15 @@ def cmd_mutatorcheck(args):
     So the mod can be a `Mutator` subclass loaded with `?Mutator=<class>` in the travel URL, with no binary
     patch and no code injection.
 
+    **How the URL value becomes a class, stated with its source.** Stock UE3 `GameInfo.AddMutator` resolves
+    it by class name - `mutClass = class<Mutator>(DynamicLoadObject(mutname, class'Class'))` - and only
+    afterwards reads `Mutator.GroupNames`, to refuse a second mutator in the same group and to refuse the
+    same class twice (CodeRedModding/UnrealEngine3, `Development/Src/Engine/Classes/GameInfo.uc`,
+    `AddMutator`). So `GroupNames` is a conflict field, not a URL class alias, and the class-name resolution
+    is native. What is measured from these packages is therefore the narrower fact that ME3 ships cooked
+    `Mutator` subclasses and that `AddMutator` reads `Mutator.GroupNames`; the resolution itself is not in
+    the packages and is not claimed here.
+
     **What this does NOT settle, stated as such:**
 
       * Unless the object is reachable from a *cooked* package the game already loads, the mutator class has
@@ -3538,7 +3547,17 @@ def cmd_mutatorcheck(args):
                          ", ".join(sorted(live))))
                 if sub != "SFXMutator_DifficultySpeed":
                     continue
-                # The group name is what ?Mutator= matches, and it lives in the CDO.
+                # The group name is NOT what ?Mutator= matches, and claiming it is would be wrong. Stock UE3
+                # AddMutator resolves the URL value by class name -
+                #   mutClass = class<Mutator>(DynamicLoadObject(mutname, class'Class'))
+                # - and reads GroupNames only afterwards, to refuse a second mutator in the same group and
+                # to refuse the same class twice (GameInfo.uc, AddMutator). So GroupNames is a conflict
+                # field, and the class name is the identity. What is measured here is therefore narrower
+                # and stated as such: the shipped template sets GroupNames (a fact about the template, which
+                # does prove the field is cooked and readable), and AddMutator reads Mutator.GroupNames (a
+                # fact about the loader). Neither is the claim that a travel URL is routed through it, and
+                # neither establishes that ?Mutator=<class> survives the campaign's own travel URLs - that
+                # remains unmeasured.
                 cdo = find_object(campaign_table, "Default__" + sub)
                 if cdo is None:
                     problems.append("%s: no Default__%s" % (game, sub))
@@ -3546,17 +3565,17 @@ def cmd_mutatorcheck(args):
                 tags, _end, _why = parse_object(campaign_table, campaign_table["buf"], cdo)
                 groups = [tg for tg in tags if tg["name"] == "GroupNames"]
                 if not groups:
-                    problems.append("%s: %s no longer sets GroupNames, so it cannot be named in a travel "
-                                    "URL" % (game, sub))
+                    problems.append("%s: %s no longer sets GroupNames, so the shipped template no longer "
+                                    "demonstrates a cooked group field" % (game, sub))
                 elif not groups[0].get("value") or groups[0]["value"] == "<array of 0>":
                     problems.append("%s: %s.GroupNames is empty" % (game, sub))
                 else:
-                    print("     %s.GroupNames is set (%s) - the name ?Mutator= matches"
+                    print("     %s.GroupNames is set (%s) - the template's group, for conflict detection"
                           % (sub, groups[0]["value"]))
-                    # And the loader has to read that field, or the name means nothing. Two exports are
-                    # named `GroupNames`: `GroupNames.GroupNames` (a StrProperty, one element's type) and
-                    # `Mutator.GroupNames` (the ArrayProperty). Taking the first name match picks the wrong
-                    # one, so the lookup prefers the entry declared on `Mutator`.
+                    # And the loader has to read that field for the conflict check to mean anything. Two
+                    # exports are named `GroupNames`: `GroupNames.GroupNames` (a StrProperty, one element's
+                    # type) and `Mutator.GroupNames` (the ArrayProperty). Taking the first name match picks
+                    # the wrong one, so the lookup prefers the entry declared on `Mutator`.
                     prop = None
                     for candidate in t["exports"]:
                         if candidate["object_name"] != "GroupNames":
@@ -3574,11 +3593,16 @@ def cmd_mutatorcheck(args):
                             loader_reads = any(
                                 struct.unpack_from("<i", body, i)[0] == dword
                                 for i in range(0, max(0, len(body) - 3)))
-                            print("     GameInfo.AddMutator (body=%d) %s Mutator.GroupNames"
+                            print("     GameInfo.AddMutator (body=%d) %s Mutator.GroupNames - the stock "
+                                  "conflict check, not a URL class alias"
                                   % (len(body), "reads" if loader_reads else "does NOT read"))
                     if not loader_reads:
-                        problems.append("%s: GameInfo.AddMutator no longer reads Mutator.GroupNames, so a "
-                                        "mutator cannot be named - the ?Mutator= route is broken" % game)
+                        # A missing conflict check is worth reporting, but it is NOT the ?Mutator= route
+                        # breaking: that route resolves the class by name, which is native and outside
+                        # these packages.
+                        problems.append("%s: GameInfo.AddMutator no longer reads Mutator.GroupNames, so the "
+                                        "stock conflict check is gone - re-read, but note this is not the "
+                                        "?Mutator= resolution path" % game)
         if not found_example:
             print("     (no shipped Mutator subclass in this build's SFXGame.pcc)" )
 
@@ -3592,11 +3616,13 @@ def cmd_mutatorcheck(args):
         return 1
     print("verdict: the mutator chain is live on all three builds - InitGame/Login/PostLogin/RestartPlayer/"
           "Logout all call into it, MutatorIsAllowed is !WorldInfo.IsDemoBuild() so it is open in retail, "
-          "InitMutator runs AFTER the MaxPlayers clamp so a mutator can correct the player count, the hook "
-          "signatures are identical everywhere, and ME3 ships SFXMutator/SFXMutator_DifficultySpeed as "
-          "working examples named by a CDO GroupNames entry; so ModifyLogin/ModifyPlayer/NotifyLogin/"
-          "InitMutator are a supported in-game way to accept a guest, give it a pawn and set up its state, "
-          "loadable with ?Mutator= and needing no binary patch - provided the class can be cooked in and the "
+          "InitMutator runs AFTER the MaxPlayers clamp so a mutator can correct the player count, and the "
+          "hook signatures are identical everywhere. ME3 ships SFXMutator/SFXMutator_DifficultySpeed as "
+          "cooked templates, which proves a Mutator subclass can be cooked in; their GroupNames entries are "
+          "the stock conflict-detection field, NOT a URL class alias, so they are reported as a template "
+          "fact and not as a routing fact. So ModifyLogin/ModifyPlayer/NotifyLogin/InitMutator are a "
+          "supported in-game way to accept a guest, give it a pawn and set up its state, loadable with "
+          "?Mutator=<class> and needing no binary patch - provided the class can be cooked in and the "
           "option survives the campaign's own travel URLs, neither of which is measured here")
     return 0
 
@@ -3696,6 +3722,13 @@ def cmd_transitioncheck(args):
             print("%-4s no %s instance closed exactly" % (game, classes[0]))
             if not unclosed:
                 problems.append("%s: no transition instances found at all" % game)
+            else:
+                # Every instance raised during parsing or failed to close. That is a reader failure, not a
+                # measurement of the game, and printing the verdict anyway would report a story-sync payload
+                # on the strength of zero decoded instances. Suppress the verdict and fail.
+                problems.append("%s: %d transition instance(s) failed to parse and none closed exactly - the "
+                                "reader cannot read this build's packages, so nothing about the progression "
+                                "step follows" % (game, unclosed))
             continue
         distinct = len(set(indices))
         low, high = min(indices), max(indices)
@@ -3749,6 +3782,11 @@ def cmd_transitioncheck(args):
         if info:
             summary.append("%s %d instances, m_nIndex %d..%d (%d distinct)"
                            % (game, info[0], info[1], info[2], info[3]))
+    if not summary:
+        # Reached only when no build produced a single exactly-closing instance. The problems list already
+        # says why; repeating the story-sync verdict here would assert a payload on no evidence.
+        print("no verdict: no transition instance was decoded on any build")
+        return 1
     print("verdict: the campaign's progression step is identified by an integer index on every build - %s - "
           "while m_sObjectType and m_sVarName are never set on any instance, Region/Plot/Transition read None "
           "because their enums are two-member stubs, and the m_nPrevRegionIndex/m_nPrevPlotIndex fields that "

@@ -74,9 +74,53 @@ def check_invariants(m, data, label, failures):
     return chunks
 
 
+def synthetic_embedded_magic(m, failures):
+    """A chunk whose payload contains the package magic must still be found.
+
+    `find_chunks` used to bound each candidate at the next signature hit. A compressed payload can
+    legitimately contain those four bytes - the signature is arbitrary data inside a compressed stream -
+    and when it does, the next hit lands inside the chunk, the candidate's span stops before its own
+    compressed size is consumed, and the arithmetic does not close: a real chunk disappears from the
+    result. This is a structural synthetic reproduction, not a reported failure in a shipped package.
+
+    The fix validates each candidate against its own extent (header + table + total_csize), so a magic
+    value inside the payload cannot shorten the scan.
+    """
+    import struct
+    # One block, 16 bytes of payload, payload contains the magic at offset 8.
+    payload = b"\x00" * 8 + struct.pack("<I", m.PKG_MAGIC) + b"\x00" * 4
+    total_c = len(payload)
+    total_u = total_c
+    chunk = (struct.pack("<IIII", m.PKG_MAGIC, 0x10000, total_c, total_u)
+             + struct.pack("<II", total_c, total_u)
+             + payload)
+    data = b"\x00" * 0x400 + chunk
+    hits = m.signature_hits(data)
+    chunks = m.find_chunks(data)
+    # The payload's magic must not have removed the real chunk.
+    if len(chunks) != 1:
+        failures.append("embedded magic: find_chunks returned %d chunk(s), expected 1 "
+                        "(hits at %s)" % (len(chunks), [hex(h) for h in hits]))
+        return
+    c = chunks[0]
+    if c["total_csize"] != total_c or c["blocks"] != 1:
+        failures.append("embedded magic: chunk mis-parsed (total_csize %d, blocks %d)"
+                        % (c["total_csize"], c["blocks"]))
+        return
+    # And the extent must cover the whole chunk, including the payload that contains the magic.
+    if c["start"] + c["span"] != 0x400 + len(chunk):
+        failures.append("embedded magic: span %d does not cover the chunk (%d)"
+                        % (c["span"], len(chunk)))
+    print("  synthetic: magic inside a payload does not remove the chunk - %d chunk(s), span covers %d bytes"
+          % (len(chunks), c["span"]))
+
+
 def main():
     m = load()
     failures = []
+    # The synthetic case runs without an install, so it is checked first and its failure is never masked
+    # by a skip further down.
+    synthetic_embedded_magic(m, failures)
     oodle_path = m.find_oodle()
     if not oodle_path:
         print("SKIP: no oo2core*.dll found (game install absent)")
